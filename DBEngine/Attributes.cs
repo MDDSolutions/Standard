@@ -2,7 +2,7 @@
 
 namespace MDDDataAccess
 {
-    //Use DBIgnore for properties you do not want ObjectFromReader to try to automap at all - even if a column with the property name exists, it will not be mapped
+    //Use DBIgnore for properties you do not want ObjectFromReader to try to automap at all - even if a column with the property name exists, it will not be mapped!
     [AttributeUsage(AttributeTargets.Property)]
     public class DBIgnoreAttribute : Attribute { }
 
