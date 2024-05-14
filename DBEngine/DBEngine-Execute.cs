@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Data.SqlClient;
 using System.Diagnostics;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -16,6 +17,39 @@ namespace MDDDataAccess
         public bool LogErrors { get; set; }
         public bool Debug { get; set; }
         public const string LogFileName = "DBEngine_log.txt";
+
+        public void ExecuteScript(string script)
+        {
+            if (AllowAdHoc)
+            {
+                // Remove block comments
+                string blockComments = @"/\*(.*?)\*/";
+                script = Regex.Replace(script, blockComments, "", RegexOptions.Singleline);
+
+                // Split script into separate commands
+                string[] commands = Regex.Split(script, @"(?<=^|[\r\n])\s*GO\s*($|[\r\n])", RegexOptions.Multiline | RegexOptions.IgnoreCase);
+
+                using (SqlConnection connection = getconnection())
+                {
+                    foreach (string command in commands)
+                    {
+                        string trimmedCommand = command.Trim();
+                        if (!string.IsNullOrEmpty(trimmedCommand))
+                        {
+                            using (SqlCommand sqlCommand = new SqlCommand(trimmedCommand, connection))
+                            {
+                                ExecuteNonQuery(sqlCommand);
+                            }
+                        }
+                    }
+                }
+            }
+            else
+            {
+                throw new Exception("AdHoc commands are not allowed by this DBEngine");
+            }
+        }
+
         private SqlDataReader ExecuteReader(SqlCommand cmd)
         {
             Stopwatch sw = null;
