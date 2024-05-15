@@ -50,6 +50,10 @@ namespace MDDDataAccess
         private SqlConnectionStringBuilder connectionstring = null;
         [DebuggerBrowsable(DebuggerBrowsableState.Never)]
         private SqlConnectionStringBuilder secureconnectionstring = null;
+        override public string ToString()
+        {
+            return $"{connectionstring.DataSource} - {connectionstring.InitialCatalog} - " + (connectionstring.IntegratedSecurity ? "<Integrated>" : $"<SQL User: {connectionstring.UserID}");
+        }   
         public SqlConnectionStringBuilder ConnectionString 
         {
             get
