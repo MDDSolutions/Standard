@@ -5,6 +5,8 @@ using System.Reflection;
 using System.Data.SqlClient;
 using System.Collections;
 using System.Threading.Tasks;
+using System.Linq;
+using System.Text.RegularExpressions;
 
 namespace MDDDataAccess
 {
@@ -162,6 +164,106 @@ namespace MDDDataAccess
                 }
             }
             return sb.ToString().TrimEnd().TrimEnd(',');
+        }
+        public static bool CheckObjectNameInScript(this string script, string expectedObjectName)
+        {
+            // Remove square brackets from expectedObjectName
+            expectedObjectName = expectedObjectName.Replace("[", "").Replace("]", "");
+
+            // Remove block comments
+            string blockComments = @"/\*(.*?)\*/";
+            script = Regex.Replace(script, blockComments, "", RegexOptions.Singleline);
+
+            // Remove line comments
+            string lineComments = @"--(.*?)\r?\n";
+            script = Regex.Replace(script, lineComments, "", RegexOptions.Singleline);
+
+            // Find the first CREATE or ALTER statement
+            Match match = Regex.Match(script, @"(CREATE|ALTER)\s+(PROCEDURE|PROC|TABLE|VIEW|TRIGGER|FUNCTION)\s+(\[?\w+\]?\.?\[?\w+\]?)", RegexOptions.IgnoreCase);
+
+            if (match.Success)
+            {
+                // Get the object name and remove square brackets
+                string objectName = match.Groups[3].Value.Replace("[", "").Replace("]", "");
+
+                // Check if the expected object name contains a schema
+                if (expectedObjectName.Contains("."))
+                {
+                    // If the expected object name contains a schema, compare the full object names
+                    return objectName.Equals(expectedObjectName, StringComparison.OrdinalIgnoreCase);
+                }
+                else
+                {
+                    // If the expected object name does not contain a schema, compare the object names without the schema
+                    string objectNameWithoutSchema = objectName.Split('.').Last();
+                    return objectNameWithoutSchema.Equals(expectedObjectName, StringComparison.OrdinalIgnoreCase);
+                }
+            }
+
+            // If no CREATE or ALTER statement is found, return false
+            return false;
+        }
+        /// <summary>
+        /// Assumes you know the object name and schema - and whether the schema is specified in the script - sys.sql_expression_dependencies will tell you this
+        /// </summary>
+        /// <param name="script"></param>
+        /// <param name="tableviewname"></param>
+        /// <param name="schemaname">can be null or whitespace if it is not specified</param>
+        /// <param name="replacement"></param>
+        /// <returns></returns>
+        public static string ReplaceTableViewNameInScript(this string script, string tableviewname, string schemaname, string replacement)
+        {
+            string pattern;
+
+            //if (string.IsNullOrWhiteSpace(schemaname))
+            //    pattern = $@"(?<!--.*)(?<=FROM\s|JOIN\s)(\[{tableviewname}\]|{tableviewname}\b)";
+            //else
+            //    pattern = $@"(?<!--.*)(?<=FROM\s|JOIN\s)(\[{schemaname}\]|{schemaname})\.(\[{tableviewname}\]|{tableviewname}\b)";
+            if (string.IsNullOrWhiteSpace(schemaname))
+                pattern = $@"(?<!--.*)(?<=FROM\s+|JOIN\s+|INSERT\s+|INTO\s+|UPDATE\s+|DELETE\s+)(\[{tableviewname}\]|{tableviewname}\b)";
+            else
+                pattern = $@"(?<!--.*)(?<=FROM\s+|JOIN\s+|INSERT\s+|INTO\s+|UPDATE\s+|DELETE\s+)(\[{schemaname}\]|{schemaname})\.(\[{tableviewname}\]|{tableviewname}\b)";
+
+
+            // Find block comments and their positions
+            string blockComments = @"/\*(.*?)\*/";
+            var matches = Regex.Matches(script, blockComments, RegexOptions.Singleline);
+            var comments = matches.Cast<Match>().Select(m => new { m.Index, m.Length, m.Value }).ToList();
+
+            // Remove block comments
+            script = Regex.Replace(script, blockComments, "", RegexOptions.Singleline);
+
+            // Replace object name and keep track of each replacement's index and length change
+            var replacements = new List<Tuple<int, int>>();
+            int cumlengthchange = 0;
+            foreach (Match match in Regex.Matches(script, pattern, RegexOptions.IgnoreCase))
+            {
+                var index = match.Index + cumlengthchange;
+                var originalLength = match.Length;
+                script = script.Remove(index, originalLength);
+                script = script.Insert(index, replacement);
+                var lengthChange = replacement.Length - originalLength;
+                cumlengthchange += lengthChange;
+                replacements.Add(Tuple.Create(index, lengthChange));
+            }
+
+            // Add block comments back in, adjusting the index based on the replacements
+            cumlengthchange = 0;
+            foreach (var comment in comments)
+            {
+                var adjustedIndex = comment.Index;
+                foreach (var repl in replacements)
+                {
+                    if (repl.Item1 + cumlengthchange < adjustedIndex)
+                    {
+                        adjustedIndex += repl.Item2;
+                    }
+                }
+                script = script.Insert(adjustedIndex, comment.Value);
+                cumlengthchange += comment.Length;
+            }
+
+            return script;
         }
     }
 }
