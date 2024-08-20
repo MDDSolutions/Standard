@@ -65,6 +65,17 @@ namespace MDDDataAccess
             db.DefaultApplicationName = inDefaultAppName;
             return db;
         }
+        public DBEngine(string server, string database, string user, string encryptedpassword, string userkey, string appname)
+        {
+            var pw = Crypto.Decrypt(encryptedpassword, applicationkey + userkey);
+            SecureMode = true;
+            connectionstring = new SqlConnectionStringBuilder();
+            connectionstring.DataSource = server;
+            connectionstring.InitialCatalog = database;
+            connectionstring.UserID = user;
+            connectionstring.Password = pw;
+            DefaultApplicationName = appname;
+        }
         static Action<object, object> BuildSetAccessor(MethodInfo method)
         {
             var obj = Expression.Parameter(typeof(object), "o");
