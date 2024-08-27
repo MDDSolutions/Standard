@@ -35,8 +35,6 @@ namespace MDDFoundation
         {
             PooledObjectWrapper<FtpWebRequest, string>.CreateInstance = uriString => (FtpWebRequest)WebRequest.Create(new Uri(uriString));
         }
-
-
         private ConcurrentDictionary<string,RemoteFileList> filelists = new ConcurrentDictionary<string,RemoteFileList>();
         public int DebugLevel { get; set; } = 1;
         public static string NormalizeFolder(string folder)

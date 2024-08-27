@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Threading;
 
 namespace MDDFoundation
 {
@@ -31,6 +32,8 @@ namespace MDDFoundation
         private readonly ConcurrentDictionary<TCategory, ConcurrentBag<T>> buffer = new ConcurrentDictionary<TCategory, ConcurrentBag<T>>();
         private readonly ConcurrentDictionary<T, TCategory> inUse = new ConcurrentDictionary<T, TCategory>();
         private readonly Func<TCategory, T> create;
+        private int newObjectCount;
+        private int reuseCount;
 
         public CategorizedObjectBuffer(Func<TCategory, T> newObject)
         {
@@ -42,12 +45,14 @@ namespace MDDFoundation
             if (buffer.TryGetValue(category, out var objects) && objects.TryTake(out var obj))
             {
                 inUse[obj] = category;
+                Interlocked.Increment(ref reuseCount);
                 return obj;
             }
             else
             {
                 var newObj = create(category);
                 inUse[newObj] = category;
+                Interlocked.Increment(ref newObjectCount);
                 return newObj;
             }
         }
@@ -71,6 +76,9 @@ namespace MDDFoundation
                 return false;
             }
         }
+
+        public int NewObjectCount { get => newObjectCount; set => newObjectCount = value; }
+        public int ReuseCount { get => reuseCount; set => reuseCount = value; }
     }
     public class PooledObjectWrapper<T, TCategory> : IDisposable where T : class
     {
@@ -99,6 +107,8 @@ namespace MDDFoundation
                 _disposed = true;
             }
         }
+        public static int NewObjectCount { get => Buffer.NewObjectCount; set => Buffer.NewObjectCount = value; }
+        public static int ReuseCount { get => Buffer.ReuseCount; set => Buffer.ReuseCount = value; }
     }
 
 
