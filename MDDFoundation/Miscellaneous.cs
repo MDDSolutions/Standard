@@ -589,6 +589,16 @@ namespace MDDFoundation
             }
             return finalhash;
         }
+        public static async Task<List<FileInfo>> GetFilesAsync(this DirectoryInfo dir, string searchpattern = null, SearchOption searchoption = default)
+        {
+            List<FileInfo> files = new List<FileInfo>();
+            if (searchpattern == null) searchpattern = "*.*";
+            await Task.Run(() =>
+            {
+                files = dir.GetFiles(searchpattern, searchoption).ToList();
+            });
+            return files;
+        }
         public static string GenerateBase64EncryptionKey(int keySizeInBytes = 32)
         {
             if (keySizeInBytes != 16 && keySizeInBytes != 24 && keySizeInBytes != 32)

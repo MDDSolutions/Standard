@@ -31,6 +31,11 @@ namespace MDDFoundation
             }
         }
 
+        static FTPSession()
+        {
+            PooledObjectWrapper<FtpWebRequest, string>.CreateInstance = uriString => (FtpWebRequest)WebRequest.Create(new Uri(uriString));
+        }
+
 
         private ConcurrentDictionary<string,RemoteFileList> filelists = new ConcurrentDictionary<string,RemoteFileList>();
         public int DebugLevel { get; set; } = 1;
@@ -38,7 +43,10 @@ namespace MDDFoundation
         {
             return folder?.TrimStart('/').TrimEnd('/');
         }
-        private FtpWebRequest GetRequest(string method, string filename, string folder)
+
+        
+        //CategorizedObjectBuffer<FtpWebRequest,string> requestbuffer = new CategorizedObjectBuffer<FtpWebRequest, string>(createFtpRequest);
+        private PooledObjectWrapper<FtpWebRequest, string> GetRequest(string method, string filename, string folder)
         {
             if (folder == null) folder = CurrentFolder;
 
@@ -47,12 +55,13 @@ namespace MDDFoundation
             if (!string.IsNullOrWhiteSpace(filename))
                 uri = uri + filename;
 
-            var request = (FtpWebRequest)WebRequest.Create(uri);
-            request.Method = method; //WebRequestMethods.Ftp.ListDirectoryDetails;
-            request.Timeout = 100000;
-            request.ReadWriteTimeout = 300000;
+            //var request = (FtpWebRequest)WebRequest.Create(uri);
+            var request = new PooledObjectWrapper<FtpWebRequest, string>(uri);
+            request.Object.Method = method; //WebRequestMethods.Ftp.ListDirectoryDetails;
+            request.Object.Timeout = 100000;
+            request.Object.ReadWriteTimeout = 300000;
 
-            request.Credentials = new NetworkCredential(UserName, Password);
+            request.Object.Credentials = new NetworkCredential(UserName, Password);
 
             return request;
         }
@@ -61,20 +70,23 @@ namespace MDDFoundation
             bool exists = false;
             if (folder == null) folder = CurrentFolder;
             folder = NormalizeFolder(folder);
-            var request = GetRequest(WebRequestMethods.Ftp.GetDateTimestamp, filename, folder);
-            try
+            using (var request = GetRequest(WebRequestMethods.Ftp.GetDateTimestamp, filename, folder))
             {
-                await request.GetResponseAsync().ConfigureAwait(false);
-                exists = true;
-            }
-            catch (WebException ex)
-            {
-                FtpWebResponse response = (FtpWebResponse)ex.Response;
-                if (response.StatusCode != FtpStatusCode.ActionNotTakenFileUnavailable)
+                try
                 {
-                    throw ex;
+                    await request.Object.GetResponseAsync().ConfigureAwait(false);
+                    exists = true;
+                }
+                catch (WebException ex)
+                {
+                    FtpWebResponse response = (FtpWebResponse)ex.Response;
+                    if (response.StatusCode != FtpStatusCode.ActionNotTakenFileUnavailable)
+                    {
+                        throw ex;
+                    }
                 }
             }
+
             return exists;
         }
         public bool FileExists(string filename, string folder = null)
@@ -82,18 +94,21 @@ namespace MDDFoundation
             bool exists = false;
             if (folder == null) folder = CurrentFolder;
             folder = NormalizeFolder(folder);
-            var request = GetRequest(WebRequestMethods.Ftp.GetDateTimestamp, filename, folder);
-            try
+
+            using (var request = GetRequest(WebRequestMethods.Ftp.GetDateTimestamp, filename, folder))
             {
-                request.GetResponse();
-                exists = true;
-            }
-            catch (WebException ex)
-            {
-                FtpWebResponse response = (FtpWebResponse)ex.Response;
-                if (response.StatusCode != FtpStatusCode.ActionNotTakenFileUnavailable)
+                try
                 {
-                    throw ex;
+                    request.Object.GetResponse();
+                    exists = true;
+                }
+                catch (WebException ex)
+                {
+                    FtpWebResponse response = (FtpWebResponse)ex.Response;
+                    if (response.StatusCode != FtpStatusCode.ActionNotTakenFileUnavailable)
+                    {
+                        throw ex;
+                    }
                 }
             }
             return exists;
@@ -107,21 +122,24 @@ namespace MDDFoundation
             if (updatethreshold == default) updatethreshold = TimeSpan.FromSeconds(30);
             if (files.List == null || (DateTime.Now - files.LastUpdated) > updatethreshold)
             {
-                var request = GetRequest(WebRequestMethods.Ftp.ListDirectoryDetails, null, folder);
 
-                files.List = new List<FTPFile>();
 
-                using (var response = (FtpWebResponse)await request.GetResponseAsync().ConfigureAwait(false))
-                using (var responseStream = response.GetResponseStream())
-                using (var reader = new StreamReader(responseStream))
+                using (var request = GetRequest(WebRequestMethods.Ftp.ListDirectoryDetails, null, folder))
                 {
-                    while (!reader.EndOfStream)
+                    files.List = new List<FTPFile>();
+
+                    using (var response = (FtpWebResponse)await request.Object.GetResponseAsync().ConfigureAwait(false))
+                    using (var responseStream = response.GetResponseStream())
+                    using (var reader = new StreamReader(responseStream))
                     {
-                        var line = await reader.ReadLineAsync().ConfigureAwait(false);
-                        files.List.Add(FTPFile.FromLine(line));
+                        while (!reader.EndOfStream)
+                        {
+                            var line = await reader.ReadLineAsync().ConfigureAwait(false);
+                            files.List.Add(FTPFile.FromLine(line));
+                        }
                     }
+                    files.LastUpdated = DateTime.Now;
                 }
-                files.LastUpdated = DateTime.Now;
             }
             return files.List.AsReadOnly();
         }
@@ -144,34 +162,38 @@ namespace MDDFoundation
             else if (files.List == null || (DateTime.Now - files.LastUpdated) > updatethreshold)
             {
                 listreset = new ManualResetEventSlim();
-                try
+
+                using (var request = GetRequest(WebRequestMethods.Ftp.ListDirectoryDetails, null, folder))
                 {
-                    StatusUpdate($"UploadFile: Getting List from Server", 4);
-                    var request = GetRequest(WebRequestMethods.Ftp.ListDirectoryDetails, null, folder);
-
-                    files.List = new List<FTPFile>();
-
-                    using (var response = (FtpWebResponse)request.GetResponse())
-                    using (var responseStream = response.GetResponseStream())
-                    using (var reader = new StreamReader(responseStream))
+                    try
                     {
-                        while (!reader.EndOfStream)
+                        StatusUpdate($"UploadFile: Getting List from Server", 4);
+
+
+                        files.List = new List<FTPFile>();
+
+                        using (var response = (FtpWebResponse)request.Object.GetResponse())
+                        using (var responseStream = response.GetResponseStream())
+                        using (var reader = new StreamReader(responseStream))
                         {
-                            var line = reader.ReadLine();
-                            files.List.Add(FTPFile.FromLine(line));
+                            while (!reader.EndOfStream)
+                            {
+                                var line = reader.ReadLine();
+                                files.List.Add(FTPFile.FromLine(line));
+                            }
                         }
+                        files.LastUpdated = DateTime.Now;
+                        listreset.Set();
                     }
-                    files.LastUpdated = DateTime.Now;
-                    listreset.Set();
-                }
-                catch (Exception ex)
-                {
-                    throw ex;
-                }
-                finally
-                {
-                    listreset?.Dispose();
-                    listreset = null;
+                    catch (Exception ex)
+                    {
+                        throw ex;
+                    }
+                    finally
+                    {
+                        listreset?.Dispose();
+                        listreset = null;
+                    } 
                 }
             }
             else
@@ -184,60 +206,78 @@ namespace MDDFoundation
         {
             if (folder == null) folder = CurrentFolder;
             folder = NormalizeFolder(folder);
-            var request = GetRequest(WebRequestMethods.Ftp.Rename, from, folder);
-            request.RenameTo = to;
 
-            using (var response = (FtpWebResponse)await request.GetResponseAsync().ConfigureAwait(false))
+            using (var request = GetRequest(WebRequestMethods.Ftp.Rename, from, folder))
             {
+                request.Object.RenameTo = to;
+
+                using (var response = (FtpWebResponse)await request.Object.GetResponseAsync().ConfigureAwait(false))
+                {
+                }
             }
         }
         public void Rename(string from, string to, string folder = null)
         {
             if (folder == null) folder = CurrentFolder;
             folder = NormalizeFolder(folder);
-            var request = GetRequest(WebRequestMethods.Ftp.Rename, from, folder);
-            request.RenameTo = to;
 
-            StatusUpdate($"{DateTime.Now:HH:mm:ss.fff}: Rename started: {from} -> {to}", 4);
-            using (var response = (FtpWebResponse)request.GetResponse())
+            using (var request = GetRequest(WebRequestMethods.Ftp.Rename, from, folder))
             {
-                StatusUpdate($"{DateTime.Now:HH:mm:ss.fff}: Rename finished: {from} -> {to}", 4);
+                request.Object.RenameTo = to;
+
+                StatusUpdate($"{DateTime.Now:HH:mm:ss.fff}: Rename started: {from} -> {to}", 4);
+                using (var response = (FtpWebResponse)request.Object.GetResponse())
+                {
+                    StatusUpdate($"{DateTime.Now:HH:mm:ss.fff}: Rename finished: {from} -> {to}", 4);
+                }
             }
         }
         public async Task DeleteAsync(string filename, string folder = null)
         {
-            var request = GetRequest(WebRequestMethods.Ftp.DeleteFile, filename, folder);
 
-            using (var response = (FtpWebResponse)await request.GetResponseAsync().ConfigureAwait(false))
+
+            using (var request = GetRequest(WebRequestMethods.Ftp.DeleteFile, filename, folder))
             {
+                using (var response = (FtpWebResponse)await request.Object.GetResponseAsync().ConfigureAwait(false))
+                {
+                } 
             }
         }
         public void Delete(string filename, string folder = null)
         {
-            var request = GetRequest(WebRequestMethods.Ftp.DeleteFile, filename, folder);
 
-            using (var response = (FtpWebResponse)request.GetResponse())
+
+            using (var request = GetRequest(WebRequestMethods.Ftp.DeleteFile, filename, folder))
             {
+                using (var response = (FtpWebResponse)request.Object.GetResponse())
+                {
+                } 
             }
         }
         public async Task MoveFileAsync(string filename, string destinationfolder, string sourcefolder = null)
         {
-            var request = GetRequest(WebRequestMethods.Ftp.Rename, filename, sourcefolder);
-            if (!destinationfolder.EndsWith("/")) destinationfolder = destinationfolder + "/";
-            if (!destinationfolder.StartsWith("/")) destinationfolder = "/" + destinationfolder;
-            request.RenameTo = $"{destinationfolder}{filename}";
-            using (var response = (FtpWebResponse)await request.GetResponseAsync().ConfigureAwait(false))
+
+            using (var request = GetRequest(WebRequestMethods.Ftp.Rename, filename, sourcefolder))
             {
+                if (!destinationfolder.EndsWith("/")) destinationfolder = destinationfolder + "/";
+                if (!destinationfolder.StartsWith("/")) destinationfolder = "/" + destinationfolder;
+                request.Object.RenameTo = $"{destinationfolder}{filename}";
+                using (var response = (FtpWebResponse)await request.Object.GetResponseAsync().ConfigureAwait(false))
+                {
+                }
             }
         }
         public void MoveFile(string filename, string destinationfolder, string sourcefolder = null)
         {
-            var request = GetRequest(WebRequestMethods.Ftp.Rename, filename, sourcefolder);
-            if (!destinationfolder.EndsWith("/")) destinationfolder = destinationfolder + "/";
-            if (!destinationfolder.StartsWith("/")) destinationfolder = "/" + destinationfolder;
-            request.RenameTo = $"{destinationfolder}{filename}";
-            using (var response = (FtpWebResponse)request.GetResponse())
+
+            using (var request = GetRequest(WebRequestMethods.Ftp.Rename, filename, sourcefolder))
             {
+                if (!destinationfolder.EndsWith("/")) destinationfolder = destinationfolder + "/";
+                if (!destinationfolder.StartsWith("/")) destinationfolder = "/" + destinationfolder;
+                request.Object.RenameTo = $"{destinationfolder}{filename}";
+                using (var response = (FtpWebResponse)request.Object.GetResponse())
+                {
+                }
             }
         }
        
@@ -294,15 +334,16 @@ namespace MDDFoundation
                 var breakupfilename = new BreakupFileName(breakupindex, breakupfiles, file.Name); // BreakupFiles.BreakupFileName(breakupindex, breakupfiles, file.Name);
 
                 var tmpfile = Guid.NewGuid().ToString().Replace("-", "") + ".tmp";
-                var request = GetRequest(WebRequestMethods.Ftp.UploadFile, tmpfile, destinationfolder);
+                
 
                 int currentblockcount = 0;
                 long curstart = 0;
                 if (progressreportinterval == default) progressreportinterval = TimeSpan.FromSeconds(1);
 
+                using (var request = GetRequest(WebRequestMethods.Ftp.UploadFile, tmpfile, destinationfolder))
                 using (var hash = new SHA1CryptoServiceProvider())
                 using (var source = file.OpenRead())
-                using (var dest = await request.GetRequestStreamAsync().ConfigureAwait(false))
+                using (var dest = await request.Object.GetRequestStreamAsync().ConfigureAwait(false))
                 {
                     if (processhash) hash.Initialize();
                     source.Seek(offset, 0);
@@ -463,13 +504,14 @@ namespace MDDFoundation
                     if (breakupfiles <= 1 || !list.Exists(x => x.FileName.Equals(breakupfilename,StringComparison.OrdinalIgnoreCase)))
                     {
                         var tmpfile = Guid.NewGuid().ToString().Replace("-", "") + ".tmp";
-                        var request = GetRequest(WebRequestMethods.Ftp.UploadFile, tmpfile, destinationfolder);
+                        
 
                         int currentblockcount = 0;
 
+                        using (var request = GetRequest(WebRequestMethods.Ftp.UploadFile, tmpfile, destinationfolder))
                         using (var hash = new SHA1CryptoServiceProvider())
                         using (var source = file.OpenRead())
-                        using (var dest = await request.GetRequestStreamAsync().ConfigureAwait(false))
+                        using (var dest = await request.Object.GetRequestStreamAsync().ConfigureAwait(false))
                         {
                             //dest.SetLength(source.Length);
                             if (processhash) hash.Initialize();
@@ -503,7 +545,6 @@ namespace MDDFoundation
                             }
                             if (writer != null) await writer.ConfigureAwait(false);
                         }
-
                         if (token.IsCancellationRequested)
                         {
                             try
@@ -617,14 +658,12 @@ namespace MDDFoundation
                         if (!usetmpfile && targetdelete && currentbreakupfile == breakupfiles)
                             Delete(file.Name, destinationfolder);
 
-                        var request = GetRequest(WebRequestMethods.Ftp.UploadFile, tmpfile, destinationfolder);
-
-
                         StatusUpdate($"UploadFile: Establishing connections for {file.Name} (elapsed: {copyprogress.Stopwatch.ElapsedMilliseconds})", 5);
 
+                        using (var request = GetRequest(WebRequestMethods.Ftp.UploadFile, tmpfile, destinationfolder))
                         using (var hash = new SHA1CryptoServiceProvider())
                         using (var source = file.OpenRead())
-                        using (var dest = request.GetRequestStream())
+                        using (var dest = request.Object.GetRequestStream())
                         {
                             //dest.SetLength(source.Length);
                             if (processhash) hash.Initialize();
@@ -675,7 +714,6 @@ namespace MDDFoundation
                                 }
                             }
                         }
-
                         StatusUpdate($"UploadFile: out of loop for {file.Name} (elapsed: {copyprogress.Stopwatch.ElapsedMilliseconds})", 5);
 
                         if (usetmpfile && targetdelete && currentbreakupfile == breakupfiles)
@@ -747,9 +785,9 @@ namespace MDDFoundation
                 }
 
                 var tmpfile = new FileInfo(Path.Combine(file.DirectoryName, Guid.NewGuid().ToString().Replace("-", "") + ".tmp"));
-                var request = GetRequest(WebRequestMethods.Ftp.DownloadFile, file.Name, remotefolder);
 
-                using (var response = await request.GetResponseAsync().ConfigureAwait(false))
+                using (var request = GetRequest(WebRequestMethods.Ftp.DownloadFile, file.Name, remotefolder))
+                using (var response = await request.Object.GetResponseAsync().ConfigureAwait(false))
                 using (var source = response.GetResponseStream())
                 using (var dest = tmpfile.OpenWrite())
                 {
@@ -771,7 +809,6 @@ namespace MDDFoundation
                     }
                     writer?.Wait();
                 }
-
                 if (token.IsCancellationRequested)
                 {
                     try
@@ -838,9 +875,9 @@ namespace MDDFoundation
                 copyprogress = new FileCopyProgress { FileSizeBytes = len, FileName = file.Name, Stopwatch = Stopwatch.StartNew(), OperationDuring = "Transferring", OperationComplete = "Transfer" };
 
                 var tmpfile = new FileInfo(Path.Combine(file.DirectoryName, Guid.NewGuid().ToString().Replace("-", "") + ".tmp"));
-                var request = GetRequest(WebRequestMethods.Ftp.DownloadFile, file.Name, remotefolder);
-
-                using (var response = request.GetResponse())
+                
+                using (var request = GetRequest(WebRequestMethods.Ftp.DownloadFile, file.Name, remotefolder))
+                using (var response = request.Object.GetResponse())
                 using (var source = response.GetResponseStream())
                 using (var dest = tmpfile.OpenWrite())
                 {
@@ -856,7 +893,6 @@ namespace MDDFoundation
                     }
                     writer?.Wait();
                 }
-
                 if (file.Exists) file.Delete();
 
                 tmpfile.MoveTo(file.FullName);
