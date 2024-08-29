@@ -32,7 +32,7 @@ namespace MDDFoundation
         }
 
 
-        private ConcurrentDictionary<string,RemoteFileList> filelists = new ConcurrentDictionary<string,RemoteFileList>();
+        private ConcurrentDictionary<string, RemoteFileList> filelists = new ConcurrentDictionary<string, RemoteFileList>();
         public int DebugLevel { get; set; } = 1;
         public static string NormalizeFolder(string folder)
         {
@@ -139,7 +139,7 @@ namespace MDDFoundation
             var files = filelists.GetOrAdd(folder, new RemoteFileList());
             if (updatethreshold >= TimeSpan.FromHours(12))
             {
-                if(files.List == null) files.List = new List<FTPFile>();
+                if (files.List == null) files.List = new List<FTPFile>();
             }
             else if (files.List == null || (DateTime.Now - files.LastUpdated) > updatethreshold)
             {
@@ -240,9 +240,9 @@ namespace MDDFoundation
             {
             }
         }
-       
-        
-        public async Task<FileCopyProgress> UploadFileFragmentAsync(FileInfo file, CancellationToken token, string destinationfolder = null, bool MoveFile = false, Action<FileCopyProgress> progresscallback = null, TimeSpan progressreportinterval = default, int breakupmb = 0, int breakupindex = 0, bool processhash = true, double maxmbpersec = 0)  
+
+
+        public async Task<FileCopyProgress> UploadFileFragmentAsync(FileInfo file, CancellationToken token, string destinationfolder = null, bool MoveFile = false, Action<FileCopyProgress> progresscallback = null, TimeSpan progressreportinterval = default, int breakupmb = 0, int breakupindex = 0, bool processhash = true, double maxmbpersec = 0)
         {
             // this method will overwrite the file if it exists (default functionality for FTP) so check before running if it is important to you
             FileCopyProgress copyprogress = null;
@@ -378,7 +378,7 @@ namespace MDDFoundation
                         if (MoveFile && breakupindex == 0) // currentbreakupfile == breakupfiles)
                         {
                             file.Delete();
-                        } 
+                        }
                     }
                     else if (MoveFile && breakupindex == 0) // currentbreakupfile == breakupfiles)
                     {
@@ -447,7 +447,7 @@ namespace MDDFoundation
                     else
                         targetdelete = true;
                 }
-                
+
                 FileCopyProgress copyprogress = null;
                 if (progresscallback != null)
                 {
@@ -460,7 +460,7 @@ namespace MDDFoundation
                 {
                     var breakupfilename = $"{currentbreakupfile:00000}.{breakupfiles:00000}.{file.Name}.breakup";
                     if (breakupfiles > 1) list = (await ListAsync(TimeSpan.FromTicks(-1), destinationfolder).ConfigureAwait(false)).ToList();
-                    if (breakupfiles <= 1 || !list.Exists(x => x.FileName.Equals(breakupfilename,StringComparison.OrdinalIgnoreCase)))
+                    if (breakupfiles <= 1 || !list.Exists(x => x.FileName.Equals(breakupfilename, StringComparison.OrdinalIgnoreCase)))
                     {
                         var tmpfile = Guid.NewGuid().ToString().Replace("-", "") + ".tmp";
                         var request = GetRequest(WebRequestMethods.Ftp.UploadFile, tmpfile, destinationfolder);
@@ -670,7 +670,7 @@ namespace MDDFoundation
                                 }
                                 else if (DebugLevel >= 5 && copyprogress.PercentComplete - lastpercent >= 0.1m)
                                 {
-                                    StatusUpdate(copyprogress.ToString(),5);
+                                    StatusUpdate(copyprogress.ToString(), 5);
                                     lastpercent = lastpercent + 0.1m;
                                 }
                             }
@@ -692,7 +692,7 @@ namespace MDDFoundation
 
                         if (MoveFile && currentbreakupfile == breakupfiles)
                         {
-                            list = List(TimeSpan.FromTicks(-1),destinationfolder).ToList();
+                            list = List(TimeSpan.FromTicks(-1), destinationfolder).ToList();
                             if (list.Exists(x => x.FileName.Equals(file.Name, StringComparison.OrdinalIgnoreCase)))
                                 file.Delete();
                             else
@@ -704,7 +704,7 @@ namespace MDDFoundation
                             copyprogress.IsCompleted = true;
                             progresscallback(copyprogress);
                         }
-                        StatusUpdate($"UploadFile: {copyprogress}",5);
+                        StatusUpdate($"UploadFile: {copyprogress}", 5);
                         StatusUpdate($"/UploadFile: {file.Name} (elapsed: {copyprogress.Stopwatch.ElapsedMilliseconds})", 5);
                     }
                 }
@@ -888,7 +888,7 @@ namespace MDDFoundation
                 Foundation.Log(update);
             }
         }
-        
+
         public static FileInfo CombineFile(FileInfo file, bool overwrite)
         {
             if (file.Name == "any_breakup_file")
@@ -1059,8 +1059,8 @@ namespace MDDFoundation
                 }
             }
 
-            
-            
+
+
             return f;
         }
     }

@@ -108,13 +108,13 @@ namespace MDDDataAccess
                 }
                 return rdr;
             }
-            catch (Exception ex) 
+            catch (Exception ex)
             {
                 if (LogErrors)
                 {
                     Foundation.Log("*****************************************************************", false, LogFileName);
-                    Foundation.Log("DBEngine command execution error in ExecuteReader:",false,LogFileName);
-                    Foundation.Log(ex.ToString(),false,LogFileName);
+                    Foundation.Log("DBEngine command execution error in ExecuteReader:", false, LogFileName);
+                    Foundation.Log(ex.ToString(), false, LogFileName);
                     Foundation.Log("Command Text:", false, LogFileName);
                     Debugcmd(cmd, sw);
                     Foundation.Log("*****************************************************************", false, LogFileName);
