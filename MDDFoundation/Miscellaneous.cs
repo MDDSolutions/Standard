@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -589,6 +590,16 @@ namespace MDDFoundation
             }
             return finalhash;
         }
+        public static async Task<List<FileInfo>> GetFilesAsync(this DirectoryInfo dir, string searchpattern = null, SearchOption searchoption = default)
+        {
+            List<FileInfo> files = new List<FileInfo>();
+            if (searchpattern == null) searchpattern = "*.*";
+            await Task.Run(() =>
+            {
+                files = dir.GetFiles(searchpattern, searchoption).ToList();
+            });
+            return files;
+        }
         public static string GenerateBase64EncryptionKey(int keySizeInBytes = 32)
         {
             if (keySizeInBytes != 16 && keySizeInBytes != 24 && keySizeInBytes != 32)
@@ -989,10 +1000,16 @@ namespace MDDFoundation
         {
             return value == compareValue ? null : value;
         }
-
         public static string NullIf(this string value)
         {
             return string.IsNullOrWhiteSpace(value) ? null : value;
+        }
+        public static bool IsSameAs<T>(this T ref1, T ref2)
+        {
+            foreach (var prop in typeof(T).GetProperties())
+                if (!StructuralComparisons.StructuralEqualityComparer.Equals(prop.GetValue(ref2), prop.GetValue(ref1)))
+                    return false;
+            return true;
         }
     }
     public class StringCIEqualityComparer : IEqualityComparer<string>
