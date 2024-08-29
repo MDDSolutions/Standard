@@ -49,7 +49,45 @@ namespace MDDDataAccess
                 throw new Exception("AdHoc commands are not allowed by this DBEngine");
             }
         }
+        public async Task ExecuteScriptAsync(string script, CancellationToken token)
+        {
+            if (AllowAdHoc)
+            {
+                // Remove block comments
+                string blockComments = @"/\*(.*?)\*/";
+                script = Regex.Replace(script, blockComments, "", RegexOptions.Singleline);
 
+                // Split script into separate commands
+                string[] commands = Regex.Split(script, @"(?<=^|[\r\n])\s*GO\s*($|[\r\n])", RegexOptions.Multiline | RegexOptions.IgnoreCase);
+
+                using (SqlConnection connection = getconnection())
+                {
+                    foreach (string command in commands)
+                    {
+                        if (token.IsCancellationRequested)
+                        {
+                            using (SqlCommand cmd = new SqlCommand("IF @@TRANCOUNT > 0 ROLLBACK;", connection))
+                            {
+                                await ExecuteNonQueryAsync(cmd, CancellationToken.None).ConfigureAwait(false);
+                            }
+                            break;
+                        }
+                        string trimmedCommand = command.Trim();
+                        if (!string.IsNullOrEmpty(trimmedCommand))
+                        {
+                            using (SqlCommand sqlCommand = new SqlCommand(trimmedCommand, connection))
+                            {
+                                await ExecuteNonQueryAsync(sqlCommand, token).ConfigureAwait(false);
+                            }
+                        }
+                    }
+                }
+            }
+            else
+            {
+                throw new Exception("AdHoc commands are not allowed by this DBEngine");
+            }
+        }
         private SqlDataReader ExecuteReader(SqlCommand cmd)
         {
             Stopwatch sw = null;

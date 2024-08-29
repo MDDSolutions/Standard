@@ -34,12 +34,14 @@ namespace MDDFoundation
                 }
                 else
                 {
-                    citem.lastaccessed = DateTime.Now;
-                    hitcount++;
                     if (citem != null)
+                    {
+                        citem.lastaccessed = DateTime.Now;
+                        hitcount++;
                         l.Add(citem);
+                    }
                     else
-                        throw new Exception("Image was expected to be in cache");
+                        throw new Exception($"Object '{qritem}' was expected to be in cache");
                 }
             }
             if (pruneminutes == null)

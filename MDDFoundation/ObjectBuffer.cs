@@ -40,12 +40,13 @@ namespace MDDFoundation
             create = newObject;
         }
 
-        public T GetObject(TCategory category)
+        public T GetObject(TCategory category, out bool reused)
         {
             if (buffer.TryGetValue(category, out var objects) && objects.TryTake(out var obj))
             {
                 inUse[obj] = category;
                 Interlocked.Increment(ref reuseCount);
+                reused = true;
                 return obj;
             }
             else
@@ -53,6 +54,7 @@ namespace MDDFoundation
                 var newObj = create(category);
                 inUse[newObj] = category;
                 Interlocked.Increment(ref newObjectCount);
+                reused = false;
                 return newObj;
             }
         }
@@ -94,10 +96,12 @@ namespace MDDFoundation
 
         public PooledObjectWrapper(TCategory category)
         {
-            _object = Buffer.GetObject(category);
+            _object = Buffer.GetObject(category, out bool reused);
+            Reused = reused;
         }
 
         public T Object => _object;
+        public bool Reused { get; private set; }
 
         public void Dispose()
         {
