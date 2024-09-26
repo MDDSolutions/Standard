@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 
 namespace MDDDataAccess
@@ -19,8 +20,8 @@ namespace MDDDataAccess
             return $"Count: {ExecutionCount:D4}, Elapsed: {CumulativeExecution}, Longest: {LongestExecution}, Shortest: {ShortestExecution} First: {FirstExecution}, Last: {LastExecution}, Command: {CommandText}";
         }
 
-
-        private static ConcurrentDictionary<string, CommandStat> stats = new ConcurrentDictionary<string, CommandStat>();
+        private static readonly ConcurrentDictionary<string, CommandStat> stats = new ConcurrentDictionary<string, CommandStat>();
+        private static readonly ConcurrentDictionary<string, object> locks = new ConcurrentDictionary<string, object>();
 
         public static void RecordStat(string text, TimeSpan elapsed)
         {
@@ -40,7 +41,8 @@ namespace MDDDataAccess
                 },
                 (txt, cs) =>
                 {
-                    lock (cs)
+                    var lockObject = locks.GetOrAdd(txt, _ => new object());
+                    lock (lockObject)
                     {
                         cs.ExecutionCount += 1;
                         cs.CumulativeExecution += elapsed;
@@ -54,15 +56,12 @@ namespace MDDDataAccess
         }
         public static List<CommandStat> List()
         {
-            var l = new List<CommandStat>();
-            foreach (var item in stats.Values)
-                l.Add(item);
-            return l;
+            return stats.Values.ToList();
         }
         public static string Report()
         {
             StringBuilder sb = new StringBuilder();
-            foreach (var item in stats.Values)
+            foreach (var item in stats.Values.OrderByDescending(x => x.CumulativeExecution))
             {
                 sb.AppendLine(item.ToString());
             }

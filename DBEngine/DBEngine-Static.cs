@@ -305,15 +305,7 @@ namespace MDDDataAccess
         }
         public static string PrintExecStatement(SqlCommand cmd)
         {
-
-            DBEngine engine;
-            if (instance == null)
-                engine = new DBEngine(cmd.Connection.ConnectionString, "PrintExecStatement");
-            else
-                engine = Default;
-
-
-            var plist = engine.ProcedureParameterList(cmd.CommandText);
+            var plist = ProcedureParameterList(cmd);
 
             var sb = new StringBuilder();
             StringBuilder sbselect = null;
@@ -335,9 +327,11 @@ namespace MDDDataAccess
                     sbselect.Append($" {procparm.name} AS {procparm.name.TrimStart('@')},");
                 }
             }
-            sb = new StringBuilder(sb.ToString().Trim().TrimEnd(',') + ";\r\n");
-            if (sbselect != null ) 
+            if (sbselect != null)
+            {
+                sb = new StringBuilder(sb.ToString().Trim().TrimEnd(',') + ";\r\n");
                 sbselect = new StringBuilder(sbselect.ToString().TrimEnd(',') + ';');
+            }
 
             sb.AppendLine($"EXEC {cmd.CommandText}");
             var lastcomma = 0;
@@ -370,7 +364,7 @@ namespace MDDDataAccess
             }
             var str = sb.ToString();
             if (lastcomment) str = str.Remove(str.LastIndexOf(','), 1);
-            str = str.Remove(lastcomma-1, 1);
+            str = str.Remove(lastcomma - 1, 1);
 
             sb = new StringBuilder(str);
 
@@ -381,6 +375,7 @@ namespace MDDDataAccess
         public static string PrintSqlValue(object obj)
         {
             if (obj == null) return "NULL";
+            if (obj == DBNull.Value) return "NULL";
             if (obj is string || obj is DateTime) return $"'{obj}'";
             return obj.ToString();
         }

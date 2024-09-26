@@ -1054,9 +1054,9 @@ namespace MDDDataAccess
                 return SqlRunQueryWithResults<ProcedureParameter>(
                     @"  DECLARE @id INT = OBJECT_ID(@procname);
                         IF (OBJECTPROPERTY(@id,'IsProcedure') = 1)
-	                        SELECT p.name, is_output, has_default_value, t.name AS type_name, p.max_length, p.precision, p.scale FROM sys.parameters p JOIN sys.types t ON t.system_type_id = p.system_type_id WHERE object_id = @id;
+	                        SELECT p.name, is_output, has_default_value, t.name AS type_name, p.max_length, p.precision, p.scale FROM sys.parameters p JOIN sys.types t ON t.user_type_id = p.system_type_id WHERE object_id = @id;
                         ELSE
-	                        SELECT '@' + c.name AS name, CAST(c.default_object_id AS BIT) AS has_default_value, c.is_identity, t.name AS type_name, c.max_length, c.precision, c.scale FROM sys.columns c JOIN sys.types t ON t.system_type_id = c.system_type_id WHERE OBJECT_ID = @id;",
+	                        SELECT '@' + c.name AS name, CAST(c.default_object_id AS BIT) AS has_default_value, c.is_identity, t.name AS type_name, c.max_length, c.precision, c.scale FROM sys.columns c JOIN sys.types t ON t.user_type_id = c.system_type_id WHERE OBJECT_ID = @id;",
                     false, -1, null, new SqlParameter("@procname", procname));
             }
             catch (Exception ex)
@@ -1067,6 +1067,35 @@ namespace MDDDataAccess
             {
                 AllowAdHoc = allowadhoc;
             }
+        }
+        public static IList<ProcedureParameter> ProcedureParameterList(SqlCommand incmd)
+        {
+            if (incmd.CommandType != CommandType.StoredProcedure) throw new ArgumentException("Command must be a stored procedure.");
+
+            var l = new List<ProcedureParameter>();
+            using (SqlConnection cn = new SqlConnection(incmd.Connection.ConnectionString))
+            using (SqlCommand cmd = new SqlCommand(@"SELECT p.name, is_output, has_default_value, t.name AS type_name, p.max_length, p.precision, p.scale FROM sys.parameters p JOIN sys.types t ON t.user_type_id = p.system_type_id WHERE object_id = OBJECT_ID(@procname);", cn))
+            {
+                cn.Open();
+                cmd.Parameters.AddWithValue("@procname", incmd.CommandText);
+
+                using (SqlDataReader rdr = cmd.ExecuteReader())
+                    while (rdr.Read())
+                    {
+                        var i = new ProcedureParameter
+                        {
+                            name = Convert.IsDBNull(rdr["name"]) ? default(String) : Convert.ToString(rdr["name"]),
+                            is_output = Convert.ToBoolean(rdr["is_output"]),
+                            has_default_value = Convert.ToBoolean(rdr["has_default_value"]),
+                            type_name = Convert.ToString(rdr["type_name"]),
+                            max_length = Convert.ToInt16(rdr["max_length"]),
+                            precision = Convert.ToByte(rdr["precision"]),
+                            scale = Convert.ToByte(rdr["scale"])
+                        };
+                        l.Add(i);
+                    }
+            }
+            return l;
         }
         public SqlParameter[] AutoParam(object obj, string procname)
         {
