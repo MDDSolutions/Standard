@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -12,6 +13,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -141,21 +143,37 @@ namespace MDDFoundation
                 return false;
             }
         }
-        public static bool TryParseDateTime(string text, out DateTime dt)
+        public static bool TryParseDateTime(string dateString, out DateTime dt)
         {
-            if (DateTime.TryParse(text, out dt)) return true;
-            if (text.Substring(9,1) == ":")
+            dateString = dateString.Trim();
+            dateString = dateString.Trim('•');
+            // First, try to parse the date using the regular DateTime.TryParse
+            if (DateTime.TryParse(dateString, out dt))
             {
-                if (DateTime.TryParse($"{text.Substring(0, 6)}, {DateTime.Now.Year}", out dt))
+                if (dateString.Contains(dt.Day.ToString()))
+                    return true;
+            }
+            if (dateString.Length > 9 && dateString.Substring(9,1) == ":")
+            {
+                if (DateTime.TryParse($"{dateString.Substring(0, 6)}, {DateTime.Now.Year}", out dt))
                 {
-                    if (TimeSpan.TryParse(text.Substring(7), out TimeSpan ts))
+                    if (TimeSpan.TryParse(dateString.Substring(7), out TimeSpan ts))
                     {
                         dt = dt + ts;
                     }
                     return true;
                 }
             }
-            return false;
+
+            // If regular parsing fails, remove the suffix from the day part
+            string cleanedDateString = Regex.Replace(dateString, @"\b(\d{1,2})(st|nd|rd|th)\b", "$1");
+
+            // Define the format of the cleaned date string
+            string format = "d MMM yyyy";
+            CultureInfo provider = CultureInfo.InvariantCulture;
+
+            // Try to parse the cleaned date string
+            return DateTime.TryParseExact(cleanedDateString, format, provider, DateTimeStyles.None, out dt);
         }
         public static double Subtract(this Point pnt1, Point pnt2)
         {
