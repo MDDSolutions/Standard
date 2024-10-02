@@ -541,9 +541,45 @@ namespace MDDDataAccess
                 }
             }
         }
+        //public DataTable SqlRunQueryWithResultsDataTable(string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list)
+        //{
+        //    if (!IsProcedure && !AllowAdHoc) throw new Exception("Ad Hoc Queries are not allowed by this DBEngine");
+        //    using (var cn = getconnection(ConnectionTimeout, ApplicationName))
+        //    {
+        //        if (cn != null)
+        //        {
+        //            var dt = new DataTable();
+        //            using (SqlCommand cmd = new SqlCommand(cmdtext, cn))
+        //            {
+        //                cmd.CommandTimeout = CommandTimeout;
+        //                if (IsProcedure) cmd.CommandType = CommandType.StoredProcedure;
+        //                ParameterizeCommand(list, cmd);
+        //                using (SqlDataReader rdr = ExecuteReader(cmd))
+        //                {
+        //                    for (int i = 0; i < rdr.FieldCount; i++)
+        //                    {
+        //                        dt.Columns.Add(rdr.GetName(i));
+        //                    }
+        //                    while (rdr.Read())
+        //                    {
+        //                        var items = new string[rdr.FieldCount];
+        //                        for (int i = 0; i < rdr.FieldCount; i++)
+        //                        {
+        //                            items[i] = rdr.GetValue(i).ToString();
+        //                        }
+        //                        dt.Rows.Add(items);
+        //                    }
+        //                }
+        //            }
+        //            return dt;
+        //        }
+        //    }
+        //    throw new Exception("Something went wrong");
+        //}
         public DataTable SqlRunQueryWithResultsDataTable(string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list)
         {
             if (!IsProcedure && !AllowAdHoc) throw new Exception("Ad Hoc Queries are not allowed by this DBEngine");
+
             using (var cn = getconnection(ConnectionTimeout, ApplicationName))
             {
                 if (cn != null)
@@ -554,21 +590,10 @@ namespace MDDDataAccess
                         cmd.CommandTimeout = CommandTimeout;
                         if (IsProcedure) cmd.CommandType = CommandType.StoredProcedure;
                         ParameterizeCommand(list, cmd);
-                        using (SqlDataReader rdr = ExecuteReader(cmd))
+
+                        using (SqlDataAdapter adapter = new SqlDataAdapter(cmd))
                         {
-                            for (int i = 0; i < rdr.FieldCount; i++)
-                            {
-                                dt.Columns.Add(rdr.GetName(i));
-                            }
-                            while (rdr.Read())
-                            {
-                                var items = new string[rdr.FieldCount];
-                                for (int i = 0; i < rdr.FieldCount; i++)
-                                {
-                                    items[i] = rdr.GetValue(i).ToString();
-                                }
-                                dt.Rows.Add(items);
-                            }
+                            adapter.Fill(dt);
                         }
                     }
                     return dt;
@@ -576,6 +601,32 @@ namespace MDDDataAccess
             }
             throw new Exception("Something went wrong");
         }
+        public async Task<DataTable> SqlRunQueryWithResultsDataTableAsync(string cmdtext, bool IsProcedure, CancellationToken cancellationToken, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list)
+        {
+            if (!IsProcedure && !AllowAdHoc) throw new Exception("Ad Hoc Queries are not allowed by this DBEngine");
+
+            using (var cn = await getconnectionasync(cancellationToken, ConnectionTimeout, ApplicationName).ConfigureAwait(false))
+            {
+                if (cn != null)
+                {
+                    var dt = new DataTable();
+                    using (SqlCommand cmd = new SqlCommand(cmdtext, cn))
+                    {
+                        cmd.CommandTimeout = CommandTimeout;
+                        if (IsProcedure) cmd.CommandType = CommandType.StoredProcedure;
+                        ParameterizeCommand(list, cmd);
+
+                        using (SqlDataAdapter adapter = new SqlDataAdapter(cmd))
+                        {
+                            await Task.Run(() => adapter.Fill(dt), cancellationToken).ConfigureAwait(false);
+                        }
+                    }
+                    return dt;
+                }
+            }
+            throw new Exception("Something went wrong");
+        }
+
         public IList<T> SqlRunQueryWithResults<T>(string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T : new()
         {
             if (!IsProcedure && !AllowAdHoc) throw new Exception("Ad Hoc Queries are not allowed by this DBEngine");

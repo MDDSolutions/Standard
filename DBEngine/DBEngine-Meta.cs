@@ -32,7 +32,7 @@ namespace MDDDataAccess
             AllowAdHoc = allowadhoc;
             return r;
         }
-        private static SqlDbType GetSqlType(Type type)
+        public static SqlDbType GetSqlType(Type type)
         {
             SqlDbType val;
 
@@ -97,6 +97,66 @@ namespace MDDDataAccess
             // Please refer to the following document to add other types
             // http://msdn.microsoft.com/en-us/library/ms131092.aspx
             return val;
+        }
+        public static SqlDbType GetSqlType(string sqltypename)
+        {
+            switch (sqltypename.ToLower())
+            {
+                case "bigint":
+                    return SqlDbType.BigInt;
+                case "binary":
+                case "varbinary":
+                    return SqlDbType.Binary;
+                case "bit":
+                    return SqlDbType.Bit;
+                case "char":
+                case "nchar":
+                    return SqlDbType.Char;
+                case "date":
+                    return SqlDbType.Date;
+                case "datetime":
+                    return SqlDbType.DateTime;
+                case "datetime2":
+                    return SqlDbType.DateTime2;
+                case "datetimeoffset":
+                    return SqlDbType.DateTimeOffset;
+                case "decimal":
+                case "numeric": // SqlDbType.Numeric is an alias for SqlDbType.Decimal
+                    return SqlDbType.Decimal;
+                case "float":
+                    return SqlDbType.Float;
+                case "image":
+                    return SqlDbType.Image;
+                case "int":
+                    return SqlDbType.Int;
+                case "money":
+                case "smallmoney":
+                    return SqlDbType.Money;
+                case "ntext":
+                case "text":
+                    return SqlDbType.Text;
+                case "nvarchar":
+                case "varchar":
+                    return SqlDbType.VarChar;
+                case "real":
+                    return SqlDbType.Real;
+                case "smalldatetime":
+                    return SqlDbType.SmallDateTime;
+                case "smallint":
+                    return SqlDbType.SmallInt;
+                case "time":
+                    return SqlDbType.Time;
+                case "timestamp":
+                    return SqlDbType.Timestamp;
+                case "tinyint":
+                    return SqlDbType.TinyInt;
+                case "uniqueidentifier":
+                    return SqlDbType.UniqueIdentifier;
+                case "xml":
+                    return SqlDbType.Xml;
+                default:
+                    throw new ArgumentException($"Unmapped SQL type: {sqltypename}");
+            }
         }
         public static string GetFullSqlTypeName(string typeName, int max_length, int precision, int scale)
         {

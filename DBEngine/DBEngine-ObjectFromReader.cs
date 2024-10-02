@@ -12,6 +12,7 @@ namespace MDDDataAccess
 {
     public partial class DBEngine
     {
+        public bool EnumParseIgnoreCase { get; set; } = true;
         public void ObjectFromReader<T>(SqlDataReader rdr, ref List<Tuple<Action<object, object>, string>> map, ref PropertyInfo key, ref T r, ref IObjectTracker tracker) where T : new()
         {
             if (r == null) r = new T();
@@ -146,7 +147,7 @@ namespace MDDDataAccess
                             if (o is int)
                                 item.SetValue(r, Enum.ToObject(item.PropertyType, o));
                             else
-                                item.SetValue(r, Enum.Parse(item.PropertyType, o.ToString()));
+                                item.SetValue(r, Enum.Parse(item.PropertyType, o.ToString(), EnumParseIgnoreCase));
                         }
                         else
                             item.SetValue(r, default);

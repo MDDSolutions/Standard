@@ -249,7 +249,7 @@ namespace MDDFoundation
 
         public ListSortDescriptionCollection SortDescriptions => throw new NotImplementedException();
 
-        public bool SupportsAdvancedSorting => throw new NotImplementedException();
+        public bool SupportsAdvancedSorting => false; // throw new NotImplementedException();
 
         public void ApplySort(ListSortDescriptionCollection sorts)
         {

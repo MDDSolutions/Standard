@@ -74,6 +74,32 @@ namespace MDDFoundation
             if (!fi.Exists) r.Save();
             return r;
         }
+        public static List<T> FindConfigurations<T>(string path = null) where T : CustomConfiguration, new()
+        {
+            List<T> result = null;
+            if (string.IsNullOrEmpty(path))
+            {
+                var fi = new FileInfo(System.Reflection.Assembly.GetExecutingAssembly().Location);
+                path = fi.DirectoryName;
+            }
+            foreach (var file in Directory.GetFiles(path, "*.xml"))
+            {
+                using (Stream stream = File.OpenRead(file))
+                {
+                    try
+                    {
+                        XmlSerializer ser = new XmlSerializer(typeof(T));
+                        var r = (T)ser.Deserialize(stream);
+                        if (result == null) result = new List<T>();
+                        result.Add(r);
+                    }
+                    catch (InvalidOperationException)
+                    {
+                    }
+                }
+            }
+            return result;
+        }
         public string FileName { get; set; }
         public static string FullFileName(string filename)
         {
