@@ -17,29 +17,69 @@ namespace MDDDataAccess
         #region Initialization
         private DataView dataView;
         private SqlDataAdapter dataAdapter;
-        private void Initialize(DataTable dataTable)
+        private void Initialize()
         {
-            dataView = dataTable.DefaultView;
             if (!UpdateCurrentRow(0)) throw new Exception("Table is empty");
             NextCommand = new RelayCommand(Next, CanMoveNext);
             PreviousCommand = new RelayCommand(Previous, CanMovePrevious);
             SaveCommand = new RelayCommand(Save, CanSave);
             InsertCommand = new RelayCommand(Insert, CanInsert);
             DeleteCommand = new RelayCommand(Delete, CanDelete);
+            FirstCommand = new RelayCommand(First, CanMoveFirst);
+            LastCommand = new RelayCommand(Last, CanMoveLast);
         }
-        public TableViewModel(DataTable dataTable) => Initialize(dataTable);
+        public TableViewModel(DataTable dataTable)
+        {
+            dataView = dataTable.DefaultView;
+            Initialize();
+        }
         public TableViewModel(SqlDataAdapter adapter)
         {
             dataAdapter = adapter;
             DataTable dataTable = new DataTable();
             dataAdapter.Fill(dataTable);
+            dataView = dataTable.DefaultView;
 
-            Initialize(dataTable);
+            Initialize();
         }
-        public TableViewModel(SqlDataAdapter adapter, IEnumerable<IColumnDefinition> columns) : this(adapter)
+        public TableViewModel(TableDefinition table, string connectionstring, string selectstatement = null)
         {
-            ColumnList = columns;
+            SqlDataAdapter adapter;
+            if (selectstatement != null)
+                adapter = new SqlDataAdapter(selectstatement, connectionstring);
+            else
+            {
+                var cn = new SqlConnection(connectionstring);
+                var cmd = table.GetSelectCommand();
+                cmd.Connection = cn;
+                adapter = new SqlDataAdapter(cmd);
+            }
+
+            tabledefinition = table;
+
+
+            //var cmdbuilder = new SqlCommandBuilder(adapter);
+            //var cmd = cmdbuilder.GetUpdateCommand(true);
+
+            adapter.UpdateCommand = table.GetUpdateCommand();
+            adapter.UpdateCommand.UpdatedRowSource = UpdateRowSource.FirstReturnedRecord;
+            adapter.UpdateCommand.Connection = adapter.SelectCommand.Connection;
+
+            adapter.InsertCommand = table.GetInsertCommand();
+            adapter.InsertCommand.UpdatedRowSource = UpdateRowSource.FirstReturnedRecord;
+            adapter.InsertCommand.Connection = adapter.SelectCommand.Connection;
+
+            adapter.DeleteCommand = table.GetDeleteCommand();
+            adapter.DeleteCommand.Connection = adapter.SelectCommand.Connection;
+
+            dataAdapter = adapter;
+            DataTable dataTable = new DataTable();
+            dataAdapter.Fill(dataTable);
+            dataView = dataTable.DefaultView;
+
+            Initialize();
         }
+
         #endregion
 
         #region events and properties
@@ -63,34 +103,59 @@ namespace MDDDataAccess
                 }
             }
         }
+        private string filter;
         public string Filter
         {
-            get => dataView.RowFilter;
+            get => filter;
             set
             {
-                if (UpdateCurrentRow(0))
-                {
-                    dataView.RowFilter = value;
-                    OnPropertyChanged();
-                    UpdateCurrentRow(0);
-                }
+                filter = value;
+                UpdateFilter();
             }
         }
-        private IEnumerable<IColumnDefinition> columnList;
-        public IEnumerable<IColumnDefinition> ColumnList 
+        DateTime lastFilterUpdate = DateTime.MaxValue;
+        private async void UpdateFilter()
+        {
+            lastFilterUpdate = DateTime.Now;
+            await Task.Delay(600);
+            var now = DateTime.Now;
+            if (lastFilterUpdate.AddMilliseconds(595) < now && UpdateCurrentRow(0))
+            {
+                var expr = string.Empty;
+                if (!string.IsNullOrWhiteSpace(filter))
+                foreach (var item in tabledefinition.Columns)
+                {
+                    var clrType = DBEngine.GetClrType(item.SqlDbType);
+                    if (clrType == typeof(string))
+                    {
+                        if (expr != string.Empty) expr += " OR ";
+                        expr += $"[{item.Name}] LIKE '%{filter}%'";
+                    }
+                    else if (clrType == typeof(DateTime) || clrType == typeof(int) || clrType == typeof(decimal) || clrType == typeof(float) || clrType == typeof(double) || clrType == typeof(long) || clrType == typeof(byte) || clrType == typeof(short))
+                    {
+                        if (expr != string.Empty) expr += " OR ";
+                        expr += $"CONVERT([{item.Name}], 'System.String') LIKE '%{filter}%'";
+                    }
+                }
+                dataView.RowFilter = expr;
+                OnPropertyChanged("Filter");
+                UpdateCurrentRow(-1);
+            }
+        }
+        private TableDefinition tabledefinition;
+        public IEnumerable<ColumnDefinition> ColumnList 
         {
             get
             {
-                if (columnList == null)
+                if (tabledefinition == null && tabledefinition.Columns == null)
                 {
-                    columnList = dataView.Table.Columns
+                    return dataView.Table.Columns
                         .Cast<DataColumn>()
                         .Select(column => new ColumnDefinition { Name = column.ColumnName })
                         .ToList();
                 }
-                return columnList;
+                return tabledefinition.Columns;
             }
-            set => columnList = value;
         }
         public Func<bool?> SaveChanges { get; set; } = () => true;
         public int CurrentRowIndex 
@@ -109,6 +174,8 @@ namespace MDDDataAccess
         public ICommand SaveCommand { get; private set; }
         public ICommand InsertCommand { get; private set; }
         public ICommand DeleteCommand { get; private set; }
+        public ICommand FirstCommand { get; private set; }
+        public ICommand LastCommand { get; private set; }
         public event PropertyChangedEventHandler PropertyChanged;
         protected void OnPropertyChanged([CallerMemberName] string propertyName = null)
         {
@@ -147,11 +214,6 @@ namespace MDDDataAccess
                     bool? result = SaveChanges();
                     if (result == true)
                     {
-                        if (newindex == -1)
-                        {
-                            newindex = currentIndex > 0 ? currentIndex - 1 : 0;
-                            oldindex = -1;
-                        }
                         Save();
                     }
                     else if (result == false)
@@ -169,9 +231,16 @@ namespace MDDDataAccess
                     }
                 }
             }
+            if (newindex == -1)
+            {
+                newindex = currentIndex;
+                oldindex = -1;
+            }
+
             if (dataView.Count > 0)
             {
                 currentIndex = Math.Min(newindex, dataView.Count - 1);
+                if (currentIndex < 0) currentIndex = 0;
                 currentRow = dataView[currentIndex];
             }
             else
@@ -179,15 +248,15 @@ namespace MDDDataAccess
                 currentIndex = -1;
                 currentRow = null;
             }
-            if (oldindex != currentIndex)
+            if (oldindex != currentIndex || currentIndex == -1)
             {
                 OnPropertyChanged("CurrentRow");
                 OnPropertyChanged("RowCount");
                 OnPropertyChanged("CurrentRowIndex");
                 (NextCommand as RelayCommand)?.RaiseCanExecuteChanged();
-                (PreviousCommand as RelayCommand)?.RaiseCanExecuteChanged();       
-                //(InsertCommand as RelayCommand)?.RaiseCanExecuteChanged();
-                //(DeleteCommand as RelayCommand)?.RaiseCanExecuteChanged();
+                (PreviousCommand as RelayCommand)?.RaiseCanExecuteChanged();
+                (FirstCommand as RelayCommand)?.RaiseCanExecuteChanged();
+                (LastCommand as RelayCommand)?.RaiseCanExecuteChanged();
                 (SaveCommand as RelayCommand)?.RaiseCanExecuteChanged();
             }
             return true;
@@ -196,11 +265,51 @@ namespace MDDDataAccess
         private bool CanMoveNext() => currentIndex < dataView.Count - 1;
         private void Previous() { if (currentIndex > 0) UpdateCurrentRow(currentIndex - 1); }
         private bool CanMovePrevious() => currentIndex > 0;
+        private void First() { UpdateCurrentRow(0); }
+        private bool CanMoveFirst() => currentIndex > 0;
+        private void Last() { UpdateCurrentRow(dataView.Count - 1); }
+        private bool CanMoveLast() => currentIndex < dataView.Count - 1;
         private void Save()
         {
             currentRow?.BeginEdit();
             currentRow?.EndEdit();
-            dataAdapter.Update(dataView.Table);
+            try
+            {
+                dataAdapter.Update(dataView.Table);
+            }
+            catch (DBConcurrencyException ex)
+            {
+                Console.WriteLine($"Concurrency error: {ex.Message}");
+                using (var tmpadapter = new SqlDataAdapter(tabledefinition.GetSelectCommandByID()))
+                {
+                    tmpadapter.SelectCommand.Connection = dataAdapter.SelectCommand.Connection;
+                    foreach (SqlParameter p in tmpadapter.SelectCommand.Parameters)
+                    {
+                        p.Value = ex.Row[p.SourceColumn, DataRowVersion.Original];
+                    }
+                    DataTable tmpTable = new DataTable();
+                    tmpadapter.Fill(tmpTable);
+                    if (tmpTable.Rows.Count == 1)
+                    {
+                        ex.Row.ItemArray = tmpTable.Rows[0].ItemArray;
+                        ex.Row.AcceptChanges();
+                        throw new Exception("Concurrency Error - Row has been reloaded - changes have been discarded");
+                    }
+                    else
+                    {
+                        //dataView.Table.Rows.Remove(ex.Row);
+                        //dataView.Delete(currentIndex);
+                        if (ex.Row.RowState != DataRowState.Deleted)
+                        {
+                            dataView.Table.Rows.Remove(ex.Row);
+                        }
+                        dataView.Table.AcceptChanges();
+                        currentRow = null;
+                        UpdateCurrentRow(-1);
+                        throw new Exception("Concurrency Error - Row has been deleted");
+                    }
+                }
+            }
             (SaveCommand as RelayCommand)?.RaiseCanExecuteChanged();
         }
         private bool CanSave()
@@ -284,5 +393,9 @@ namespace MDDDataAccess
         {
             canExecuteChanged?.Invoke(this, EventArgs.Empty);
         }
+    }
+    public enum ViewModelQueryType
+    {
+        All, FullText, Indexed
     }
 }
