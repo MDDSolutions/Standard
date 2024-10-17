@@ -17,14 +17,12 @@ namespace MDDFoundation
         private bool _isSorted;
         private ListSortDirection _sortDirection = ListSortDirection.Ascending;
         private PropertyDescriptor _sortProperty;
-
         /// <summary>
         /// Initializes a new instance of the <see cref="SortableBindingList{T}"/> class.
         /// </summary>
         public SortableBindingList()
         {
         }
-
         /// <summary>
         /// Initializes a new instance of the <see cref="SortableBindingList{T}"/> class.
         /// </summary>
@@ -61,7 +59,6 @@ namespace MDDFoundation
         {
             get { return _sortProperty; }
         }
-
         /// <summary>
         /// Removes any sort applied with ApplySortCore if sorting is implemented
         /// </summary>
@@ -121,7 +118,6 @@ namespace MDDFoundation
             //not comparable, compare ToString
             return lhsValue.ToString().CompareTo(rhsValue.ToString());
         }
-
         public delegate void ItemRemovedHandler(T ItemRemoved);
         public event ItemRemovedHandler ItemRemoved;
         protected override void RemoveItem(int index)
@@ -133,7 +129,6 @@ namespace MDDFoundation
             }
             base.RemoveItem(index);
         }
-
         public delegate void ItemInsertedHandler(T ItemInserted);
         public event ItemInsertedHandler ItemInserted;
         protected override void InsertItem(int index, T item)
@@ -142,9 +137,6 @@ namespace MDDFoundation
             if (ItemInserted != null)
                 ItemInserted(item);
         }
-
-
-
         private List<T> originalitems = null;
         public bool SupportsFiltering => true;
         private string filter = null;
@@ -245,18 +237,11 @@ namespace MDDFoundation
                 OnListChanged(new ListChangedEventArgs(ListChangedType.Reset, -1));
             }
         }
-
-
         public ListSortDescriptionCollection SortDescriptions => throw new NotImplementedException();
-
         public bool SupportsAdvancedSorting => false; // throw new NotImplementedException();
-
         public void ApplySort(ListSortDescriptionCollection sorts)
         {
             throw new NotImplementedException();
         }
-
-
     }
-
 }
