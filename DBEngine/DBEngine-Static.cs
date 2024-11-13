@@ -340,7 +340,7 @@ namespace MDDDataAccess
             {
                 foreach (var procparm in plist)
                 {
-                    var cmdparm = cmd.Parameters.OfType<SqlParameter>().Where(x => x.ParameterName.Equals(procparm.name, StringComparison.OrdinalIgnoreCase)).FirstOrDefault();
+                    var cmdparm = cmd.Parameters.OfType<SqlParameter>().Where(x => x.ParameterName.TrimStart('@').Equals(procparm.name.TrimStart('@'), StringComparison.OrdinalIgnoreCase)).FirstOrDefault();
                     if (cmdparm == null)
                     {
                         sb.AppendLine($"\t--{procparm.name} = NULL,\t\t--{procparm.SQLDataTypeString()}");
@@ -355,7 +355,7 @@ namespace MDDDataAccess
                     }
                     else
                     {
-                        sb.Append($"\t{procparm.name} = {PrintSqlValue(cmdparm.Value)},");
+                        sb.Append($"\t{(procparm.name.StartsWith("@") ? procparm.name : $"@{procparm.name}")} = {PrintSqlValue(cmdparm.Value)},");
                         lastcomma = sb.Length;
                         sb.AppendLine($"\t\t--{procparm.SQLDataTypeString()}");
                         lastcomment = false;

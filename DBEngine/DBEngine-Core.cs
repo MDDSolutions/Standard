@@ -939,6 +939,7 @@ namespace MDDDataAccess
                         }
                         catch (Exception ex)
                         {
+                            DBEngine.PrintExecStatement(cmd);
                             throw ex;
                         }
                     }
@@ -1157,18 +1158,25 @@ namespace MDDDataAccess
             foreach (var item in paramlist)
             {
                 var value = item.ObjectProperty.GetValue(obj);
-                SqlParameter p;
+                //2024-10-26: using GetSqlDbType instead of auto-detecting the type with just name/value because length/size was being set to 0 particularly when there was no value
+                SqlParameter p = new SqlParameter(item.name, item.GetSqlDbType(), item.max_length);
                 if (value == null)
                 {
-                    p = new SqlParameter(item.name, DBNull.Value);
+                    //p = new SqlParameter(item.name, DBNull.Value);
                     if (!item.ObjectProperty.PropertyType.FullName.Contains("System"))
-                        p.SqlDbType = SqlDbType.VarBinary;
+                    {
+                        if (p.SqlDbType != SqlDbType.VarBinary) throw new Exception("why is this not varbinary?");
+                    }
                     if (item.ObjectProperty.PropertyType.FullName.Contains("Byte[]"))
-                        p.SqlDbType = SqlDbType.Binary;
+                    {
+                        if (p.SqlDbType != SqlDbType.Binary) throw new Exception("why is this not binary?");
+                    }
+                    p.Value = DBNull.Value;
                 }
                 else
                 {
-                    p = new SqlParameter(item.name, value);
+                    //p = new SqlParameter(item.name, value);
+                    p.Value = value;
                 }
                 if (item.is_output) p.Direction = ParameterDirection.InputOutput;
                 sqlparams.Add(p);

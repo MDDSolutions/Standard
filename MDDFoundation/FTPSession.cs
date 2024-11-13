@@ -31,6 +31,11 @@ namespace MDDFoundation
             }
         }
 
+        private static DateTime LastAbortCancelError = DateTime.MinValue;
+        private static int AbortCancelErrorCount = 0;
+
+        public static int AbortCancelErrorThreshold { get; set; } = 25;
+        public static TimeSpan AbortCancelErrorTimeSpan { get; set; } = TimeSpan.FromMinutes(20);
 
         private ConcurrentDictionary<string, RemoteFileList> filelists = new ConcurrentDictionary<string, RemoteFileList>();
         public int DebugLevel { get; set; } = 1;
@@ -402,6 +407,29 @@ namespace MDDFoundation
                 if (ex.Message.Contains("(425) Can't open data connection"))
                 {
                     StatusUpdate($"ERROR in FTPSession.UploadFileFragmentAsync: Could not open data connection for {copyprogress.FileName} - this is a recoverable error if there is retry logic calling this method - BytesCopied: {copyprogress.BytesCopied} / {copyprogress.FileSizeBytes} Complete: {copyprogress.IsCompleted}", 15);
+                }
+                else if (ex.Message.Contains("System.Net.WebException: The request was aborted: The request was canceled"))
+                {
+                    if (DateTime.Now - LastAbortCancelError < AbortCancelErrorTimeSpan)
+                    {
+                        AbortCancelErrorCount++;
+                        LastAbortCancelError = DateTime.Now;
+                        if (AbortCancelErrorCount > AbortCancelErrorThreshold)
+                        {
+                            StatusUpdate($"ERROR in FTPSession.UploadFileFragmentAsync: AbortCancelErrorThreshold of {AbortCancelErrorThreshold} has been exceeded within AbortCancelErrorTimeSpan of {AbortCancelErrorTimeSpan}", 16);
+                            throw new ApplicationException($"ERROR in FTPSession.UploadFileFragmentAsync: AbortCancelErrorThreshold of {AbortCancelErrorThreshold} has been exceeded within AbortCancelErrorTimeSpan of {AbortCancelErrorTimeSpan}");
+                        }
+                        else
+                        {
+                            StatusUpdate($"ERROR in FTPSession.UploadFileFragmentAsync: AbortCancelError {AbortCancelErrorCount} / {AbortCancelErrorThreshold}", 15);
+                        }
+                    }
+                    else
+                    {
+                        LastAbortCancelError = DateTime.Now;
+                        AbortCancelErrorCount = 1;
+                        StatusUpdate($"ERROR in FTPSession.UploadFileFragmentAsync: AbortCancelError {AbortCancelErrorCount} / {AbortCancelErrorThreshold}", 15);
+                    }
                 }
                 else
                 {

@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Data;
 using System.Data.SqlClient;
 using System.Linq;
 using System.Reflection;
@@ -27,22 +28,27 @@ namespace MDDDataAccess
         public byte precision { get; set; }
         public byte scale { get; set; }
 
+        public SqlDbType GetSqlDbType()
+        {
+            return DBEngine.GetSqlType(type_name);
+        }
         public string SQLDataTypeString()
         {
-            if (type_name.Equals("decimal", StringComparison.OrdinalIgnoreCase) || type_name.Equals("numeric", StringComparison.OrdinalIgnoreCase))
-                return $"{type_name}({precision}, {scale})";
-            if (type_name.Equals("varchar", StringComparison.OrdinalIgnoreCase) 
-                || type_name.Equals("char", StringComparison.OrdinalIgnoreCase)
-                || type_name.Equals("nvarchar", StringComparison.OrdinalIgnoreCase)
-                || type_name.Equals("nchar", StringComparison.OrdinalIgnoreCase)
-                || type_name.Equals("varbinary", StringComparison.OrdinalIgnoreCase))
-            {
-                if (max_length == -1)
-                    return $"{type_name}(max)";
-                else
-                    return $"{type_name}({max_length})";
-            }
-            return type_name;
+            return DBEngine.GetFullSqlTypeName(type_name, max_length, precision, scale);
+            //if (type_name.Equals("decimal", StringComparison.OrdinalIgnoreCase) || type_name.Equals("numeric", StringComparison.OrdinalIgnoreCase))
+            //    return $"{type_name}({precision}, {scale})";
+            //if (type_name.Equals("varchar", StringComparison.OrdinalIgnoreCase) 
+            //    || type_name.Equals("char", StringComparison.OrdinalIgnoreCase)
+            //    || type_name.Equals("nvarchar", StringComparison.OrdinalIgnoreCase)
+            //    || type_name.Equals("nchar", StringComparison.OrdinalIgnoreCase)
+            //    || type_name.Equals("varbinary", StringComparison.OrdinalIgnoreCase))
+            //{
+            //    if (max_length == -1)
+            //        return $"{type_name}(max)";
+            //    else
+            //        return $"{type_name}({max_length})";
+            //}
+            //return type_name;
         }
 
 
