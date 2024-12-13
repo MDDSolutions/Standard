@@ -171,7 +171,33 @@ namespace MDDFoundation
                 }
                 catch (Exception ex)
                 {
-                    throw ex;
+                    if (ex.Message.Contains("System.Net.WebException: The request was aborted: The request was canceled"))
+                    {
+                        if (DateTime.Now - LastAbortCancelError < AbortCancelErrorTimeSpan)
+                        {
+                            AbortCancelErrorCount++;
+                            LastAbortCancelError = DateTime.Now;
+                            if (AbortCancelErrorCount > AbortCancelErrorThreshold)
+                            {
+                                StatusUpdate($"ERROR in FTPSession.UploadFileFragmentAsync: AbortCancelErrorThreshold of {AbortCancelErrorThreshold} has been exceeded within AbortCancelErrorTimeSpan of {AbortCancelErrorTimeSpan}", 16);
+                                throw new ApplicationException($"ERROR in FTPSession.UploadFileFragmentAsync: AbortCancelErrorThreshold of {AbortCancelErrorThreshold} has been exceeded within AbortCancelErrorTimeSpan of {AbortCancelErrorTimeSpan}");
+                            }
+                            else
+                            {
+                                StatusUpdate($"ERROR in FTPSession.UploadFileFragmentAsync: AbortCancelError {AbortCancelErrorCount} / {AbortCancelErrorThreshold}", 15);
+                            }
+                        }
+                        else
+                        {
+                            LastAbortCancelError = DateTime.Now;
+                            AbortCancelErrorCount = 1;
+                            StatusUpdate($"ERROR in FTPSession.UploadFileFragmentAsync: AbortCancelError {AbortCancelErrorCount} / {AbortCancelErrorThreshold}", 15);
+                        }
+                    }
+                    else
+                    {
+                        throw ex;
+                    }
                 }
                 finally
                 {
