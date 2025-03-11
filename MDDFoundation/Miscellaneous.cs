@@ -148,6 +148,13 @@ namespace MDDFoundation
         {
             dateString = dateString.Trim();
             dateString = dateString.Trim('•');
+
+            if (dateString.Length > 20 && dateString.Contains("(") && dateString.Contains(")"))
+            {
+                dateString = TextBetween(dateString, "(", ")");
+            }
+
+
             // First, try to parse the date using the regular DateTime.TryParse
             if (DateTime.TryParse(dateString, out dt))
             {
@@ -165,6 +172,7 @@ namespace MDDFoundation
                     return true;
                 }
             }
+
 
             // If regular parsing fails, remove the suffix from the day part
             string cleanedDateString = Regex.Replace(dateString, @"\b(\d{1,2})(st|nd|rd|th)\b", "$1");
