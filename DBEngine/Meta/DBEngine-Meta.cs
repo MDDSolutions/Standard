@@ -1,7 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Data.SqlClient;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace MDDDataAccess
 {
@@ -28,75 +31,46 @@ namespace MDDDataAccess
                             WHERE c.object_id = OBJECT_ID(@objectname);";
             var allowadhoc = AllowAdHoc;
             AllowAdHoc = true;
-            var r = SqlRunQueryWithResults<SQLColumn>(query,false,-1,null, GetParameter(() => objectname));
+            var r = SqlRunQueryWithResults<SQLColumn>(query, false, -1, null, GetParameter(() => objectname));
             AllowAdHoc = allowadhoc;
             return r;
         }
         public static SqlDbType GetSqlType(Type type)
         {
-            SqlDbType val;
-
-            if (type == typeof(String))
+            switch (type)
             {
-                val = SqlDbType.VarChar;
+                case Type t when t == typeof(string):
+                    return SqlDbType.VarChar;
+                case Type t when t == typeof(long) || t == typeof(long?):
+                    return SqlDbType.BigInt;
+                case Type t when t == typeof(byte[]):
+                    return SqlDbType.Binary;
+                case Type t when t == typeof(bool) || t == typeof(bool?):
+                    return SqlDbType.Bit;
+                case Type t when t == typeof(DateTime) || t == typeof(DateTime?):
+                    return SqlDbType.DateTime;
+                case Type t when t == typeof(decimal) || t == typeof(decimal?):
+                    return SqlDbType.Decimal;
+                case Type t when t == typeof(int) || t == typeof(int?):
+                    return SqlDbType.Int;
+                case Type t when t == typeof(short) || t == typeof(short?):
+                    return SqlDbType.SmallInt;
+                case Type t when t == typeof(byte) || t == typeof(byte?):
+                    return SqlDbType.TinyInt;
+                case Type t when t == typeof(float) || t == typeof(float?):
+                    return SqlDbType.Real;
+                case Type t when t == typeof(double) || t == typeof(double?):
+                    return SqlDbType.Float;
+                case Type t when t == typeof(TimeSpan) || t == typeof(TimeSpan?):
+                    return SqlDbType.Time;
+                case Type t when t == typeof(Guid) || t == typeof(Guid?):
+                    return SqlDbType.UniqueIdentifier;
+                default:
+                    throw new Exception("Unmapped type");
             }
-            else if (type == typeof(Int64) || type == typeof(Nullable<Int64>))
-            {
-                val = SqlDbType.BigInt;
-            }
-            else if (type == typeof(Byte[]))
-            {
-                val = SqlDbType.Binary;
-            }
-            else if (type == typeof(Boolean) || type == typeof(Nullable<Boolean>))
-            {
-                val = SqlDbType.Bit;
-            }
-            else if (type == typeof(DateTime) || type == typeof(Nullable<DateTime>))
-            {
-                val = SqlDbType.DateTime;
-            }
-            else if (type == typeof(Decimal) || type == typeof(Nullable<Decimal>))
-            {
-                val = SqlDbType.Decimal;
-            }
-            else if (type == typeof(Int32) || type == typeof(Nullable<Int32>))
-            {
-                val = SqlDbType.Int;
-            }
-            else if (type == typeof(Int16) || type == typeof(Nullable<Int16>))
-            {
-                val = SqlDbType.SmallInt;
-            }
-            else if (type == typeof(Byte) || type == typeof(Nullable<Byte>))
-            {
-                val = SqlDbType.TinyInt;
-            }
-            else if (type == typeof(Single) || type == typeof(Nullable<Single>))
-            {
-                val = SqlDbType.Real;
-            }
-            else if (type == typeof(Double) || type == typeof(Nullable<Double>))
-            {
-                val = SqlDbType.Float;
-            }
-            else if (type == typeof(TimeSpan) || type == typeof(Nullable<TimeSpan>))
-            {
-                val = SqlDbType.Time;
-            }
-            else if (type == typeof(Guid) || type == typeof(Nullable<Guid>))
-            {
-                val = SqlDbType.UniqueIdentifier;
-            }
-            else
-            {
-                throw new Exception("Unmapped type");
-            }
-
 
             // Please refer to the following document to add other types
             // http://msdn.microsoft.com/en-us/library/ms131092.aspx
-            return val;
         }
         public static SqlDbType GetSqlType(string sqltypename)
         {
@@ -158,9 +132,9 @@ namespace MDDDataAccess
                     throw new ArgumentException($"Unmapped SQL type: {sqltypename}");
             }
         }
-        public static string GetFullSqlTypeName(string typeName, int max_length, int precision, int scale)
+        public static string GetFullSqlTypeName(string sqltypename, int max_length, int? precision = null, int? scale = null)
         {
-            switch (typeName.ToLower())
+            switch (sqltypename.ToLower())
             {
                 case "varchar":
                 case "nvarchar":
@@ -168,18 +142,52 @@ namespace MDDDataAccess
                 case "char":
                 case "nchar":
                 case "binary":
-                    return $"{typeName}({(max_length == -1 ? "max" : (typeName.ToLower().StartsWith("n") ? max_length / 2 : max_length).ToString())})";
+                    return $"{sqltypename}({(max_length == -1 ? "max" : (sqltypename.ToLower().StartsWith("n") ? max_length / 2 : max_length).ToString())})";
                 case "decimal":
                 case "numeric":
-                    return $"{typeName}({precision},{scale})";
+                    if (precision == null) precision = 38;
+                    if (scale == null) scale = 38;
+                    return $"{sqltypename}({precision},{scale})";
                 case "float":
-                    return precision == 53 ? typeName : $"{typeName}({precision})";
+                    if (precision == null) precision = 53;
+                    return precision == 53 ? sqltypename : $"{sqltypename}({precision})";
                 case "real":
                 case "datetime2":
                 case "datetimeoffset":
-                    return $"{typeName}({precision})";
+                    if (precision == null) precision = 7;
+                    return $"{sqltypename}({precision})";
                 default:
-                    return typeName;
+                    return sqltypename;
+            }
+        }
+        public static string GetFullSqlTypeName(Type clrType, int max_length = -1, int? precision = null, int? scale = null)
+        {
+            SqlDbType sqlDbType = GetSqlType(clrType);
+
+            switch (sqlDbType)
+            {
+                case SqlDbType.VarChar:
+                case SqlDbType.NVarChar:
+                case SqlDbType.VarBinary:
+                case SqlDbType.Char:
+                case SqlDbType.NChar:
+                case SqlDbType.Binary:
+                    return $"{sqlDbType}({(max_length == -1 ? "max" : (sqlDbType == SqlDbType.NVarChar || sqlDbType == SqlDbType.NChar ? max_length / 2 : max_length).ToString())})";
+                case SqlDbType.Decimal:
+                    if (precision == null) precision = 38;
+                    if (scale == null) scale = 38;
+                    return $"{sqlDbType}({precision},{scale})";
+                case SqlDbType.Float:
+                    if (precision == null) precision = 53;
+                    return precision == 53 ? sqlDbType.ToString() : $"{sqlDbType}({precision})";
+                case SqlDbType.Real:
+                case SqlDbType.DateTime2:
+                case SqlDbType.DateTimeOffset:
+                case SqlDbType.Time:
+                    if (precision == null) precision = 7;
+                    return $"{sqlDbType}({precision})";
+                default:
+                    return sqlDbType.ToString();
             }
         }
         public static Type GetClrType(SqlDbType sqlDbType)
@@ -231,6 +239,143 @@ namespace MDDDataAccess
                 default:
                     throw new ArgumentException($"Unmapped SQL type: {sqlDbType}");
             }
+        }
+        public static Type GetClrType(string sqlTypeName)
+        {
+            switch (sqlTypeName.ToLower())
+            {
+                case "bigint":
+                    return typeof(long);
+                case "binary":
+                case "varbinary":
+                case "timestamp":
+                    return typeof(byte[]);
+                case "bit":
+                    return typeof(bool);
+                case "char":
+                case "nchar":
+                case "ntext":
+                case "nvarchar":
+                case "text":
+                case "varchar":
+                case "xml":
+                    return typeof(string);
+                case "date":
+                case "datetime":
+                case "datetime2":
+                case "smalldatetime":
+                case "datetimeoffset":
+                    return typeof(DateTime);
+                case "decimal":
+                case "numeric":
+                case "money":
+                case "smallmoney":
+                    return typeof(decimal);
+                case "float":
+                    return typeof(double);
+                case "int":
+                    return typeof(int);
+                case "real":
+                    return typeof(float);
+                case "smallint":
+                    return typeof(short);
+                case "time":
+                    return typeof(TimeSpan);
+                case "tinyint":
+                    return typeof(byte);
+                case "uniqueidentifier":
+                    return typeof(Guid);
+                default:
+                    throw new ArgumentException($"Unmapped SQL type: {sqlTypeName}");
+            }
+        }
+
+
+        public static string GetClrTypeString(Type type)
+        {
+            switch (Type.GetTypeCode(type))
+            {
+                case TypeCode.Boolean: return "bool";
+                case TypeCode.Byte: return "byte";
+                case TypeCode.Char: return "char";
+                case TypeCode.DateTime: return "DateTime";
+                case TypeCode.Decimal: return "decimal";
+                case TypeCode.Double: return "double";
+                case TypeCode.Int16: return "short";
+                case TypeCode.Int32: return "int";
+                case TypeCode.Int64: return "long";
+                case TypeCode.Single: return "float";
+                case TypeCode.String: return "string";
+                default: return type.Name;
+            }
+        }
+        public IList<SQLColumn> GetResultSetSchema(string tsql)
+        {
+            var columns = new List<SQLColumn>();
+
+            using (var connection = getconnection())
+            {
+                using (var command = new SqlCommand(tsql, connection))
+                {
+                    using (var reader = command.ExecuteReader(CommandBehavior.SchemaOnly))
+                    {
+                        var schemaTable = reader.GetSchemaTable();
+                        foreach (DataRow row in schemaTable.Rows)
+                        {
+                            columns.Add(new SQLColumn
+                            {
+                                ordinal = (int)row["ColumnOrdinal"],
+                                name = (string)row["ColumnName"],
+                                is_nullable = (bool)row["AllowDBNull"],
+                                type = (string)row["DataTypeName"],
+                                max_length = (short)row["ColumnSize"],
+                                precision = (byte)row["NumericPrecision"],
+                                scale = (byte)row["NumericScale"],
+                                collation_name = row.IsNull("BaseColumnName") ? null : (string)row["BaseColumnName"],
+                                is_identity = (bool)row["IsIdentity"],
+                                is_updateable = (bool)row["IsAutoIncrement"],
+                                is_computed = (bool)row["IsExpression"]
+                            });
+                        }
+                    }
+                }
+            }
+
+            return columns;
+        }
+        public async Task<IList<SQLColumn>> GetResultSetSchemaAsync(string tsql, CancellationToken token)
+        {
+            var columns = new List<SQLColumn>();
+
+            using (var connection = await getconnectionasync(token).ConfigureAwait(false))
+            {
+                using (var command = new SqlCommand(tsql, connection))
+                {
+                    using (var reader = await command.ExecuteReaderAsync(CommandBehavior.SchemaOnly, token).ConfigureAwait(false))
+                    {
+                        var schemaTable = reader.GetSchemaTable();
+                        foreach (DataRow row in schemaTable.Rows)
+                        {
+                            columns.Add(new SQLColumn
+                            {
+                                ordinal = (int)row["ColumnOrdinal"],
+                                name = (string)row["ColumnName"],
+                                is_nullable = (bool)row["AllowDBNull"],
+                                type = (string)row["DataTypeName"],
+                                max_length = Convert.ToInt16(row["ColumnSize"]),
+                                precision = Convert.ToByte(row["NumericPrecision"]),
+                                scale = Convert.ToByte(row["NumericScale"]),
+                                collation_name = null,
+                                is_identity = (bool)row["IsIdentity"],
+                                is_updateable = (bool)row["IsAutoIncrement"],
+                                is_computed = row["IsExpression"] == DBNull.Value ? false : (bool)row["IsExpression"]
+                            });
+                        }
+                    }
+                }
+            }
+
+            return columns;
         }
     }
 }

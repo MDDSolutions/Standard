@@ -38,6 +38,7 @@ namespace MDDDataAccess
         public bool is_updateable { get; set; }
         [DBName("is_computed_column")]
         public bool is_computed { get; set; }
+        public Type clr_type { get => DBEngine.GetClrType(type); }
         public override string ToString()
         {
             return $"{name} {full_type} {(is_nullable ? "NULL" : "NOT NULL")}";// ({_origtype})";
