@@ -317,25 +317,12 @@ namespace MDDDataAccess
             {
                 using (var command = new SqlCommand(tsql, connection))
                 {
-                    using (var reader = command.ExecuteReader(CommandBehavior.SchemaOnly))
+                    using (var reader = command.ExecuteReader())
                     {
                         var schemaTable = reader.GetSchemaTable();
                         foreach (DataRow row in schemaTable.Rows)
                         {
-                            columns.Add(new SQLColumn
-                            {
-                                ordinal = (int)row["ColumnOrdinal"],
-                                name = (string)row["ColumnName"],
-                                is_nullable = (bool)row["AllowDBNull"],
-                                type = (string)row["DataTypeName"],
-                                max_length = (short)row["ColumnSize"],
-                                precision = (byte)row["NumericPrecision"],
-                                scale = (byte)row["NumericScale"],
-                                collation_name = row.IsNull("BaseColumnName") ? null : (string)row["BaseColumnName"],
-                                is_identity = (bool)row["IsIdentity"],
-                                is_updateable = (bool)row["IsAutoIncrement"],
-                                is_computed = (bool)row["IsExpression"]
-                            });
+                            columns.Add(SQLColumn.FromSchemaTableRow(row));
                         }
                     }
                 }
@@ -343,6 +330,9 @@ namespace MDDDataAccess
 
             return columns;
         }
+
+
+
         public async Task<IList<SQLColumn>> GetResultSetSchemaAsync(string tsql, CancellationToken token)
         {
             var columns = new List<SQLColumn>();
@@ -351,25 +341,13 @@ namespace MDDDataAccess
             {
                 using (var command = new SqlCommand(tsql, connection))
                 {
-                    using (var reader = await command.ExecuteReaderAsync(CommandBehavior.SchemaOnly, token).ConfigureAwait(false))
+                    if (token != CancellationToken.None) command.CommandTimeout = 0;
+                    using (var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false))
                     {
                         var schemaTable = reader.GetSchemaTable();
                         foreach (DataRow row in schemaTable.Rows)
                         {
-                            columns.Add(new SQLColumn
-                            {
-                                ordinal = (int)row["ColumnOrdinal"],
-                                name = (string)row["ColumnName"],
-                                is_nullable = (bool)row["AllowDBNull"],
-                                type = (string)row["DataTypeName"],
-                                max_length = Convert.ToInt16(row["ColumnSize"]),
-                                precision = Convert.ToByte(row["NumericPrecision"]),
-                                scale = Convert.ToByte(row["NumericScale"]),
-                                collation_name = null,
-                                is_identity = (bool)row["IsIdentity"],
-                                is_updateable = (bool)row["IsAutoIncrement"],
-                                is_computed = row["IsExpression"] == DBNull.Value ? false : (bool)row["IsExpression"]
-                            });
+                            columns.Add(SQLColumn.FromSchemaTableRow(row));
                         }
                     }
                 }
