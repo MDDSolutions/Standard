@@ -21,14 +21,28 @@ namespace MDDDataAccess
                 return paramname.Substring(3);
             return paramname;
         }
-        public static object GetParamValue(string paramname)
+        public static object GetParamValue(string paramname, bool noerror = false)
         {
-            var paramval = new SqlParameter("@ParamVal", SqlDbType.VarChar, 255);
-            paramval.Direction = ParameterDirection.Output;
-            DB.SqlRunProcedure(GetCMD, -1, null,
-                new SqlParameter(NameParamName, NormalizeParamName(paramname)),
-                paramval);
-            return paramval.Value.ToString();
+            try
+            {
+                var paramval = new SqlParameter("@ParamVal", SqlDbType.VarChar, 255);
+                paramval.Direction = ParameterDirection.Output;
+                DB.SqlRunProcedure(GetCMD, -1, null,
+                    new SqlParameter(NameParamName, NormalizeParamName(paramname)),
+                    paramval);
+                return paramval.Value.ToString();
+            }
+            catch (Exception ex)
+            {
+                if (noerror)
+                {
+                    return null;
+                }
+                else
+                {
+                    throw new Exception($"Error getting parameter value for {paramname}", ex);
+                }
+            }
         }
         public static void SetParamValue(string paramname, object paramval)
         {
