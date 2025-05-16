@@ -20,10 +20,15 @@ using static System.Net.Mime.MediaTypeNames;
 
 namespace MDDFoundation
 {
-    //public enum BoolExt
-    //{
-    //    True,False,Undefined
-    //}
+    public enum Direction
+    {
+        None = 0,
+        Up,
+        Down,
+        Left,
+        Right
+    }
+
     public class FileCopyProgress
     {
         public string FileName { get; set; }
