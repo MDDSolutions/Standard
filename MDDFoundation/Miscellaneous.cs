@@ -906,6 +906,14 @@ namespace MDDFoundation
             }
             sync.Invoke(action, new object[] { });
         }
+        public static T SynchronizedInvoke<T>(this ISynchronizeInvoke sync, Func<T> func)
+        {
+            if (!sync.InvokeRequired)
+            {
+                return func();
+            }
+            return (T)sync.Invoke(func, new object[] { });
+        }
         public static void SyncSet(this ISynchronizeInvoke sync, object value, object property = null)
         {
             PropertyInfo pinfo;
