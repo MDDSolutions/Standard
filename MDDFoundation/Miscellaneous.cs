@@ -118,7 +118,7 @@ namespace MDDFoundation
     {
         Default, Modified, Original
     }
-    public static class Foundation
+    public static partial class Foundation
     {
         [DllImport("user32.dll")]
         static extern bool SetForegroundWindow(IntPtr hWnd);
