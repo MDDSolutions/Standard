@@ -243,5 +243,31 @@ namespace MDDFoundation
         {
             throw new NotImplementedException();
         }
+
+        public int RemoveAll(Predicate<T> match)
+        {
+            if (match == null) throw new ArgumentNullException(nameof(match));
+            int removedCount = 0;
+            for (int i = this.Count - 1; i >= 0; i--)
+            {
+                if (match(this[i]))
+                {
+                    this.RemoveAt(i);
+                    removedCount++;
+                }
+            }
+            return removedCount;
+        }
+        public int RemoveAll(IEnumerable<T> items)
+        {
+            if (items == null) throw new ArgumentNullException(nameof(items));
+            int removedCount = 0;
+            foreach (var item in items.ToList())
+            {
+                if (this.Remove(item))
+                    removedCount++;
+            }
+            return removedCount;
+        }
     }
 }

@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace MDDFoundation
@@ -27,43 +28,112 @@ namespace MDDFoundation
                 DirectoriesProcessed = 0,
                 FilesCurrentDirectory = 0
             };
-            EnumerateDirectory(path, searchPattern, recursive, results, currentProgress, progress, progressreportinterval);
+            var lastReportTick = Environment.TickCount;
+
+            var fileprogress = new Action<FileEntry>(file =>
+            {
+                results.Add(file);
+                if (progress != null)
+                {
+                    if (file.DirectoryName != currentProgress.CurrentDirectory)
+                    {
+                        currentProgress.DirectoriesProcessed++;
+                        currentProgress.CurrentDirectory = file.DirectoryName;
+                        currentProgress.FilesCurrentDirectory = 1;
+                        progress.Report(currentProgress);
+                        lastReportTick = Environment.TickCount; // Reset report tick
+                    }
+                    else
+                    {
+                        currentProgress.FilesCurrentDirectory++;
+                    }
+                    currentProgress.TotalFilesFound++;
+                    // Report progress at specified intervals
+                    if (progressreportinterval != default && Environment.TickCount - lastReportTick >= progressreportinterval.TotalMilliseconds)
+                    {
+                        progress.Report(currentProgress);
+                        lastReportTick = Environment.TickCount; // Reset report tick
+                    }
+                }
+            });
+
+            EnumerateDirectory(path, searchPattern, recursive, fileprogress, CancellationToken.None); //, currentProgress, progress, progressreportinterval);
             currentProgress.IsComplete = true;
             progress?.Report(currentProgress);
             return results;
         }
-
-        /// <summary>
-        /// This is the async version of DirectoryContents. It uses Task.Run to execute the synchronous method in a separate thread.
-        /// </summary>
-        /// <param name="path"></param>
-        /// <param name="searchPattern"></param>
-        /// <param name="recursive"></param>
-        /// <returns></returns>
-        public static Task<List<FileEntry>> DirectoryContentsAsync(string path, string searchPattern = "*", bool recursive = false, IProgress<DirectoryContentsProgress> progress = null, TimeSpan progressreportinterval = default)
+        public static void DirectoryContents(string path, Action<FileEntry> fileprogress, string searchPattern = "*", bool recursive = false)
         {
-            return Task.Run(() => DirectoryContents(path, searchPattern, recursive, progress, progressreportinterval));
+            EnumerateDirectory(path, searchPattern, recursive, fileprogress, CancellationToken.None);
         }
-
-        private static void EnumerateDirectory(string path, string searchPattern, bool recursive, List<FileEntry> results, DirectoryContentsProgress currentProgress, IProgress<DirectoryContentsProgress> progress = null, TimeSpan progressreportinterval = default)
+        public static async Task <List<FileEntry>> DirectoryContentsAsync(string path, string searchPattern = "*", bool recursive = false, IProgress<DirectoryContentsProgress> progress = null, TimeSpan progressreportinterval = default)
         {
-            if (progressreportinterval == default)
+            var results = new List<FileEntry>();
+            var currentProgress = new DirectoryContentsProgress
             {
-                progressreportinterval = TimeSpan.FromSeconds(1); // Default to 1 second if not specified
-            }
+                CurrentDirectory = path,
+                TotalFilesFound = 0,
+                DirectoriesProcessed = 0,
+                FilesCurrentDirectory = 0
+            };
             var lastReportTick = Environment.TickCount;
 
+            var fileprogress = new Action<FileEntry>(file =>
+            {
+                results.Add(file);
+                if (file.DirectoryName != currentProgress.CurrentDirectory)
+                {
+                    currentProgress.DirectoriesProcessed++;
+                    currentProgress.CurrentDirectory = file.DirectoryName;
+                    currentProgress.FilesCurrentDirectory = 1;
+                    progress?.Report(currentProgress);
+                    lastReportTick = Environment.TickCount; // Reset report tick
+                }
+                else
+                {
+                    currentProgress.FilesCurrentDirectory++;
+                }
+                currentProgress.TotalFilesFound++;
+                // Report progress at specified intervals
+                if (progressreportinterval != default && Environment.TickCount - lastReportTick >= progressreportinterval.TotalMilliseconds)
+                {
+                    progress?.Report(currentProgress);
+                    lastReportTick = Environment.TickCount; // Reset report tick
+                }
+            });
+
+            await Task.Run(() => EnumerateDirectory(path, searchPattern, recursive, fileprogress, CancellationToken.None)).ConfigureAwait(false); //, currentProgress, progress, progressreportinterval);
+            currentProgress.IsComplete = true;
+            progress?.Report(currentProgress);
+            return results;
+        }
+        public static async Task<int> DirectoryContentsAsync(string path, Action<FileEntry> fileprogress, string searchPattern = "*", bool recursive = false, CancellationToken token = default)
+        {
+            if (token == default) token = CancellationToken.None; // Use default token if not provided
+                                                                  //internalcount = 0; // Reset internal count for each new enumeration
+            int count = await Task.Run(() => EnumerateDirectory(path, searchPattern, recursive, fileprogress, token)); //, currentProgress, progress, progressreportinterval);
+            return count;
+            //Console.WriteLine($"MDDFoundation.DirectoryContentsAsync internal count: {internalcount}"); // Output the total count of files processed
+        }
+        //private static int internalcount;
+        private static int EnumerateDirectory(string path, string searchPattern, bool recursive, Action<FileEntry> fileProgress, CancellationToken token) //, DirectoryContentsProgress currentProgress, IProgress<DirectoryContentsProgress> progress = null, TimeSpan progressreportinterval = default)
+        {
+            Console.WriteLine($"MDDFoundation.EnumerateDirectory running for {path}...");
             string searchPath = Path.Combine(path, "*");
             WIN32_FIND_DATA findData;
 
             IntPtr findHandle = FindFirstFile(searchPath, out findData);
             if (findHandle == new IntPtr(-1))
-                return;
+                return 0;
 
+
+            var count = 0; // Count of files found in this directory
             try
             {
                 do
                 {
+                    token.ThrowIfCancellationRequested(); // Check for cancellation
+
                     string fileName = findData.cFileName;
                     if (string.IsNullOrWhiteSpace(fileName) || fileName == "." || fileName == "..")
                         continue;
@@ -73,14 +143,9 @@ namespace MDDFoundation
                     bool isDirectory = (findData.dwFileAttributes & 0x10) != 0;
                     if (isDirectory)
                     {
-                        currentProgress.DirectoriesProcessed++;
-                        currentProgress.CurrentDirectory = fullPath;
-                        currentProgress.FilesCurrentDirectory = 0;
-                        progress?.Report(currentProgress); // Report whenever directory changes regardless of interval
-                        lastReportTick = Environment.TickCount; // Reset report tick
                         if (recursive)
                         {
-                            EnumerateDirectory(fullPath, searchPattern, recursive, results, currentProgress, progress, progressreportinterval);
+                            count = count + EnumerateDirectory(fullPath, searchPattern, recursive, fileProgress, token); //, currentProgress, progress, progressreportinterval);
                         }
                     }
                     else
@@ -88,25 +153,47 @@ namespace MDDFoundation
                         // Only add files matching the searchPattern
                         if (Path.GetFileName(fullPath).ToLower().EndsWith(searchPattern.TrimStart('*').ToLower()))
                         {
-                            currentProgress.TotalFilesFound++;
-                            currentProgress.FilesCurrentDirectory++;
+                            //currentProgress.TotalFilesFound++;
+                            //currentProgress.FilesCurrentDirectory++;
                             // Compose FileInfo using the full path (metadata is already available)
-                            results.Add(FileEntry.FromFindData(fullPath, findData));
+                            count++;
+                            fileProgress(FileEntry.FromFindData(fullPath, findData));
                         }
-                    }
-                    if (Environment.TickCount - lastReportTick >= progressreportinterval.TotalMilliseconds)
-                    {
-                        // Report progress at specified intervals
-                        progress?.Report(currentProgress);
-                        lastReportTick = Environment.TickCount; // Reset report tick
                     }
                 }
                 while (FindNextFile(findHandle, out findData));
+            }
+            catch (OperationCanceledException)
+            {
+                // Handle cancellation if needed
+                return -1;
+            }
+            catch (Exception ex)
+            {
+                // Log or handle exceptions as needed
+                Console.WriteLine($"Error processing directory {path}: {ex.Message}");
+                return -1; // Indicate an error occurred
             }
             finally
             {
                 FindClose(findHandle);
             }
+            return count;
+        }
+        public static string SizeDisplay(long sizeInBytes)
+        {
+            if (sizeInBytes < 1024)
+                return $"{sizeInBytes} bytes";
+            else if (sizeInBytes < 1024 * 1024)
+                return $"{sizeInBytes / 1024.0:F2} KB";
+            else if (sizeInBytes < 1024 * 1024 * 1024)
+                return $"{sizeInBytes / (1024.0 * 1024):F2} MB";
+            else if (sizeInBytes < 1024L * 1024 * 1024 * 1024)
+                return $"{sizeInBytes / (1024.0 * 1024 * 1024):F2} GB";
+            else if (sizeInBytes < 1024L * 1024 * 1024 * 1024 * 1024)
+                return $"{sizeInBytes / (1024.0 * 1024 * 1024 * 1024):F2} TB";
+            else
+                return $"{sizeInBytes / (1024.0 * 1024 * 1024 * 1024 * 1024):F2} PB"; // Petabytes
         }
     }
 
@@ -212,15 +299,22 @@ namespace MDDFoundation
     }
     public class DirectoryContentsProgress
     {
-        public int TotalFilesFound { get; set; }
-        public int DirectoriesProcessed { get; set; }
-        public int FilesCurrentDirectory { get; set; }
-        public string CurrentDirectory { get; set; }
-        public bool IsComplete { get; set; } = false;   
+        public int TotalFilesFound { get; set; } = 0;
+        public int DirectoriesProcessed { get; set; } = 0;
+        public int FilesCurrentDirectory { get; set; } = 0;
+        public string CurrentDirectory { get; set; } = null;
+        public bool IsComplete { get; set; } = false;
+        public bool IsCanceled { get; set; } = false;
         public override string ToString()
         {
             if (IsComplete)
                 return $"Total Files Found: {TotalFilesFound}, Directories Processed: {DirectoriesProcessed}";
+            if (IsCanceled)
+                return $"Process was cancelled. Total Files Found: {TotalFilesFound}, Directories Processed: {DirectoriesProcessed}";
+            if (string.IsNullOrEmpty(CurrentDirectory))
+                return $"Scan initializing...";
+            if (TotalFilesFound == 0 && DirectoriesProcessed == 0)
+                return $"Scanning {CurrentDirectory}...";
             return $"Scanning {CurrentDirectory} ({DirectoriesProcessed} Directories Processed)... {FilesCurrentDirectory} files found so far in current directory, {TotalFilesFound} total files found so far";
         }
     }

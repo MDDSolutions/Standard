@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -842,38 +843,111 @@ namespace MDDFoundation
             DirectoryInfo logfiledir = (new FileInfo(Assembly.GetExecutingAssembly().Location)).Directory;
             return Path.Combine(logfiledir.FullName, filename);
         }
-        public static void Log(string LogStr, bool Initialize = false, string filename = "Foundation_log.txt")
+        private class LogWorker
         {
-            string CurLogFile = LogFileFullName(filename);
-            bool Finished = false;
-            bool WriteHeader = !File.Exists(CurLogFile) || LogStr == "";
-            if (!WriteHeader && Initialize)
+            public readonly ConcurrentQueue<string> Queue = new ConcurrentQueue<string>();
+            public readonly AutoResetEvent Event = new AutoResetEvent(false);
+            public volatile int ThreadStatus = 0; // 0 = not started, 1 = running, 2 = suspended
+            public string FullFileName { get; private set; } = null;
+            public LogWorker(string fullfilename)
             {
-                File.Delete(CurLogFile);
-                WriteHeader = true;
+                FullFileName = fullfilename;
             }
-            while (!Finished)
-            {
-                try
-                {
-                    using (StreamWriter writer = File.AppendText(CurLogFile))
-                    {
-                        if (WriteHeader)
-                            writer.WriteLine(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + " -- Log File");
-                        if (LogStr != "")
-                            writer.WriteLine(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + ": " + LogStr);
-                    }
-                    Finished = true;
-                }
-                catch (Exception ex)
-                {
-                    if (ex.Message.Contains("because it is being used by another process"))
-                        Thread.Sleep(50);
-                    else
-                        throw ex;
-                }
+        }
 
+        private static readonly ConcurrentDictionary<string, LogWorker> _logWorkers = new ConcurrentDictionary<string, LogWorker>();
+        public static volatile string DefaultLogFileName = "Foundation_log.txt";    
+
+        public static void Log(string LogStr, bool Initialize = false, string filename = null)
+        {
+            var worker = _logWorkers.GetOrAdd(string.IsNullOrWhiteSpace(filename) ? DefaultLogFileName : filename, w => new LogWorker(LogFileFullName(w)));
+
+            if (Interlocked.CompareExchange(ref worker.ThreadStatus, 1, 0) == 0)
+                StartLogThread(worker);
+
+            if (Initialize && File.Exists(worker.FullFileName))
+                File.Delete(worker.FullFileName);
+
+            string entry = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + ": " + LogStr;
+            worker.Queue.Enqueue(entry);
+            worker.Event.Set();
+        }
+        public static void RotateLogFile(string filename = null)
+        {
+            var logFile = string.IsNullOrWhiteSpace(filename) ? DefaultLogFileName : filename;
+
+            var worker = _logWorkers.GetOrAdd(string.IsNullOrWhiteSpace(filename) ? DefaultLogFileName : filename, w => new LogWorker(LogFileFullName(w)));
+            var fi = new FileInfo(worker.FullFileName);
+            if (!fi.Exists) return; // No need to rotate if the file doesn't exist
+            // Close the existing log file and rename it
+            worker.Event.Set(); // Signal the log thread to finish processing
+            while (Interlocked.CompareExchange(ref worker.ThreadStatus, 2, 0) != 0)
+            {
+                Thread.Sleep(100); // Wait for the log thread to finish
             }
+            try
+            {
+                // Rename the log file to include a timestamp
+                var newname = Path.Combine(fi.DirectoryName, $"{fi.Name.Replace(fi.Extension, "")}_{fi.LastWriteTime:yyyy_MM_dd-HH_mm}{fi.Extension}");
+
+                int counter = 1;
+                while (File.Exists(newname))
+                {
+                    newname = Path.Combine(fi.DirectoryName, $"{fi.Name.Replace(fi.Extension, "")}_{fi.LastWriteTime:yyyy_MM_dd-HH_mm}_{counter}{fi.Extension}");
+                    counter++;
+                }
+                fi.MoveTo(newname);
+            }
+            catch (Exception)
+            {
+
+                throw;
+            }
+            finally
+            {
+                Interlocked.CompareExchange(ref worker.ThreadStatus, 0, 2); // Reset the thread status
+                StartLogThread(worker); // Start a new log thread for the worker
+            }
+
+        }
+
+        private static void StartLogThread(LogWorker worker)
+        {
+            Task.Run(() =>
+            {
+                int idleTimeoutMs = 5000; // 5 seconds of inactivity before exit
+                while (true)
+                {
+                    if (!worker.Event.WaitOne(idleTimeoutMs))
+                    {
+                        if (worker.Queue.IsEmpty)
+                        {
+                            Interlocked.Exchange(ref worker.ThreadStatus, 0);
+                            //_logWorkers.TryRemove(logFile, out _);
+                            break;
+                        }
+                    }
+                    if (Interlocked.CompareExchange(ref worker.ThreadStatus, 2, 2) == 2)
+                    {
+                        // Thread is suspended
+                        break;
+                    }
+                    while (worker.Queue.TryDequeue(out var logEntry))
+                    {
+                        try
+                        {
+                            using (StreamWriter writer = File.AppendText(worker.FullFileName))
+                            {
+                                writer.WriteLine(logEntry);
+                            }
+                        }
+                        catch
+                        {
+                            // Optionally handle/log errors
+                        }
+                    }
+                }
+            });
         }
         public static void Retry(Action action, int numretries = 10, int delayms = 1000, Action<Exception, int> interimexception = null)
         {
