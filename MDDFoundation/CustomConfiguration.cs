@@ -43,7 +43,7 @@ namespace MDDFoundation
                 ser.Serialize(stream, this);
             }
         }
-        public static T Load<T>(string filename = null) where T : CustomConfiguration, new()
+        public static T Load<T>(string filename = null, bool withsave = false) where T : CustomConfiguration, new()
         {
             var fi = new FileInfo(FullFileName(filename));
             T r = null;
@@ -70,8 +70,9 @@ namespace MDDFoundation
             {
                 r.FileName = filename;
                 r.Save();
+                withsave = false;
             }
-            if (!fi.Exists) r.Save();
+            if (withsave || !fi.Exists) r.Save();
             return r;
         }
         public static List<T> FindConfigurations<T>(string path = null) where T : CustomConfiguration, new()

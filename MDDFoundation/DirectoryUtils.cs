@@ -4,6 +4,9 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Xml;
+using System.Xml.Schema;
+using System.Xml.Serialization;
 
 namespace MDDFoundation
 {
@@ -206,7 +209,7 @@ namespace MDDFoundation
     /// file has changed.  It's main purpose is for processing large numbers of files with metadata - when lists of
     /// FileEntry are created with <see cref="Foundation.DirectoryContents(string, string, bool)"/> then the file system does not have to be accessed
     /// for every file as with FileInfo in order to retrieve the metadata</remarks>
-    public class FileEntry
+    public class FileEntry : IXmlSerializable
     {
         public string FullName { get; private set; }
         public string Name { get; private set; }
@@ -228,6 +231,30 @@ namespace MDDFoundation
             Name = Path.GetFileName(fullPath);
             DirectoryName = Path.GetDirectoryName(fullPath);
             Refresh();
+        }
+
+        //specialized constructor for creating a FileEntry when all metadata is already known
+        public FileEntry(
+            string fullName, 
+            long length,
+            DateTimeOffset creationTime,
+            DateTimeOffset lastWriteTime,
+            DateTimeOffset lastAccessTime,
+            FileAttributes attributes, 
+            bool exists)
+        {
+            FullName = fullName;
+            Name = Path.GetFileName(fullName);
+            DirectoryName = Path.GetDirectoryName(fullName);
+            Length = length;
+            CreationTime = creationTime.LocalDateTime;
+            CreationTimeUtc = creationTime.UtcDateTime;
+            LastWriteTime = lastWriteTime.LocalDateTime;
+            LastWriteTimeUtc = lastWriteTime.UtcDateTime;
+            LastAccessTime = lastAccessTime.LocalDateTime;
+            LastAccessTimeUtc = lastAccessTime.UtcDateTime;
+            Attributes = attributes;
+            Exists = exists;
         }
 
         // Internal constructor
@@ -279,6 +306,51 @@ namespace MDDFoundation
         }
 
         public override string ToString() => FullName;
+
+        #region IXmlSerializable Implementation
+
+        public XmlSchema GetSchema() => null;
+
+        public void WriteXml(XmlWriter writer)
+        {
+            writer.WriteElementString(nameof(FullName), FullName);
+            writer.WriteElementString(nameof(Length), Length.ToString());
+            writer.WriteElementString(nameof(CreationTime), CreationTime.ToString("o"));
+            writer.WriteElementString(nameof(LastWriteTime), LastWriteTime.ToString("o"));
+            writer.WriteElementString(nameof(LastAccessTime), LastAccessTime.ToString("o"));
+            writer.WriteElementString(nameof(Attributes), ((int)Attributes).ToString());
+            writer.WriteElementString(nameof(Exists), Exists.ToString().ToLower());
+        }
+
+        public void ReadXml(XmlReader reader)
+        {
+            reader.MoveToContent();
+            reader.ReadStartElement();
+
+            FullName = reader.ReadElementContentAsString(nameof(FullName), "");
+            Name = Path.GetFileName(FullName);
+            DirectoryName = Path.GetDirectoryName(FullName);
+            Length = reader.ReadElementContentAsLong(nameof(Length), "");
+
+            var cto = DateTimeOffset.Parse(reader.ReadElementContentAsString(nameof(CreationTime), ""));
+            CreationTime = cto.LocalDateTime;
+            CreationTimeUtc = cto.UtcDateTime;
+
+            var lwt = DateTimeOffset.Parse(reader.ReadElementContentAsString(nameof(LastWriteTime), ""));
+            LastWriteTime = lwt.LocalDateTime;
+            LastWriteTimeUtc = lwt.UtcDateTime;
+
+            var lat = DateTimeOffset.Parse(reader.ReadElementContentAsString(nameof(LastAccessTime), ""));
+            LastAccessTime = lat.LocalDateTime;
+            LastAccessTimeUtc = lat.UtcDateTime;
+
+            Attributes = (FileAttributes)reader.ReadElementContentAsInt(nameof(Attributes), "");
+            Exists = bool.Parse(reader.ReadElementContentAsString(nameof(Exists), ""));
+
+            reader.ReadEndElement();
+        }
+
+        #endregion
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]

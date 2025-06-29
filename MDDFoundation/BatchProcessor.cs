@@ -250,5 +250,6 @@ namespace MDDFoundation
     public interface IBatch<TItem>
     {
         IList<TItem> Items { get; }
+        void RemoveAll(Predicate<TItem> predicate);
     }
 }
