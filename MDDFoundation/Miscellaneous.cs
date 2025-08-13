@@ -179,16 +179,65 @@ namespace MDDFoundation
                 }
             }
 
+            if (dateString.Equals("last week", StringComparison.OrdinalIgnoreCase))
+            {
+                dt = DateTime.Now.Date.AddDays(-7);
+                return true;
+            }
+
+            if (dateString.Equals("today", StringComparison.OrdinalIgnoreCase))
+            {
+                dt = DateTime.Now.Date;
+                return true;
+            }
+
+            var match = Regex.Match(dateString, @"(\d+)\s+(day|week|month|year)s?\s+ago", RegexOptions.IgnoreCase);
+
+            if (match.Success)
+            {
+                int value = int.Parse(match.Groups[1].Value);
+                string unit = match.Groups[2].Value.ToLower();
+
+                switch (unit)
+                {
+                    case "day":
+                        dt = DateTime.Now.Date.AddDays(-value);
+                        return true;
+                    case "week":
+                        dt = DateTime.Now.Date.AddDays(-7 * value);
+                        return true;
+                    case "month":
+                        // Approximate as 30 days per month
+                        dt = DateTime.Now.Date.AddDays(-30 * value);
+                        return true;
+                    case "year":
+                        dt = DateTime.Now.Date.AddYears(-value);
+                        return true;
+                }
+            }
+
+
 
             // If regular parsing fails, remove the suffix from the day part
             string cleanedDateString = Regex.Replace(dateString, @"\b(\d{1,2})(st|nd|rd|th)\b", "$1");
+
+
+            //try a general parse on the cleaned string
+            if (DateTime.TryParse(cleanedDateString, out dt))
+            {
+                //if (dateString.Contains(dt.Day.ToString()))
+                    return true;
+            }
 
             // Define the format of the cleaned date string
             string format = "d MMM yyyy";
             CultureInfo provider = CultureInfo.InvariantCulture;
 
             // Try to parse the cleaned date string
-            return DateTime.TryParseExact(cleanedDateString, format, provider, DateTimeStyles.None, out dt);
+            if (DateTime.TryParseExact(cleanedDateString, format, provider, DateTimeStyles.None, out dt))
+                return true;
+
+            return false;
         }
         public static double Subtract(this Point pnt1, Point pnt2)
         {

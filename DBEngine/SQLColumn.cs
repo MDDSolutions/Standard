@@ -47,7 +47,12 @@ namespace MDDDataAccess
         public static SQLColumn FromSchemaTableRow(DataRow row)
         {
             var type = (string)row["DataTypeName"];
-            var maxLength = Convert.ToInt16(row["ColumnSize"]);
+            var maxLengthInt = Convert.ToInt32(row["ColumnSize"]);
+            Int16 maxLength;
+            if (maxLengthInt > Int16.MaxValue)
+                maxLength = -1;
+            else
+                maxLength = Convert.ToInt16(maxLengthInt);
 
             // Adjust max_length for Unicode data types
             if (type.Equals("nvarchar", StringComparison.OrdinalIgnoreCase) ||
