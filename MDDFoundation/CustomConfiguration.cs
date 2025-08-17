@@ -9,9 +9,9 @@ namespace MDDFoundation
     //using MDDFoundation;
     //public class MyCustomConfiguration : CustomConfiguration
     //{
-    //    public MyCustomConfiguration()
+    //    public override void ApplyDefaults()
     //    {
-    //        //Optional constructor to specify default values on first use or if file gets corrupted
+    //        //Optional method to specify default values on first use or if file gets corrupted
     //        MyCustomSetting1 = default;
     //        MyCustomSetting2 = default;
     //    }
@@ -65,7 +65,11 @@ namespace MDDFoundation
                 }
             }
 
-            if (r == null) r = new T();
+            if (r == null)
+            {
+                r = new T();
+                r.ApplyDefaults();
+            }
             if (r.FileName != filename && filename != defaultfilename)
             {
                 r.FileName = filename;
@@ -74,6 +78,11 @@ namespace MDDFoundation
             }
             if (withsave || !fi.Exists) r.Save();
             return r;
+        }
+        public virtual void ApplyDefaults()
+        {
+            // This method can be overridden in derived classes to apply default values
+            // when the configuration is loaded for the first time or if the file is corrupted.
         }
         public static List<T> FindConfigurations<T>(string path = null) where T : CustomConfiguration, new()
         {

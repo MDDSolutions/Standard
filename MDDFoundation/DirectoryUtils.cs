@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -121,7 +122,7 @@ namespace MDDFoundation
         //private static int internalcount;
         private static int EnumerateDirectory(string path, string searchPattern, bool recursive, Action<FileEntry> fileProgress, CancellationToken token) //, DirectoryContentsProgress currentProgress, IProgress<DirectoryContentsProgress> progress = null, TimeSpan progressreportinterval = default)
         {
-            Console.WriteLine($"MDDFoundation.EnumerateDirectory running for {path}...");
+            if (Debugger.IsAttached) Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}: MDDFoundation.EnumerateDirectory running for {path}...");
             string searchPath = Path.Combine(path, "*");
             WIN32_FIND_DATA findData;
 
@@ -174,7 +175,7 @@ namespace MDDFoundation
             catch (Exception ex)
             {
                 // Log or handle exceptions as needed
-                Console.WriteLine($"Error processing directory {path}: {ex.Message}");
+                if (Debugger.IsAttached) Console.WriteLine($"Error processing directory {path}: {ex.Message}");
                 return -1; // Indicate an error occurred
             }
             finally
