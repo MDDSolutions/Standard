@@ -267,6 +267,14 @@ namespace MDDFoundation
                 action(element);
             }
         }
+        public static void ForEach<T>(this IEnumerable<T> source, Action<T, int> action)
+        {
+            int i = 0;
+            foreach (T element in source)
+            {
+                action(element, i++);
+            }
+        }
         public static async Task<byte[]> ReadFileHashAsync(FileInfo tgt, CancellationToken token, Action<FileCopyProgress> progresscallback = null, TimeSpan progressreportinterval = default, Func<FileCopyProgress, bool> suspenduntil = null)
         {
             if (!tgt.Exists) throw new IOException($"ReadFileHash: file {tgt.FullName} does not exist");
@@ -531,6 +539,7 @@ namespace MDDFoundation
             }
             return finalhash;
         }
+        const int ERROR_DISK_FULL = 112;
         public static async Task<byte[]> CopyToAsync(this FileInfo file, FileInfo[] destinations, bool overwrite, CancellationToken token, bool MoveFile = false, Action<FileCopyProgress> progresscallback = null, TimeSpan progressreportinterval = default, Func<FileCopyProgress, bool> suspenduntil = null, bool computehash = false)
         {
             string tmpfilename = Guid.NewGuid().ToString().Replace("-", "") + ".tmp";
@@ -590,7 +599,40 @@ namespace MDDFoundation
                     tmpdestinations = tmpfiles.Select(x => x.Item1.OpenWrite()).ToArray();
                     if (computehash) hash.Initialize();
 
-                    tmpdestinations.ForEach(x => x.SetLength(source.Length));
+                    tmpdestinations.ForEach((x,i) =>
+                    {
+                        try
+                        {
+                            x.SetLength(source.Length);
+                        }
+                        catch (IOException ioEx)
+                        {
+                            // ERROR_DISK_FULL = 112, HResult = 0x80070070
+                            const int ERROR_DISK_FULL = 112;
+                            if (ioEx.HResult == unchecked((int)0x80070070) ||
+                                (ioEx.InnerException is Win32Exception w32 && w32.NativeErrorCode == ERROR_DISK_FULL))
+                            {
+                                var destInfo = tmpfiles[i].Item2;
+                                throw new IOException(
+                                    $"Not enough disk space to preallocate '{source.Length}' bytes for destination '{destInfo.FullName}'.",
+                                    ioEx);
+                            }
+                            throw;
+                        }
+                        catch (NotSupportedException ex)
+                        {
+                            // Handle or rethrow as needed
+                            throw new IOException($"Destination stream does not support SetLength for '{tmpfiles[i].Item2.FullName}'.", ex);
+                        }
+                        catch (ObjectDisposedException ex)
+                        {
+                            throw new IOException($"Destination stream was closed before SetLength for '{tmpfiles[i].Item2.FullName}'.", ex);
+                        }
+                        catch (ArgumentOutOfRangeException ex)
+                        {
+                            throw new IOException($"Invalid length specified for SetLength on '{tmpfiles[i].Item2.FullName}'.", ex);
+                        }
+                    });
 
                     int read;
                     for (long size = 0; size < len; size += read)
@@ -614,13 +656,50 @@ namespace MDDFoundation
                         }
                         if (writers != null) Task.WaitAll(writers);
 
-                        writers = tmpdestinations.Select(x => x.WriteAsync(swap ? buffer : buffer2, 0, read)).ToArray();
+                        //writers = tmpdestinations.Select(x => x.WriteAsync(swap ? buffer : buffer2, 0, read)).ToArray();
+                        writers = tmpdestinations.Select((x, i) =>
+                        {
+                            try
+                            {
+                                return x.WriteAsync(swap ? buffer : buffer2, 0, read);
+                            }
+                            catch (IOException ioEx)
+                            {
+                                if (ioEx.HResult == unchecked((int)0x80070070) ||
+                                    (ioEx.InnerException is Win32Exception w32 && w32.NativeErrorCode == ERROR_DISK_FULL))
+                                {
+                                    var destInfo = tmpfiles[i].Item2; // The actual destination FileInfo
+                                    throw new IOException(
+                                        $"Not enough disk space while writing to destination '{destInfo.DirectoryName}'. The disk may have filled up during the copy operation.",
+                                        ioEx);
+                                }
+                                throw;
+                            }
+                        }).ToArray();
 
                         swap = !swap;
                         if (progresscallback != null) copyprogress.BytesCopied += read;
                         if (token.IsCancellationRequested) throw new OperationCanceledException(token);
                     }
-                    if (writers != null) Task.WaitAll(writers);
+                    if (writers != null)
+                    {
+                        await Task.WhenAll(writers).ConfigureAwait(false);
+                        for (int i = 0; i < writers.Length; i++)
+                        {
+                            var task = writers[i];
+                            if (task.IsFaulted && task.Exception != null)
+                            {
+                                var destInfo = tmpfiles[i].Item2; // The actual destination FileInfo
+                                                                  // You can log, throw, or aggregate as needed
+                                foreach (var ex in task.Exception.Flatten().InnerExceptions)
+                                {
+                                    // Example: throw with destination info (or log, or collect)
+                                    throw new IOException(
+                                        $"Error writing to destination '{destInfo.DirectoryName}': {ex.Message}", ex);
+                                }
+                            }
+                        }
+                    }
                     tmpdestinations.ForEach(x => x.Close());
                 }
 
@@ -655,7 +734,7 @@ namespace MDDFoundation
             }
             finally
             {
-                tmpdestinations?.ForEach(x => { if (x != null) x.Close(); });
+                tmpdestinations?.ForEach(x => { if (x != null) x.Dispose(); });
 
                 if (!toolatetocancel)
                 {
@@ -1173,6 +1252,35 @@ namespace MDDFoundation
                 if (!StructuralComparisons.StructuralEqualityComparer.Equals(prop.GetValue(ref2), prop.GetValue(ref1)))
                     return false;
             return true;
+        }
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Auto)]
+        static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong lpFreeBytesAvailable, out ulong lpTotalNumberOfBytes, out ulong lpTotalNumberOfFreeBytes);
+        public static long GetDiskFreeSpace(string path)
+        {
+            ulong freeBytesAvailable, totalBytes, totalFreeBytes;
+            bool success = GetDiskFreeSpaceEx(path, out freeBytesAvailable, out totalBytes, out totalFreeBytes);
+            if (!success)
+                throw new System.ComponentModel.Win32Exception();
+            return (long)freeBytesAvailable;
+        }
+        public static long GetFreeSpace(string path)
+        {
+            string root = Path.GetPathRoot(path);
+            try
+            {
+                if (root.StartsWith(@"\\"))
+                {
+                    return GetDiskFreeSpace(root);
+                }
+                else
+                {
+                    return new DriveInfo(root).AvailableFreeSpace;
+                }
+            }
+            catch (Exception ex)
+            {
+                throw ex;
+            }
         }
     }
     public class StringCIEqualityComparer : IEqualityComparer<string>
