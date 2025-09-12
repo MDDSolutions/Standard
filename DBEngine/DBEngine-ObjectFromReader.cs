@@ -7,6 +7,7 @@ using System.Runtime.Serialization.Formatters.Binary;
 using System.Runtime.Serialization;
 using System.Text;
 using System.ComponentModel;
+using MDDFoundation;
 
 namespace MDDDataAccess
 {
@@ -16,6 +17,73 @@ namespace MDDDataAccess
         public void ObjectFromReader<T>(SqlDataReader rdr, ref List<Tuple<Action<object, object>, string>> map, ref PropertyInfo key, ref T r, ref IObjectTracker tracker) where T : new()
         {
             if (r == null) r = new T();
+
+            bool creating = true;
+            if (Tracking != ObjectTracking.None && r is ITrackedEntity ite)
+            {
+                // if tracking is enabled, we need to see if the object already exists in the tracker
+
+                // if method is being called in a loop, tracker will already be set
+                if (tracker == null) tracker = GetOrCreateTracker<T>() as IObjectTracker;
+
+                ///KeyInfo returns a tuple of (PropertyInfo for the property marked with ListKeyAttribute, bool indicating whether or not the property has a value)
+                ///if the property has a value, then the object should have already been created via the tracker - if it wasn't, that's an error
+                var keyinfo = ite.KeyInfo();
+                if (keyinfo.Item2)
+                {
+                    //if we are explicity providing a dirty object then chances are this is an update operation so we let dirty objects through
+                    //on the other hand, there should be some kind of indicator that the object is in the middle of a save operation so we don't 
+                    //have to assume here - perhaps a BeginSave / EndSave in IObjectTracker?
+                    //if (ite.IsDirty)
+                    //{
+                    //    //could just quietly return here but depending on why we're querying, there might be confusion as to why we're not loading the values we queried...
+                    //    //return;
+                    //    throw new Exception($"DBEngine error: Tracking has been set to {Tracking} but the object being loaded is already being tracked and is dirty - you must either set Tracking to None or ensure that all objects being loaded are not already being tracked as dirty");
+                    //}
+                    if (tracker.Exists(r))
+                    {
+                        creating = false;
+                        ite.BeginUpdate();
+                    }
+                    else
+                    {
+                        throw new Exception($"DBEngine error: Tracking has been set to {Tracking} but the object being loaded is not being tracked - you must either set Tracking to None or ensure that all objects being loaded are first created via the tracker");
+                    }
+                }
+                else // no key value so we need to get the key value from the reader and see if the object exists in the tracker
+                {
+                    object keyvalue = rdr[keyinfo.Item1.Name];
+                    if (keyvalue == null || keyvalue == DBNull.Value)
+                        throw new Exception($"DBEngine error: Tracking has been set to {Tracking} but the object being loaded has a null key value - you must either set Tracking to None or ensure that all objects being loaded have a valid key value");
+                    r = (T)tracker.Retrieve(keyvalue);
+                    if (r != null)
+                    {
+                        ite = r as ITrackedEntity;
+                        if (ite.IsDirty)
+                        {
+                            //could just quietly return here but depending on why we're querying, there might be confusion as to why we're not loading the values we queried...
+                            //return;
+                            throw new Exception($"DBEngine error: Tracking has been set to {Tracking} but the object being loaded is already being tracked and is dirty - you must either set Tracking to None or ensure that all objects being loaded are not already being tracked as dirty");
+                        }
+                        creating = false;
+                        ite.BeginUpdate();
+                    }
+                    else
+                    {
+                        creating = true;
+                        r = new T();
+                        ite.BeginInit();
+                    }
+                }
+
+
+                //else
+                //{
+                //    creating = true;
+                //    ite.BeginInit();
+                //}
+            }
+            
 
             bool nomap = false;
 
@@ -33,10 +101,7 @@ namespace MDDDataAccess
                 //}
 
 
-                if (Tracking == ObjectTracking.Full || (Tracking == ObjectTracking.IfAvailable && r is ITrackedEntity))
-                {
-                    tracker = GetOrCreateTracker<T>() as IObjectTracker;
-                }
+
 
 
                 foreach (var item in r.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance))
@@ -64,7 +129,7 @@ namespace MDDDataAccess
 
                     }
 
-                    if (include && item.CanWrite && item.ToString().StartsWith("System.Nullable`1[System.Char]"))
+                    if (include && item.CanWrite && (item.PropertyType.Name == "Char" || item.ToString().StartsWith("System.Nullable`1[System.Char]")))
                     {
                         nomap = true;
                         map = null;
@@ -215,12 +280,17 @@ namespace MDDDataAccess
                     }
                 }
             }
-            if (Tracking != ObjectTracking.None)
+
+            if (Tracking != ObjectTracking.None && r is ITrackedEntity ite2)
             {
-                if (r is ITrackedEntity npc)
+                if (creating)
                 {
-                    npc.EndInit();
+                    ite2.EndInit();
                     if (tracker != null) { r = (T)tracker.Load(r); }
+                }
+                else
+                {
+                    ite2.EndUpdate();
                 }
             }
             //if (Tracking == ObjectTracking.ChangeNotification)

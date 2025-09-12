@@ -154,6 +154,8 @@ namespace MDDFoundation
         {
             dateString = dateString.Trim();
             dateString = dateString.Trim('•');
+            dateString = dateString.Replace("Released:", "");
+            dateString = dateString.Trim();
 
             if (dateString.Length > 20 && dateString.Contains("(") && dateString.Contains(")"))
             {

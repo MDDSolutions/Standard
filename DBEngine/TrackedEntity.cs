@@ -11,19 +11,30 @@ namespace MDDDataAccess
     {
         private Dictionary<string, object> _originalValues;
         private bool _isInitializing = true;
+        private bool _isUpdating = false;
+        private bool _updatedValues = false;
         public delegate void PropertyChangedEventHandler<T>(T sender, PropertyChangedWithValuesEventArgs e);
         public static event PropertyChangedEventHandler<TObj> EntityUpdated;
         public event PropertyChangedEventHandler PropertyChanged;
 
         protected bool SetProperty<TProp>(ref TProp field, TProp value, [CallerMemberName] string propertyName = null)
         {
-            if (EqualityComparer<TProp>.Default.Equals(field, value))
+            if (typeof(TProp).IsArray)
+            {
+                var arr1 = field as Array;
+                var arr2 = value as Array;
+                if (ReferenceEquals(arr1, arr2) || (arr1 != null && arr2 != null && arr1.Length == arr2.Length && arr1.Cast<object>().SequenceEqual(arr2.Cast<object>())))
+                    return false;
+            }
+            else if (EqualityComparer<TProp>.Default.Equals(field, value))
             {
                 return false;
             }
 
+            if (_isUpdating) _updatedValues = true;
+
             // Record original value if not already done.
-            if (!_isInitializing)
+            if (!_isInitializing && !_isUpdating)
             {
                 if (_originalValues == null) _originalValues = new Dictionary<string, object>();
 
@@ -61,16 +72,44 @@ namespace MDDDataAccess
             return default(TProp);
         }
         public void BeginInit() => _isInitializing = true;
-        public void EndInit() => _isInitializing = false;
+        public void EndInit()
+        {
+            LoadedAt = Environment.TickCount;
+            ResetDirtyTracking();
+            _isInitializing = false;
+            OnEntityUpdated((TObj)this, null, null, null);
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
+        }
 
-        public DateTime LoadedAt { get; private set; }
+        //Use BeginUpdate/EndUpdate when you are going to be updating multiple properties at once and don't want to raise the PropertyChanged event for each one
+        //it is basically for ObjectFromReader - if we're loading a record from the database that hasn't changed, we don't want any events raised
+        public void BeginUpdate() => _isUpdating = true;
+        public void EndUpdate()
+        {
+            LoadedAt = Environment.TickCount;
+            ResetDirtyTracking();
+            _isUpdating = false;
+            if (_updatedValues)
+            {
+                _updatedValues = false;
+                OnEntityUpdated((TObj)this, null, null, null);
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
+            }
+        }
+
+        public int LoadedAt { get; private set; }
 
         public void UpdateLoadTime()
         {
-            LoadedAt = DateTime.Now;
+            LoadedAt = Environment.TickCount;
         }
         public bool IsDirty => _originalValues != null && _originalValues.Any();
 
+        public bool IsTracked(DBEngine db)
+        {
+            var t = db.GetOrCreateTracker<TObj>() as IObjectTracker;
+            return t.Exists(this);
+        }
         protected static void OnEntityUpdated(TObj sender, [CallerMemberName] string propertyName = null, object oldvalue = null, object newvalue = null)
         {
             EntityUpdated?.Invoke(sender, new PropertyChangedWithValuesEventArgs(propertyName,oldvalue, newvalue));
@@ -85,6 +124,30 @@ namespace MDDDataAccess
         {
             return _originalValues?.Keys ?? Enumerable.Empty<string>();
         }
+        public void ResetDirtyTracking()
+        {
+            _originalValues?.Clear();
+        }
+        public Tuple<PropertyInfo, bool> KeyInfo()
+        {
+            var type = this.GetType();
+            foreach (var prop in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+            {
+                if (Attribute.IsDefined(prop, typeof(ListKeyAttribute)))
+                {
+                    var value = prop.GetValue(this);
+                    if (value == null) return new Tuple<PropertyInfo, bool>(prop, false);
+                    if (prop.PropertyType.IsValueType)
+                    {
+                        var defaultValue = Activator.CreateInstance(prop.PropertyType);
+                        if (value.Equals(defaultValue)) return new Tuple<PropertyInfo, bool>(prop, false);
+                    }
+                    return new Tuple<PropertyInfo, bool>(prop, true);
+                }
+            }
+            return null;
+        }
+
         //public  void EnsureCorrectPropertyUsage()
         //{
         //    if (!_hasValidated)
@@ -134,13 +197,18 @@ namespace MDDDataAccess
     }
     public interface ITrackedEntity
     {
+        void BeginInit();
         void EndInit();
+        void BeginUpdate();
+        void EndUpdate();
         void UpdateLoadTime();
-        DateTime LoadedAt { get; }
+        int LoadedAt { get; }
         void RaiseEntityUpdated(string propertyName, object oldValue, object newValue);
         IEnumerable<string> GetDirtyProperties();
-
+        bool IsTracked (DBEngine db);
         bool IsDirty { get; }
+        void ResetDirtyTracking();
+        Tuple<PropertyInfo,bool> KeyInfo();
         //this method isn't working - fix it another day
         //void EnsureCorrectPropertyUsage();
     }

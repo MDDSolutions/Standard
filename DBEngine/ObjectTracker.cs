@@ -1,6 +1,7 @@
 ﻿using MDDFoundation;
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
 using System.Linq.Expressions;
@@ -24,6 +25,19 @@ namespace MDDDataAccess
             {
                 throw new ArgumentException("The expression must be a property selector", nameof(keyPropertyExpression));
             }
+        }
+        public T Retrieve(TKey key)
+        {
+            if (trackedObjects.TryGetValue(key, out var weakRef) && weakRef.TryGetTarget(out var trackedObject))
+            {
+                return trackedObject;
+            }
+            return null;
+        }
+        public bool Exists(T obj)
+        {
+            var key = keySelector(obj);
+            return Retrieve(key) != null;
         }
         public T Load(T obj)
         {
@@ -67,6 +81,44 @@ namespace MDDDataAccess
                                 $"Concurrency conflict detected on a dirty object of type {className} with key {key}. " +
                                 $"Dirty properties: {dirtyPropertiesStr}");
                         }
+                        else
+                        {
+                            //2025-09-11 at this point we have determined that an object with this id has already been loaded and we have inadvertently loaded a new instance with the same id
+                            //the existing object is not dirty so the new values are valid (if any have changed) but there may be references to the existing object so we can't just
+                            //replace it in the dictionary - we need to copy the values from the new object to the existing object and return a reference to the existing object
+                            var source = obj;
+                            var target = existingObj;
+                            var type = typeof(T);
+                            target.BeginInit();
+                            foreach (var prop in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+                            {
+                                if (!prop.CanWrite || !prop.CanRead)
+                                    continue;
+
+                                // Skip key property
+                                if (prop.Name == keySelector.Method.Name.Replace("get_", ""))
+                                {
+                                    prop.SetValue(source, default);
+                                    continue;
+                                }
+
+                                // We do not want to Skip concurrency property - the whole point is to make the existing object current with the new values.
+                                //if (_listConcurrencyProperty != null && prop.Name == _listConcurrencyProperty.Name)
+                                //    continue;
+
+                                // Skip indexers - I don't think I'll ever use this, but just in case...
+                                if (prop.GetIndexParameters().Length > 0)
+                                    continue;
+
+                                var value = prop.GetValue(source);
+                                prop.SetValue(target, value);
+                                prop.SetValue(source, default);
+                            }
+                            //Now reset the dirty tracking on the target since we have just updated all its values presumably from the database
+                            target.EndInit();
+
+                            return existingRef;
+                        }
                     }
                     else
                     {
@@ -90,18 +142,18 @@ namespace MDDDataAccess
 
             return _listConcurrencyProperty?.GetValue(obj);
         }
-        public DateTime? GetLoadTime(T obj)
+        public int? GetLoadTime(T obj)
         {
             var key = keySelector(obj);
             return GetLoadTime(key);
         }
-        public DateTime? GetLoadTime(TKey key)
+        public int? GetLoadTime(TKey key)
         {
             if (trackedObjects.TryGetValue(key, out var weakRef) && weakRef.TryGetTarget(out var trackedObject))
             {
                 return trackedObject.LoadedAt;
             }
-            return (DateTime?)null;
+            return (int?)null;
         }
         public T GetObject(TKey key)
         {
@@ -111,10 +163,13 @@ namespace MDDDataAccess
             }
             return default(T);
         }
-        public object Load(object obj)
-        {
-            return Load((T)obj);
-        }
+
+
+        public object Load(object obj) => Load((T)obj);
+        public object Retrieve(object key) => Retrieve((TKey)key);
+        public bool Exists(object obj) => Exists((T)obj);
+
+
         public void CleanupStaleEntries()
         {
             foreach (var key in trackedObjects.Keys)
@@ -143,6 +198,8 @@ namespace MDDDataAccess
     public interface IObjectTracker
     {
         object Load(object obj);
+        object Retrieve(object key);
+        bool Exists(object obj);
     }
 
 }
