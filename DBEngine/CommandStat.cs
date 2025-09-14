@@ -10,9 +10,9 @@ namespace MDDDataAccess
     {
         public string CommandText { get; set; }
         public int ExecutionCount { get; set; }
-        public TimeSpan CumulativeExecution { get; set; }
-        public TimeSpan LongestExecution { get; set; }
-        public TimeSpan ShortestExecution { get; set; }
+        public int CumulativeExecution { get; set; }
+        public int LongestExecution { get; set; }
+        public int ShortestExecution { get; set; }
         public DateTime FirstExecution { get; set; }
         public DateTime LastExecution { get; set; }
         public override string ToString()
@@ -23,7 +23,7 @@ namespace MDDDataAccess
         private static readonly ConcurrentDictionary<string, CommandStat> stats = new ConcurrentDictionary<string, CommandStat>();
         private static readonly ConcurrentDictionary<string, object> locks = new ConcurrentDictionary<string, object>();
 
-        public static void RecordStat(string text, TimeSpan elapsed)
+        public static void RecordStat(string text, int elapsed)
         {
             var now = DateTime.Now;
 

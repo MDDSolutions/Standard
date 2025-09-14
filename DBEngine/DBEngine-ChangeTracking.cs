@@ -39,7 +39,7 @@ namespace MDDDataAccess
                         Expression.Property(Expression.Parameter(type, "x"), keyProperty),
                         Expression.Parameter(type, "x"));
 
-                return new ObjectTracker<T, TKey>(keySelector);
+                return new ObjectTracker<T, TKey>(keySelector, this) ;
             });
 
             return (ObjectTracker<T, TKey>)trackerObject;

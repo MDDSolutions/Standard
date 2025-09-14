@@ -1,5 +1,6 @@
 ﻿using MDDFoundation;
 using System;
+using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data.SqlClient;
@@ -15,8 +16,9 @@ namespace MDDDataAccess
     {
         public bool KeepStats { get; set; }
         public bool LogErrors { get; set; }
-        public bool Debug { get; set; }
-        public const string LogFileName = "DBEngine_log.txt";
+        public byte DebugLevel { get; set; } = 0;
+        //public const string LogFileName = "DBEngine_log.txt";
+        public RichLog Log { get; set; } = new RichLog("DBEngine",null);
 
         public void ExecuteScript(string script)
         {
@@ -88,204 +90,128 @@ namespace MDDDataAccess
                 throw new Exception("AdHoc commands are not allowed by this DBEngine");
             }
         }
-
         private SqlDataReader ExecuteReader(SqlCommand cmd)
         {
-            Stopwatch sw = null;
-            if (KeepStats)
-            {
-                sw = new Stopwatch();
-                sw.Start();
-            }
+            var start = Environment.TickCount;
             try
             {
                 var rdr = cmd.ExecuteReader();
-                if (KeepStats)
-                {
-                    sw.Stop();
-                    CommandStat.RecordStat(cmd.CommandText, sw.Elapsed);
-                    if (Debug) Debugcmd(cmd, sw);
-                }
+                PostExecution(cmd, start);
                 return rdr;
             }
             catch (Exception ex)
             {
-                if (LogErrors)
-                {
-                    Foundation.Log("*****************************************************************", false, LogFileName);
-                    Foundation.Log("DBEngine command execution error in ExecuteReader:", false, LogFileName);
-                    Foundation.Log(ex.ToString(), false, LogFileName);
-                    Foundation.Log("Command Text:", false, LogFileName);
-                    Debugcmd(cmd, sw);
-                    Foundation.Log("*****************************************************************", false, LogFileName);
-                }
+                if (LogErrors) LogError(cmd, start, ex);
                 throw ex;
             }
         }
         private async Task<SqlDataReader> ExecuteReaderAsync(SqlCommand cmd, CancellationToken token)
         {
-            Stopwatch sw = null;
-            if (KeepStats)
-            {
-                sw = new Stopwatch();
-                sw.Start();
-            }
+            var start = Environment.TickCount;
             try
             {
                 var rdr = await cmd.ExecuteReaderAsync(token).ConfigureAwait(false);
-                if (KeepStats)
-                {
-                    sw.Stop();
-                    CommandStat.RecordStat(cmd.CommandText, sw.Elapsed);
-                    if (Debug) Debugcmd(cmd, sw);
-                }
+                PostExecution(cmd, start);
                 return rdr;
             }
             catch (Exception ex)
             {
-                if (LogErrors)
-                {
-                    Foundation.Log("*****************************************************************", false, LogFileName);
-                    Foundation.Log("DBEngine command execution error in ExecuteReaderAsync:", false, LogFileName);
-                    Foundation.Log(ex.ToString(), false, LogFileName);
-                    Foundation.Log("Command Text:", false, LogFileName);
-                    Debugcmd(cmd, sw);
-                    Foundation.Log("*****************************************************************", false, LogFileName);
-                }
+                if (LogErrors) LogError(cmd, start, ex);
                 throw ex;
             }
         }
         private async Task ExecuteNonQueryAsync(SqlCommand cmd, CancellationToken token)
         {
-            Stopwatch sw = null;
-            if (KeepStats)
-            {
-                sw = new Stopwatch();
-                sw.Start();
-            }
+            var start = Environment.TickCount;
             try
             {
                 await cmd.ExecuteNonQueryAsync(token).ConfigureAwait(false);
-                if (KeepStats)
-                {
-                    sw.Stop();
-                    CommandStat.RecordStat(cmd.CommandText, sw.Elapsed);
-                    if (Debug) Debugcmd(cmd, sw);
-                }
+                PostExecution(cmd, start);
             }
             catch (Exception ex)
             {
-                if (LogErrors)
-                {
-                    Foundation.Log("*****************************************************************", false, LogFileName);
-                    Foundation.Log("DBEngine command execution error in ExecuteNonQueryAsync:", false, LogFileName);
-                    Foundation.Log(ex.ToString(), false, LogFileName);
-                    Foundation.Log("Command Text:", false, LogFileName);
-                    Debugcmd(cmd, sw);
-                    Foundation.Log("*****************************************************************", false, LogFileName);
-                }
+                if (LogErrors) LogError(cmd, start, ex);
                 throw ex;
             }
         }
+
+        private void PostExecution(SqlCommand cmd, int start)
+        {
+            var elapsed = Environment.TickCount - start;
+            if (KeepStats) CommandStat.RecordStat(cmd.CommandText, elapsed);
+            if (DebugLevel >= 50)
+            {
+                Log.Entry(new DBExecutionEntry
+                {
+                    Source = "Execution",
+                    Timestamp = DateTime.Now,
+                    Message = cmd.CommandText,
+                    Elapsed = elapsed,
+                    Severity = DBExecutionEntry.CalculateSeverity(elapsed),
+                    Details = DebugLevel >= 100 ? PrintExecStatement(cmd) : Debugcmd(cmd, null)
+                }, 2);
+            }
+        }
+
         private void ExecuteNonQuery(SqlCommand cmd)
         {
-            Stopwatch sw = null;
-            if (KeepStats)
-            {
-                sw = new Stopwatch();
-                sw.Start();
-            }
+            var start = Environment.TickCount;
             try
             {
                 cmd.ExecuteNonQuery();
-                if (KeepStats)
-                {
-                    sw.Stop();
-                    CommandStat.RecordStat(cmd.CommandText, sw.Elapsed);
-                    if (Debug) Debugcmd(cmd, sw);
-                }
+                PostExecution(cmd, start);
             }
             catch (Exception ex)
             {
-                if (LogErrors)
-                {
-                    Foundation.Log("*****************************************************************", false, LogFileName);
-                    Foundation.Log("DBEngine command execution error in ExecuteNonQuery:", false, LogFileName);
-                    Foundation.Log(ex.ToString(), false, LogFileName);
-                    Foundation.Log("Command Text:", false, LogFileName);
-                    Debugcmd(cmd, sw);
-                    Foundation.Log("*****************************************************************", false, LogFileName);
-                }
+                if (LogErrors) LogError(cmd, start, ex);
                 throw ex;
             }
         }
+
+        private void LogError(SqlCommand cmd, int start, Exception ex)
+        {
+            Log.Entry(new DBExecutionEntry
+            {
+                Source = "Error",
+                Timestamp = DateTime.Now,
+                Message = ex.Message,
+                Elapsed = Environment.TickCount - start,
+                Severity = 16,
+                Details = PrintExecStatement(cmd)
+            }, 2);
+        }
+
         private object ExecuteScalar(SqlCommand cmd)
         {
-            Stopwatch sw = null;
-            if (KeepStats)
-            {
-                sw = new Stopwatch();
-                sw.Start();
-            }
+            var start = Environment.TickCount;
             try
             {
                 var obj = cmd.ExecuteScalar();
-                if (KeepStats)
-                {
-                    sw.Stop();
-                    CommandStat.RecordStat(cmd.CommandText, sw.Elapsed);
-                    if (Debug) Debugcmd(cmd, sw);
-                }
+                PostExecution(cmd, start);
                 return obj;
             }
             catch (Exception ex)
             {
-                if (LogErrors)
-                {
-                    Foundation.Log("*****************************************************************", false, LogFileName);
-                    Foundation.Log("DBEngine command execution error in ExecuteScalar:", false, LogFileName);
-                    Foundation.Log(ex.ToString(), false, LogFileName);
-                    Foundation.Log("Command Text:", false, LogFileName);
-                    Debugcmd(cmd, sw);
-                    Foundation.Log("*****************************************************************", false, LogFileName);
-                }
+                if (LogErrors) LogError(cmd, start, ex);
                 throw ex;
             }
         }
         private async Task<object> ExecuteScalarAsync(SqlCommand cmd, CancellationToken token)
         {
-            Stopwatch sw = null;
-            if (KeepStats)
-            {
-                sw = new Stopwatch();
-                sw.Start();
-            }
+            var start = Environment.TickCount;
             try
             {
                 var obj = await cmd.ExecuteScalarAsync().ConfigureAwait(false);
-                if (KeepStats)
-                {
-                    sw.Stop();
-                    CommandStat.RecordStat(cmd.CommandText, sw.Elapsed);
-                    if (Debug) Debugcmd(cmd, sw);
-                }
+                PostExecution(cmd, start);
                 return obj;
             }
             catch (Exception ex)
             {
-                if (LogErrors)
-                {
-                    Foundation.Log("*****************************************************************", false, LogFileName);
-                    Foundation.Log("DBEngine command execution error in ExecuteScalarAsync:", false, LogFileName);
-                    Foundation.Log(ex.ToString(), false, LogFileName);
-                    Foundation.Log("Command Text:", false, LogFileName);
-                    Debugcmd(cmd, sw);
-                    Foundation.Log("*****************************************************************", false, LogFileName);
-                }
+                if (LogErrors) LogError(cmd, start, ex);
                 throw ex;
             }
         }
-        private void Debugcmd(SqlCommand cmd, Stopwatch sw)
+        private string Debugcmd(SqlCommand cmd, Stopwatch sw)
         {
             var sb = new StringBuilder();
             sb.AppendLine($"DBEngine executed {cmd.CommandText}");
@@ -301,7 +227,18 @@ namespace MDDDataAccess
                 sb.Append($"execution took {sw.Elapsed}");
 
             Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}: {sb}");
-            Foundation.Log(sb.ToString(), false, LogFileName);
+            //Foundation.Log(sb.ToString(), false, LogFileName);
+            return sb.ToString();
+        }
+    }
+    public class DBExecutionEntry : RichLogEntry
+    {
+        public int Elapsed { get; set; }
+        public static byte CalculateSeverity(int elapsed)
+        {
+            double k = 200.0 / Math.Log(301.0); // ≈ 35.044
+            double severity = k * Math.Log(1 + elapsed / 100.0);
+            return (byte)Math.Min(255, Math.Floor(severity));
         }
     }
 }

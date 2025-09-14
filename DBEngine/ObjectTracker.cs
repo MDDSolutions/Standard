@@ -13,8 +13,9 @@ namespace MDDDataAccess
     {
         private readonly ConcurrentDictionary<TKey, WeakReference<T>> trackedObjects = new ConcurrentDictionary<TKey, WeakReference<T>>();
         private readonly Func<T, TKey> keySelector;
-        public ObjectTracker(Expression<Func<T, TKey>> keyPropertyExpression)
+        public ObjectTracker(Expression<Func<T, TKey>> keyPropertyExpression, DBEngine engine)
         {
+            CurrentDBEngine = engine ?? throw new ArgumentNullException(nameof(engine));
             if (keyPropertyExpression.Body is MemberExpression memberExpression &&
                 memberExpression.Member is PropertyInfo)
             {
@@ -26,6 +27,7 @@ namespace MDDDataAccess
                 throw new ArgumentException("The expression must be a property selector", nameof(keyPropertyExpression));
             }
         }
+        public DBEngine CurrentDBEngine { get; set; }
         public T Retrieve(TKey key)
         {
             if (trackedObjects.TryGetValue(key, out var weakRef) && weakRef.TryGetTarget(out var trackedObject))
@@ -184,7 +186,13 @@ namespace MDDDataAccess
                             // Here you decide your strategy: re-insert or log a warning/error.
                             // For the sake of this example, we will re-insert the object.
                             if (trackedObjects.TryAdd(key, removedref))
-                                Foundation.Log($"The impossible has happened - an ObjectTracker entry was re-inserted between the time CleanupStaleEntries identified it as stale and was able to remove it - it was re-inserted - hopefully no harm, no foul... - the ToString on the object is {removedobj}", false, DBEngine.LogFileName);
+                                CurrentDBEngine.Log.Entry(
+                                    "ObjectTracker",
+                                    200,
+                                    $"The impossible has happened - an ObjectTracker entry was re-inserted between the time CleanupStaleEntries identified it as stale and was able to remove it - it was re-inserted - hopefully no harm, no foul... - the ToString on the object is {removedobj}",
+                                    new System.Diagnostics.StackTrace(true).ToString(),
+                                    1);
+                            //Foundation.Log($"The impossible has happened - an ObjectTracker entry was re-inserted between the time CleanupStaleEntries identified it as stale and was able to remove it - it was re-inserted - hopefully no harm, no foul... - the ToString on the object is {removedobj}", false, CurrentDBEngine.LogFileName);
                             else
                                 throw new AccessViolationException($"The impossible has happened - an ObjectTracker entry was re-inserted between the time CleanupStaleEntries identified it as stale and was able to remove it - it could not be re-inserted for some reason - the ToString on the object is {removedobj}");
                             // Alternatively, you could log an error or throw an exception, based on your needs.
