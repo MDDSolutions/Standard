@@ -144,11 +144,10 @@ namespace MDDDataAccess
                 Log.Entry(new DBExecutionEntry
                 {
                     Source = "Execution",
-                    Timestamp = DateTime.Now,
                     Message = cmd.CommandText,
                     Elapsed = elapsed,
                     Severity = DBExecutionEntry.CalculateSeverity(elapsed),
-                    Details = DebugLevel >= 100 ? PrintExecStatement(cmd) : Debugcmd(cmd, null)
+                    Details = DebugLevel >= 100 ? PrintExecStatement(cmd) : Debugcmd(cmd, elapsed)
                 }, 2);
             }
         }
@@ -173,7 +172,6 @@ namespace MDDDataAccess
             Log.Entry(new DBExecutionEntry
             {
                 Source = "Error",
-                Timestamp = DateTime.Now,
                 Message = ex.Message,
                 Elapsed = Environment.TickCount - start,
                 Severity = 16,
@@ -211,7 +209,7 @@ namespace MDDDataAccess
                 throw ex;
             }
         }
-        private string Debugcmd(SqlCommand cmd, Stopwatch sw)
+        private string Debugcmd(SqlCommand cmd, int elapsed)
         {
             var sb = new StringBuilder();
             sb.AppendLine($"DBEngine executed {cmd.CommandText}");
@@ -223,8 +221,7 @@ namespace MDDDataAccess
             }
 
             sb.Append(' ', 25);
-            if (sw != null)
-                sb.Append($"execution took {sw.Elapsed}");
+                sb.Append($"execution took {elapsed}ms");
 
             Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}: {sb}");
             //Foundation.Log(sb.ToString(), false, LogFileName);

@@ -28,13 +28,55 @@ namespace MDDDataAccess
             }
         }
         public DBEngine CurrentDBEngine { get; set; }
-        public T Retrieve(TKey key)
+        public T Retrieve(TKey key, T objIfMissingOrDead)
         {
-            if (trackedObjects.TryGetValue(key, out var weakRef) && weakRef.TryGetTarget(out var trackedObject))
+            if (objIfMissingOrDead == null)
             {
-                return trackedObject;
+                if (trackedObjects.TryGetValue(key, out var weakRef))
+                {
+                    if (weakRef.TryGetTarget(out var trackedObject))
+                    {
+                        return trackedObject;
+                    }
+                    else
+                    {
+                        if (trackedObjects.TryRemove(key, out _))
+                        {
+                            CurrentDBEngine.Log.Entry(new ObjectTrackerLogEntry(
+                            "ObjectTracker",
+                            50,
+                            $"Removed stale ObjectTracker entry for key {key}",
+                            new System.Diagnostics.StackTrace(true).ToString(),
+                            typeof(T).Name
+                            ));
+                        }
+                    }
+                }
+                return null;
             }
-            return null;
+            else
+            {
+                var objWeakReference = new WeakReference<T>(objIfMissingOrDead);
+                T existingObj = null;
+                var finalref = trackedObjects.AddOrUpdate(
+                    key,
+                    objWeakReference,
+                    (k, existingRef) =>
+                    {
+                        if (existingRef.TryGetTarget(out existingObj))
+                        {
+                            return existingRef;
+                        }
+                        else
+                        {
+                            return objWeakReference;
+                        }
+                    });
+                if (ReferenceEquals(finalref, objWeakReference))
+                    return objIfMissingOrDead;
+                else 
+                    return existingObj;
+            }
         }
         public bool Exists(T obj)
         {
@@ -45,12 +87,13 @@ namespace MDDDataAccess
         {
             var key = keySelector(obj);
             var objWeakReference = new WeakReference<T>(obj);
+            T existingObj;
 
             var finalref = trackedObjects.AddOrUpdate(key,
                 objWeakReference,
                 (k, existingRef) =>
                 {
-                    if (existingRef.TryGetTarget(out var existingObj))
+                    if (existingRef.TryGetTarget(out existingObj))
                     {
                         var existingConcurrencyValue = GetListConcurrencyValue(existingObj);
                         var newConcurrencyValue = GetListConcurrencyValue(obj);
@@ -92,6 +135,13 @@ namespace MDDDataAccess
                             var target = existingObj;
                             var type = typeof(T);
                             target.BeginInit();
+                            if (CurrentDBEngine.DebugLevel >= 200)
+                                CurrentDBEngine.Log.Entry(new ObjectTrackerLogEntry("ObjectTracker",
+                                    150,
+                                    "Merge",
+                                    $"source: {source} target: {target}",
+                                    type.Name));
+
                             foreach (var prop in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
                             {
                                 if (!prop.CanWrite || !prop.CanRead)
@@ -121,10 +171,6 @@ namespace MDDDataAccess
 
                             return existingRef;
                         }
-                    }
-                    else
-                    {
-
                     }
                     return objWeakReference;
                 });
@@ -168,7 +214,7 @@ namespace MDDDataAccess
 
 
         public object Load(object obj) => Load((T)obj);
-        public object Retrieve(object key) => Retrieve((TKey)key);
+        public object Retrieve(object key, object objIfMissingOrDead = null) => Retrieve((TKey)key, (T)objIfMissingOrDead);
         public bool Exists(object obj) => Exists((T)obj);
 
 
@@ -181,20 +227,28 @@ namespace MDDDataAccess
                     // Attempt to remove the item and get the removed value.
                     if (trackedObjects.TryRemove(key, out var removedref))
                     {
+                        CurrentDBEngine.Log.Entry(new ObjectTrackerLogEntry(
+                            "ObjectTracker",
+                            50,
+                            $"Removed stale ObjectTracker entry for key {key}",
+                            new System.Diagnostics.StackTrace(true).ToString(),
+                            typeof(T).Name
+                            ));
                         if (removedref.TryGetTarget(out var removedobj)) // It means the entry was replaced between our operations.
                         {
+                            throw new AccessViolationException($"The impossible has happened - an ObjectTracker entry for key {key} on type {typeof(T).Name} was re-inserted between the time CleanupStaleEntries identified it as stale and was able to remove it - it could not be re-inserted for some reason - the ToString on the object is {removedobj}");
                             // Here you decide your strategy: re-insert or log a warning/error.
                             // For the sake of this example, we will re-insert the object.
-                            if (trackedObjects.TryAdd(key, removedref))
-                                CurrentDBEngine.Log.Entry(
-                                    "ObjectTracker",
-                                    200,
-                                    $"The impossible has happened - an ObjectTracker entry was re-inserted between the time CleanupStaleEntries identified it as stale and was able to remove it - it was re-inserted - hopefully no harm, no foul... - the ToString on the object is {removedobj}",
-                                    new System.Diagnostics.StackTrace(true).ToString(),
-                                    1);
+                            //if (trackedObjects.TryAdd(key, removedref))
+                            //    CurrentDBEngine.Log.Entry(new ObjectTrackerLogEntry(
+                            //        "ObjectTracker",
+                            //        230,
+                            //        $"The impossible has happened - an ObjectTracker entry was re-inserted between the time CleanupStaleEntries identified it as stale and was able to remove it - it was re-inserted - hopefully no harm, no foul... - the ToString on the object is {removedobj}",
+                            //        new System.Diagnostics.StackTrace(true).ToString(),
+                            //        typeof(T).Name
+                            //        ));
                             //Foundation.Log($"The impossible has happened - an ObjectTracker entry was re-inserted between the time CleanupStaleEntries identified it as stale and was able to remove it - it was re-inserted - hopefully no harm, no foul... - the ToString on the object is {removedobj}", false, CurrentDBEngine.LogFileName);
-                            else
-                                throw new AccessViolationException($"The impossible has happened - an ObjectTracker entry was re-inserted between the time CleanupStaleEntries identified it as stale and was able to remove it - it could not be re-inserted for some reason - the ToString on the object is {removedobj}");
+                            //else
                             // Alternatively, you could log an error or throw an exception, based on your needs.
                             // throw new InvalidOperationException($"Race condition detected for key {key}.");
                         }
@@ -206,8 +260,19 @@ namespace MDDDataAccess
     public interface IObjectTracker
     {
         object Load(object obj);
-        object Retrieve(object key);
+        object Retrieve(object key, object objIfMissingOrDead = null);
         bool Exists(object obj);
     }
-
+    public class ObjectTrackerLogEntry : RichLogEntry
+    {
+        public ObjectTrackerLogEntry(string source, byte severity, string message, string details, string typename)
+        {
+            Source = source;
+            Severity = severity;
+            Message = message;
+            Details = details;
+            TypeName = typename;
+        }
+        public string TypeName { get; set; }
+    }
 }

@@ -305,6 +305,10 @@ namespace MDDDataAccess
         }
         public static string PrintExecStatement(SqlCommand cmd)
         {
+            if (cmd.CommandType != CommandType.StoredProcedure)
+            {
+                return cmd.CommandText;
+            }
             var plist = ProcedureParameterList(cmd);
 
             var sb = new StringBuilder();
@@ -313,7 +317,7 @@ namespace MDDDataAccess
             //foreach (var procparm in plist.Join(cmd.Parameters.OfType<SqlParameter>(), x => x.name, y => y.ParameterName, (x, y) => new { x, y }))
             foreach (var procparm in plist.Where(x => x.is_output))
             {
-                var cmdparm = cmd.Parameters.OfType<SqlParameter>().Where(x => x.ParameterName.Equals(procparm.name, StringComparison.OrdinalIgnoreCase)).FirstOrDefault();
+                var cmdparm = cmd.Parameters.OfType<SqlParameter>().Where(x => x.ParameterName.TrimStart('@').Equals(procparm.name.TrimStart('@'), StringComparison.OrdinalIgnoreCase)).FirstOrDefault();
                 if (cmdparm == null) throw new Exception("Output parameters must be specified");
                 if (sbselect == null)
                 {

@@ -56,7 +56,8 @@ namespace MDDFoundation
         }
         private static readonly List<RichLog> _activeLogs = new List<RichLog>();
         public static IReadOnlyList<RichLog> ActiveLogs { get; } = _activeLogs.AsReadOnly();
-
+        private int enqueuedCount = 0;
+        private int dequeuedCount = 0;
         public void Entry(RichLogEntry entry, int skipframes = 1)
         {
             if (entry == null) throw new ArgumentNullException(nameof(entry));
@@ -69,24 +70,17 @@ namespace MDDFoundation
                 entry.ClassName = method?.DeclaringType?.FullName;
                 entry.MethodName = method?.Name;
             }
-
-            lock (_syncRoot)
+            if (entry.Timestamp == default)
             {
-                _entries.Add(entry);
+                entry.Timestamp = DateTime.Now;
             }
+
+            //onsole.WriteLine($"RichLog.Entry: {entry}");
+
+            Interlocked.Increment(ref enqueuedCount);
             _flushQueue.Enqueue(entry);
             _flushSignal.Set();
-            // Notify subscribers that match
-            lock (_subscribers)
-            {
-                foreach (var sub in _subscribers)
-                {
-                    if (sub.Filter(entry))
-                    {
-                        sub.Handler?.Invoke(this, entry);
-                    }
-                }
-            }
+
             EnsureFlushLoopRunning();
         }
 
@@ -95,7 +89,7 @@ namespace MDDFoundation
             var frame = new StackFrame(skipframes, false);
             var method = frame.GetMethod();
 
-            var entry = new RichLogEntry
+            Entry(new RichLogEntry
             {
                 Timestamp = DateTime.Now,
                 Source = source,
@@ -105,14 +99,12 @@ namespace MDDFoundation
                 ClassName = method?.DeclaringType?.FullName,
                 MethodName = method?.Name,
                 Details = details
-            };
-
-            Entry(entry);
+            });
         }
 
         private void EnsureFlushLoopRunning()
         {
-            if (_logFilePath != null && (_flushTask == null || _flushTask.IsCompleted))
+            if (_flushTask == null || _flushTask.IsCompleted)
             {
                 _cts = new CancellationTokenSource();
                 _flushTask = Task.Run(() => FlushLoop(_cts.Token));
@@ -145,14 +137,33 @@ namespace MDDFoundation
 
         private void FlushPending()
         {
-            var sb = new StringBuilder();
+            StringBuilder sb = null;
+            if (_logFilePath != null)
+                sb = new StringBuilder();
 
             while (_flushQueue.TryDequeue(out var entry))
             {
-                sb.AppendLine($"{entry.Timestamp:yyyy-MM-dd HH:mm:ss.ff} [{entry.Severity}] {entry.Source} - {entry.Message} ({entry.AssemblyName}.{entry.ClassName}.{entry.MethodName})");
+                Interlocked.Increment(ref dequeuedCount);
+                //onsole.WriteLine($"RichLog.Dequeue: {entry}");
+                lock (_syncRoot)
+                {
+                    _entries.Add(entry);
+                }
+                if (_logFilePath != null) sb.AppendLine($"{entry.Timestamp:yyyy-MM-dd HH:mm:ss.ff} [{entry.Severity}] {entry.Source} - {entry.Message} ({entry.AssemblyName}.{entry.ClassName}.{entry.MethodName})");
+                // Notify subscribers that match
+                lock (_subscribers)
+                {
+                    foreach (var sub in _subscribers)
+                    {
+                        if (sub.Filter(entry))
+                        {
+                            sub.Handler?.Invoke(this, entry);
+                        }
+                    }
+                }
             }
 
-            if (sb.Length > 0)
+            if (_logFilePath != null && sb.Length > 0)
             {
                 File.AppendAllText(_logFilePath, sb.ToString());
             }

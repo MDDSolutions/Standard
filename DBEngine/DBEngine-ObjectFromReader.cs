@@ -44,6 +44,7 @@ namespace MDDDataAccess
                     {
                         creating = false;
                         ite.BeginUpdate();
+                        if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 55, "OFR cache hit", r.ToString(), typeof(T).Name));
                     }
                     else
                     {
@@ -55,8 +56,9 @@ namespace MDDDataAccess
                     object keyvalue = rdr[keyinfo.Item1.Name];
                     if (keyvalue == null || keyvalue == DBNull.Value)
                         throw new Exception($"DBEngine error: Tracking has been set to {Tracking} but the object being loaded has a null key value - you must either set Tracking to None or ensure that all objects being loaded have a valid key value");
-                    r = (T)tracker.Retrieve(keyvalue);
-                    if (r != null)
+                    var newObj = r;
+                    r = (T)tracker.Retrieve(keyvalue, r);
+                    if (!ReferenceEquals(r,newObj))
                     {
                         ite = r as ITrackedEntity;
                         if (ite.IsDirty)
@@ -67,12 +69,13 @@ namespace MDDDataAccess
                         }
                         creating = false;
                         ite.BeginUpdate();
+                        if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 53, "OFR cache update", r.ToString(), typeof(T).Name));
                     }
                     else
                     {
                         creating = true;
-                        r = new T();
                         ite.BeginInit();
+                        if (DebugLevel >= 220) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 51, "OFR create", $"Type: {typeof(T).Name} ID: {keyvalue}", typeof(T).Name));
                     }
                 }
 

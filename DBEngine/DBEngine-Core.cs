@@ -2,14 +2,15 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Data;
-using System.Threading;
-using System.Threading.Tasks;
 using System.Data.SqlClient;
+using System.Diagnostics;
+using System.Dynamic;
+using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
-using System.Linq;
 using System.Text;
-using System.Diagnostics;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace MDDDataAccess
 {
@@ -664,6 +665,81 @@ namespace MDDDataAccess
                         {
                             throw ex;
                         }
+                    }
+                }
+            }
+            return null;
+        }
+        public IList<dynamic> SqlRunQueryWithResultsDynamic(
+            string cmdtext,
+            bool IsProcedure,
+            int ConnectionTimeout = -1,
+            string ApplicationName = null,
+            params SqlParameter[] list)
+        {
+            using (var cn = getconnection(ConnectionTimeout, ApplicationName))
+            {
+                if (cn != null)
+                {
+                    using (SqlCommand cmd = new SqlCommand(cmdtext, cn))
+                    {
+                        cmd.CommandTimeout = CommandTimeout;
+                        if (IsProcedure) cmd.CommandType = CommandType.StoredProcedure;
+                        ParameterizeCommand(list, cmd);
+
+                        var results = new List<dynamic>();
+                        using (SqlDataReader rdr = ExecuteReader(cmd))
+                        {
+                            while (rdr.Read())
+                            {
+                                IDictionary<string, object> row = new ExpandoObject();
+                                for (int i = 0; i < rdr.FieldCount; i++)
+                                {
+                                    var value = rdr.IsDBNull(i) ? null : rdr.GetValue(i);
+                                    row[rdr.GetName(i)] = value;
+                                }
+                                results.Add(row);
+                            }
+                        }
+                        return results;
+                    }
+                }
+            }
+            return null;
+        }
+        public async Task<IList<dynamic>> SqlRunQueryWithResultsDynamicAsync(
+            string cmdtext,
+            bool IsProcedure,
+            CancellationToken cancellationToken,
+            int ConnectionTimeout = -1,
+            string ApplicationName = null,
+            params SqlParameter[] list)
+        {
+            using (var cn = await getconnectionasync(cancellationToken, ConnectionTimeout, ApplicationName).ConfigureAwait(false))
+            {
+                if (cn != null)
+                {
+                    using (SqlCommand cmd = new SqlCommand(cmdtext, cn))
+                    {
+                        cmd.CommandTimeout = CommandTimeout;
+                        if (IsProcedure) cmd.CommandType = CommandType.StoredProcedure;
+                        ParameterizeCommand(list, cmd);
+
+                        var results = new List<dynamic>();
+                        using (SqlDataReader rdr = await ExecuteReaderAsync(cmd, cancellationToken).ConfigureAwait(false))
+                        {
+                            while (await rdr.ReadAsync(cancellationToken).ConfigureAwait(false))
+                            {
+                                IDictionary<string, object> row = new ExpandoObject();
+                                for (int i = 0; i < rdr.FieldCount; i++)
+                                {
+                                    var value = rdr.IsDBNull(i) ? null : rdr.GetValue(i);
+                                    row[rdr.GetName(i)] = value;
+                                }
+                                results.Add(row);
+                            }
+                        }
+                        return results;
                     }
                 }
             }

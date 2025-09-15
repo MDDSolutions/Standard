@@ -14,8 +14,9 @@ namespace MDDFoundation
             IsActive = false;
             _instances.Remove(this);
         }
-        public bool IsActive { get; set; } = true;
+        public virtual bool IsActive { get; set; } = true;
         public abstract Task HandleAsync(T inObj, object ParamObj = null);
+        public Func<HandlerBase<T>, T, object, Task> HandleBackAsync { get; set; } = null;
         public virtual bool ValidFor(T inObj, object ParamObj = null) => IsActive;
 
 
