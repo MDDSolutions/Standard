@@ -128,25 +128,6 @@ namespace MDDDataAccess
         {
             _originalValues?.Clear();
         }
-        public Tuple<PropertyInfo, bool> KeyInfo()
-        {
-            var type = this.GetType();
-            foreach (var prop in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
-            {
-                if (Attribute.IsDefined(prop, typeof(ListKeyAttribute)))
-                {
-                    var value = prop.GetValue(this);
-                    if (value == null) return new Tuple<PropertyInfo, bool>(prop, false);
-                    if (prop.PropertyType.IsValueType)
-                    {
-                        var defaultValue = Activator.CreateInstance(prop.PropertyType);
-                        if (value.Equals(defaultValue)) return new Tuple<PropertyInfo, bool>(prop, false);
-                    }
-                    return new Tuple<PropertyInfo, bool>(prop, true);
-                }
-            }
-            return null;
-        }
 
         //public  void EnsureCorrectPropertyUsage()
         //{
@@ -208,7 +189,6 @@ namespace MDDDataAccess
         bool IsTracked (DBEngine db);
         bool IsDirty { get; }
         void ResetDirtyTracking();
-        Tuple<PropertyInfo,bool> KeyInfo();
         //this method isn't working - fix it another day
         //void EnsureCorrectPropertyUsage();
     }

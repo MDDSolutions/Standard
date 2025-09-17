@@ -8,16 +8,19 @@ using System.Runtime.Serialization;
 using System.Text;
 using System.ComponentModel;
 using MDDFoundation;
+using System.Linq;
 
 namespace MDDDataAccess
 {
     public partial class DBEngine
     {
         public bool EnumParseIgnoreCase { get; set; } = true;
-        public void ObjectFromReader<T>(SqlDataReader rdr, ref List<Tuple<Action<object, object>, string>> map, ref PropertyInfo key, ref T r, ref IObjectTracker tracker) where T : new()
+        public void ObjectFromReader<T>(SqlDataReader rdr, ref List<Tuple<Action<object, object>, string>> map, ref PropertyInfo key, ref T r, ref IObjectTracker tracker, bool strict = true) where T : new()
         {
             if (r == null) r = new T();
 
+            Tuple<PropertyInfo, bool> keyinfo = null;
+            PropertyInfo concurrency = null;
             bool creating = true;
             if (Tracking != ObjectTracking.None && r is ITrackedEntity ite)
             {
@@ -28,7 +31,9 @@ namespace MDDDataAccess
 
                 ///KeyInfo returns a tuple of (PropertyInfo for the property marked with ListKeyAttribute, bool indicating whether or not the property has a value)
                 ///if the property has a value, then the object should have already been created via the tracker - if it wasn't, that's an error
-                var keyinfo = ite.KeyInfo();
+                keyinfo = AttributeInfo(r, typeof(ListKeyAttribute));
+                if (keyinfo.Item1 == null)
+                    throw new Exception($"DBEngine error: Tracking has been set to {Tracking} but type '{r.GetType().Name}' does not have a property marked with ListKeyAttribute");
                 if (keyinfo.Item2)
                 {
                     //if we are explicity providing a dirty object then chances are this is an update operation so we let dirty objects through
@@ -86,7 +91,24 @@ namespace MDDDataAccess
                 //    ite.BeginInit();
                 //}
             }
-            
+
+            if (!strict)
+            {
+                //non-strict mode means we don't match all properties to reader columns but it is still pretty strict... the object must have a populated Key property and a concurrency property
+                //this method assumes that the database operation is checking the concurrency property but cannot ensure that
+                if (keyinfo == null)
+                   keyinfo = AttributeInfo(r, typeof(ListKeyAttribute));
+                if (keyinfo.Item1 == null || !keyinfo.Item2)
+                    throw new Exception($"DBEngine error: Non-strict ObjectFromReader calls require that the object being loaded have a property marked with ListKeyAttribute and that the property have a value");
+
+                concurrency = AttributeProperty<T>(typeof(ListConcurrencyAttribute));
+                if (concurrency == null)
+                    throw new Exception($"DBEngine error: Non-strict ObjectFromReader calls require that the object being loaded have a property marked with ListConcurrencyAttribute");
+
+                //at this point all we need to do is not throw an error if properties are missing from the reader - we still map everything we can find - but we do need to make sure
+                //that the concurrency property *is* in the reader
+            }
+
 
             bool nomap = false;
 
@@ -107,7 +129,7 @@ namespace MDDDataAccess
 
 
 
-                foreach (var item in r.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance))
+                foreach (var item in typeof(T).GetProperties(BindingFlags.Public | BindingFlags.Instance))
                 {
                     bool include = true;
                     string DBName = null;
@@ -131,6 +153,11 @@ namespace MDDDataAccess
                         }
 
                     }
+
+                    // in non-strict mode, all properties are optional except the concurrency property
+                    // the key property isn't optional either but we've already checked for it above
+                    // even if the concurrency property is marked with DBOptional, we still require it to be in the reader in non-strict mode
+                    if (!strict) optional = item != concurrency;
 
                     if (include && item.CanWrite && (item.PropertyType.Name == "Char" || item.ToString().StartsWith("System.Nullable`1[System.Char]")))
                     {

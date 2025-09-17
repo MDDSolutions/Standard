@@ -13,6 +13,7 @@ using System.Runtime.Serialization;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.IO;
 using System.Diagnostics;
+using System.Collections.Concurrent;
 
 namespace MDDDataAccess
 {
@@ -303,78 +304,86 @@ namespace MDDDataAccess
             }
             return new SqlParameter(name, expression.Compile().DynamicInvoke());
         }
-        public static string PrintExecStatement(SqlCommand cmd)
+        public static string PrintExecStatement(SqlCommand cmd, bool suppresserror = false)
         {
-            if (cmd.CommandType != CommandType.StoredProcedure)
+            try
             {
-                return cmd.CommandText;
-            }
-            var plist = ProcedureParameterList(cmd);
-
-            var sb = new StringBuilder();
-            StringBuilder sbselect = null;
-
-            //foreach (var procparm in plist.Join(cmd.Parameters.OfType<SqlParameter>(), x => x.name, y => y.ParameterName, (x, y) => new { x, y }))
-            foreach (var procparm in plist.Where(x => x.is_output))
-            {
-                var cmdparm = cmd.Parameters.OfType<SqlParameter>().Where(x => x.ParameterName.TrimStart('@').Equals(procparm.name.TrimStart('@'), StringComparison.OrdinalIgnoreCase)).FirstOrDefault();
-                if (cmdparm == null) throw new Exception("Output parameters must be specified");
-                if (sbselect == null)
+                if (cmd.CommandType != CommandType.StoredProcedure)
                 {
-                    sb.AppendLine($"DECLARE {procparm.name} {procparm.SQLDataTypeString()} = {PrintSqlValue(cmdparm.Value)},");
-                    sbselect = new StringBuilder();
-                    sbselect.Append($"SELECT {procparm.name} AS {procparm.name.TrimStart('@')},");
+                    return cmd.CommandText;
                 }
-                else
-                {
-                    sb.AppendLine($"\t{procparm.name} {procparm.SQLDataTypeString()} = {PrintSqlValue(cmdparm.Value)},");
-                    sbselect.Append($" {procparm.name} AS {procparm.name.TrimStart('@')},");
-                }
-            }
-            if (sbselect != null)
-            {
-                sb = new StringBuilder(sb.ToString().Trim().TrimEnd(',') + ";\r\n");
-                sbselect = new StringBuilder(sbselect.ToString().TrimEnd(',') + ';');
-            }
+                var plist = ProcedureParameterList(cmd);
 
-            sb.AppendLine($"EXEC {cmd.CommandText}");
-            var lastcomma = 0;
-            bool lastcomment = false;
-            if (cmd.Parameters != null && cmd.Parameters.Count > 0)
-            {
-                foreach (var procparm in plist)
+                var sb = new StringBuilder();
+                StringBuilder sbselect = null;
+
+                //foreach (var procparm in plist.Join(cmd.Parameters.OfType<SqlParameter>(), x => x.name, y => y.ParameterName, (x, y) => new { x, y }))
+                foreach (var procparm in plist.Where(x => x.is_output))
                 {
                     var cmdparm = cmd.Parameters.OfType<SqlParameter>().Where(x => x.ParameterName.TrimStart('@').Equals(procparm.name.TrimStart('@'), StringComparison.OrdinalIgnoreCase)).FirstOrDefault();
-                    if (cmdparm == null)
+                    if (cmdparm == null) throw new Exception("Output parameters must be specified");
+                    if (sbselect == null)
                     {
-                        sb.AppendLine($"\t--{procparm.name} = NULL,\t\t--{procparm.SQLDataTypeString()}");
-                        lastcomment = true;
-                    }
-                    else if (procparm.is_output)
-                    {
-                        sb.Append($"\t{procparm.name} = {cmdparm.ParameterName} OUTPUT,");
-                        lastcomma = sb.Length;
-                        sb.AppendLine($"\t\t--{procparm.SQLDataTypeString()}");
-                        lastcomment = false;
+                        sb.AppendLine($"DECLARE {procparm.name} {procparm.SQLDataTypeString()} = {PrintSqlValue(cmdparm.Value)},");
+                        sbselect = new StringBuilder();
+                        sbselect.Append($"SELECT {procparm.name} AS {procparm.name.TrimStart('@')},");
                     }
                     else
                     {
-                        sb.Append($"\t{(procparm.name.StartsWith("@") ? procparm.name : $"@{procparm.name}")} = {PrintSqlValue(cmdparm.Value)},");
-                        lastcomma = sb.Length;
-                        sb.AppendLine($"\t\t--{procparm.SQLDataTypeString()}");
-                        lastcomment = false;
+                        sb.AppendLine($"\t{procparm.name} {procparm.SQLDataTypeString()} = {PrintSqlValue(cmdparm.Value)},");
+                        sbselect.Append($" {procparm.name} AS {procparm.name.TrimStart('@')},");
                     }
                 }
+                if (sbselect != null)
+                {
+                    sb = new StringBuilder(sb.ToString().Trim().TrimEnd(',') + ";\r\n");
+                    sbselect = new StringBuilder(sbselect.ToString().TrimEnd(',') + ';');
+                }
+
+                sb.AppendLine($"EXEC {cmd.CommandText}");
+                var lastcomma = 0;
+                bool lastcomment = false;
+                if (cmd.Parameters != null && cmd.Parameters.Count > 0)
+                {
+                    foreach (var procparm in plist)
+                    {
+                        var cmdparm = cmd.Parameters.OfType<SqlParameter>().Where(x => x.ParameterName.TrimStart('@').Equals(procparm.name.TrimStart('@'), StringComparison.OrdinalIgnoreCase)).FirstOrDefault();
+                        if (cmdparm == null)
+                        {
+                            sb.AppendLine($"\t--{procparm.name} = NULL,\t\t--{procparm.SQLDataTypeString()}");
+                            lastcomment = true;
+                        }
+                        else if (procparm.is_output)
+                        {
+                            sb.Append($"\t{procparm.name} = {cmdparm.ParameterName} OUTPUT,");
+                            lastcomma = sb.Length;
+                            sb.AppendLine($"\t\t--{procparm.SQLDataTypeString()}");
+                            lastcomment = false;
+                        }
+                        else
+                        {
+                            sb.Append($"\t{(procparm.name.StartsWith("@") ? procparm.name : $"@{procparm.name}")} = {PrintSqlValue(cmdparm.Value)},");
+                            lastcomma = sb.Length;
+                            sb.AppendLine($"\t\t--{procparm.SQLDataTypeString()}");
+                            lastcomment = false;
+                        }
+                    }
+                }
+                var str = sb.ToString();
+                if (lastcomment) str = str.Remove(str.LastIndexOf(','), 1);
+                if (lastcomma > 0) str = str.Remove(lastcomma - 1, 1);
+
+                sb = new StringBuilder(str);
+
+                str = sb.ToString() + (sbselect == null ? "" : sbselect?.ToString());
+                Console.WriteLine(str);
+                return str;
             }
-            var str = sb.ToString();
-            if (lastcomment) str = str.Remove(str.LastIndexOf(','), 1);
-            str = str.Remove(lastcomma - 1, 1);
-
-            sb = new StringBuilder(str);
-
-            str = sb.ToString() + (sbselect == null ? "" : sbselect?.ToString());
-            Console.WriteLine(str);
-            return str;
+            catch (Exception ex)
+            {
+                if (suppresserror) return $"EXEC {cmd.CommandText} -- could not generate parameter list";
+                throw ex;
+            }
         }
         public static string PrintSqlValue(object obj)
         {
@@ -382,6 +391,46 @@ namespace MDDDataAccess
             if (obj == DBNull.Value) return "NULL";
             if (obj is string || obj is DateTime) return $"'{obj}'";
             return obj.ToString();
+        }
+        private static readonly ConcurrentDictionary<(Type, Type), PropertyInfo> _propertyCache = new ConcurrentDictionary<(Type, Type), PropertyInfo>();
+        public static PropertyInfo AttributeProperty<T>(Type attributetype)
+        {
+            var key = (typeof(T), attributetype);
+            var prop = _propertyCache.GetOrAdd(
+                key,
+                k => typeof(T).GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                        .FirstOrDefault(x => Attribute.IsDefined(x, attributetype)));
+            return prop;
+        }
+        /// <summary>
+        /// Retrieves information about a property of the specified type that is decorated with a given attribute type
+        /// and determines whether the property's value is non-default.
+        /// </summary>
+        /// <remarks>A property's value is considered non-default if it is not <see langword="null"/> and,
+        /// for value types, it does not equal the default value of its type.</remarks>
+        /// <typeparam name="T">The type of the object to inspect for the attribute.</typeparam>
+        /// <param name="r">The instance of the object to check for the attribute.</param>
+        /// <param name="attributetype">The type of the attribute to search for on the object's properties.</param>
+        /// <returns>A <see cref="Tuple{T1, T2}"/> where the first item is the <see cref="PropertyInfo"/> of the property
+        /// decorated with the specified attribute, or <see langword="null"/> if no such property exists.  The second
+        /// item is a <see langword="bool"/> indicating whether the property's value is non-default.  IMPORTANT: this method
+        /// will not return null - it will always return a valid tuple - a null in Item1 means the property did not exist.
+        /// The existence of the tuple means the information has been retrieved</returns>
+        public static Tuple<PropertyInfo, bool> AttributeInfo<T>(T r, Type attributetype)
+        {
+            var prop = AttributeProperty<T>(attributetype);
+            if (prop != null)
+            {
+                var value = prop.GetValue(r);
+                if (value == null) return new Tuple<PropertyInfo, bool>(prop, false);
+                if (prop.PropertyType.IsValueType)
+                {
+                    var defaultValue = Activator.CreateInstance(prop.PropertyType);
+                    if (value.Equals(defaultValue)) return new Tuple<PropertyInfo, bool>(prop, false);
+                }
+                return new Tuple<PropertyInfo, bool>(prop, true);
+            }
+            return new Tuple<PropertyInfo, bool>(null, false);
         }
     }
 }

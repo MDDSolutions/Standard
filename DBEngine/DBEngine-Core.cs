@@ -812,11 +812,11 @@ namespace MDDDataAccess
                                     rowindex++;
 
                                     var availabletask = await Task.WhenAny(tasks.Where(x => x != null).Select(x => x.Item2)).ConfigureAwait(false);
-                                    var curindex = Array.FindIndex(tasks, x => x.Item2 == availabletask);
+                                    var taskindex = Array.FindIndex(tasks, x => x.Item2 == availabletask);
 
                                     T r = new T();
                                     ObjectFromReader<T>(rdr, ref map, ref key, ref r, ref t);
-                                    tasks[curindex] = new Tuple<T, Task>(r, rowcallback(r, rowindex, cancellationToken, curindex));
+                                    tasks[taskindex] = new Tuple<T, Task>(r, rowcallback(r, rowindex, cancellationToken, taskindex));
 
                                     if (cancellationToken.IsCancellationRequested) break;
                                 }
@@ -1072,7 +1072,7 @@ namespace MDDDataAccess
             }
             return default(T);
         }
-        public bool RunSqlUpdate<T>(T obj, string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T : new()
+        bool runsqlupdateinternal<T>(T obj, string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, bool strict = true, params SqlParameter[] list) where T : new()
         {
             if (Tracking != ObjectTracking.None && obj is ITrackedEntity ite)
             {
@@ -1100,7 +1100,7 @@ namespace MDDDataAccess
                                 while (rdr.Read())
                                 {
                                     if (found) throw new Exception("Only one record expected in the update result");
-                                    ObjectFromReader(rdr, ref map, ref key, ref obj, ref t);
+                                    ObjectFromReader(rdr, ref map, ref key, ref obj, ref t, strict);
                                     found = true;
                                 }
                             }
@@ -1114,6 +1114,14 @@ namespace MDDDataAccess
                 }
             }
             return found;
+        }
+        public bool RunSqlUpdate<T>(T obj, string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T : new()
+        {
+            return runsqlupdateinternal(obj, cmdtext, IsProcedure, ConnectionTimeout, ApplicationName, true, list);
+        }
+        public bool RunSqlUpdateNonStrict<T>(T obj, string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T : new()
+        {
+            return runsqlupdateinternal(obj, cmdtext, IsProcedure, ConnectionTimeout, ApplicationName, false, list);
         }
         public bool RunSqlUpdate<T>(T obj, string procName, int ConnectionTimeout = -1, string ApplicationName = null) where T : new()
         {
