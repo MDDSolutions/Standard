@@ -31,6 +31,25 @@ namespace MDDDataAccess
             }
             return null;
         }
+        public static PropertyInfo GetPropertyOfType(this Type parenttype, Type subtype)
+        {
+            foreach (var item in parenttype.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+            {
+                if (item.CanWrite
+                    && !item.PropertyType.IsValueType
+                    && (item.PropertyType == subtype
+                        || (item.PropertyType.GenericTypeArguments.Length >= 1
+                            && subtype.GenericTypeArguments.Length >= 1
+                            && item.PropertyType.GenericTypeArguments[0] == subtype.GenericTypeArguments[0]
+                            )
+                        )
+                    )
+                {
+                    return item;
+                }
+            }
+            return null;
+        }
         public static List<SqlParameter> SQLParameterList(this Object o, params string[] exclude)
         {
             var r = new List<SqlParameter>();
