@@ -21,6 +21,7 @@ namespace MDDDataAccess
         public bool IsPrimaryKey { get; set; }
         public bool HasDefault { get; set; }
         //public bool IsForeignKey { get; set; }
+        [DBIgnore]
         public TableDefinition Table { get; set; }
         [DBIgnore]
         public SqlDbType SqlDbType { get; set; }
