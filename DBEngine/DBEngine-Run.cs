@@ -436,7 +436,7 @@ namespace MDDDataAccess
             }
         }
         public delegate Task RowCallback<T>(T entity, int rowIndex, CancellationToken cancellationToken, int workerId);
-        public async Task SqlRunQueryRowByRowAsync<T>(string cmdtext, RowCallback<T> rowcallback, bool IsProcedure, CancellationToken cancellationToken, int parallelcallbacks = 5, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T: class, new()
+        public async Task SqlRunQueryRowByRowAsync_old<T>(string cmdtext, RowCallback<T> rowcallback, bool IsProcedure, CancellationToken cancellationToken, int parallelcallbacks = 5, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T: class, new()
         {
             if (!IsProcedure && !AllowAdHoc) throw new Exception("Ad Hoc Queries are not allowed by this DBEngine");
             using (var cn = await getconnectionasync(cancellationToken, ConnectionTimeout, ApplicationName).ConfigureAwait(false))
@@ -484,6 +484,75 @@ namespace MDDDataAccess
                 }
             }
         }
+        public async Task SqlRunQueryRowByRowAsync<T>(
+                string cmdtext,
+                RowCallback<T> rowcallback,
+                bool IsProcedure,
+                CancellationToken cancellationToken,
+                int parallelcallbacks = 5,
+                int ConnectionTimeout = -1,
+                string ApplicationName = null,
+                params SqlParameter[] list
+            ) where T : class, new()
+        {
+            if (!IsProcedure && !AllowAdHoc)
+                throw new Exception("Ad Hoc Queries are not allowed by this DBEngine");
+
+            using (var cn = await getconnectionasync(cancellationToken, ConnectionTimeout, ApplicationName).ConfigureAwait(false))
+            {
+                using (var cmd = new SqlCommand(cmdtext, cn))
+                {
+                    cmd.CommandTimeout = CommandTimeout;
+                    if (IsProcedure) cmd.CommandType = CommandType.StoredProcedure;
+                    ParameterizeCommand(list, cmd);
+
+                    var tasks = new Task[parallelcallbacks];
+                    int rowindex = 0;
+                    PropertyInfo key = null;
+                    List<PropertyMapEntry> map = null;
+                    Tracker<T> t = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
+
+                    using (var rdr = await ExecuteReaderAsync(cmd, cancellationToken).ConfigureAwait(false))
+                    {
+                        while (rdr.Read())
+                        {
+                            rowindex++;
+
+                            // build the row object
+                            T r = null;
+                            ObjectFromReader<T>(rdr, ref map, ref key, ref r, ref t);
+
+                            // look for a free slot
+                            int slot = -1;
+                            for (int i = 0; i < tasks.Length; i++)
+                            {
+                                if (tasks[i] == null || tasks[i].IsCompleted)
+                                {
+                                    slot = i;
+                                    break;
+                                }
+                            }
+
+                            // if all busy, wait for one to complete
+                            if (slot == -1)
+                            {
+                                var finished = await Task.WhenAny(tasks).ConfigureAwait(false);
+                                slot = Array.IndexOf(tasks, finished);
+                            }
+
+                            // assign work into that slot
+                            tasks[slot] = rowcallback(r, rowindex, cancellationToken, slot);
+
+                            if (cancellationToken.IsCancellationRequested)
+                                break;
+                        }
+                    }
+                    await Task.WhenAll(tasks.Where(tk => tk != null)).ConfigureAwait(false);
+                }
+            }
+        }
+
+
         public Tuple<List<T>, List<R>> SqlRunQueryWithResults<T, R>(string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list)
             where T: class, new()
             where R : class, new()
