@@ -321,19 +321,20 @@ namespace MDDDataAccess
                         cmd.CommandTimeout = CommandTimeout;
                         if (IsProcedure) cmd.CommandType = CommandType.StoredProcedure;
                         ParameterizeCommand(list, cmd);
-                        //int rowcount = 0;
+                        int rowcount = 0;
 
                         var l = new List<T>();
                         List<PropertyMapEntry> map = null;
                         Tracker<T> t = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
                         PropertyInfo key = null;
-                        //try
-                        //{
+                        try
+                        {
                             using (SqlDataReader rdr = await ExecuteReaderAsync(cmd, CancellationToken).ConfigureAwait(false))
                             {
-                                while (await rdr.ReadAsync(CancellationToken).ConfigureAwait(false))
+                                //while (await rdr.ReadAsync(CancellationToken).ConfigureAwait(false))
+                                while (rdr.Read())
                                 {
-                                    //rowcount++;
+                                    rowcount++;
                                     T r = null;
                                     ObjectFromReader<T>(rdr, ref map, ref key, ref r, ref t);
                                     l.Add(r);
@@ -341,11 +342,11 @@ namespace MDDDataAccess
                                 }
                             }
                             return l;
-                        //}
-                        //catch (Exception ex)
-                        //{
-                        //    throw new Exception($"SqlRunQueryWithResultsAsync running {cmd.Details()}: error on record {rowcount}", ex);
-                        //}
+                        }
+                        catch (Exception ex)
+                        {
+                            throw new Exception($"SqlRunQueryWithResultsAsync running {cmd.Details()}: error on record {rowcount}", ex);
+                        }
                     }
                 }
             }
@@ -459,7 +460,7 @@ namespace MDDDataAccess
 
                             using (SqlDataReader rdr = await ExecuteReaderAsync(cmd, cancellationToken).ConfigureAwait(false))
                             {
-                                while (await rdr.ReadAsync(cancellationToken).ConfigureAwait(false))
+                                while (rdr.Read())
                                 {
                                     rowindex++;
 
@@ -561,7 +562,7 @@ namespace MDDDataAccess
                                 List<PropertyMapEntry> map = null;
                                 Tracker<T> tt = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
                                 Tracker<R> tr = Tracking != ObjectTracking.None && Tracked<R>.IsTrackable ? GetTracker<R>() : null;
-                                while (await rdr.ReadAsync().ConfigureAwait(false))
+                                while (rdr.Read())
                                 {
                                     T tc = null;
                                     ObjectFromReader(rdr, ref map, ref key, ref tc, ref tt);
@@ -573,7 +574,7 @@ namespace MDDDataAccess
                                     map = null;
                                     key = null;
                                     tr = null;
-                                    while (await rdr.ReadAsync().ConfigureAwait(false))
+                                    while (rdr.Read())
                                     {
                                         R rc = null;
                                         ObjectFromReader(rdr, ref map, ref key, ref rc, ref tr);
@@ -622,7 +623,7 @@ namespace MDDDataAccess
                                 List<PropertyMapEntry> map = null;
                                 Tracker<T> tt = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
                                 Tracker<R> tr = Tracking != ObjectTracking.None && Tracked<R>.IsTrackable ? GetTracker<R>() : null;
-                                while (await rdr.ReadAsync().ConfigureAwait(false))
+                                while (rdr.Read())
                                 {
                                     if (found) throw new Exception("Only one record expected in the header result");
                                     ObjectFromReader<T>(rdr, ref map, ref key, ref h, ref tt);
@@ -635,7 +636,7 @@ namespace MDDDataAccess
                                     map = null;
                                     key = null;
                                     tr = null;
-                                    while (await rdr.ReadAsync().ConfigureAwait(false))
+                                    while (rdr.Read())
                                     {
                                         R r = null;
                                         ObjectFromReader<R>(rdr, ref map, ref key, ref r, ref tr);
@@ -873,7 +874,7 @@ namespace MDDDataAccess
                                 PropertyInfo key = null;
                                 List<PropertyMapEntry> map = null;
                                 Tracker<T> t = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
-                                while (await rdr.ReadAsync(token).ConfigureAwait(false))
+                                while (rdr.Read())
                                 {
                                     if (token.IsCancellationRequested) return false;
                                     if (found) throw new Exception("Only one record expected in the update result");
@@ -1081,7 +1082,7 @@ namespace MDDDataAccess
                         var results = new List<dynamic>();
                         using (SqlDataReader rdr = await ExecuteReaderAsync(cmd, cancellationToken).ConfigureAwait(false))
                         {
-                            while (await rdr.ReadAsync(cancellationToken).ConfigureAwait(false))
+                            while (rdr.Read())
                             {
                                 IDictionary<string, object> row = new ExpandoObject();
                                 for (int i = 0; i < rdr.FieldCount; i++)

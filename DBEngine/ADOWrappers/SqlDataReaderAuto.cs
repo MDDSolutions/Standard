@@ -77,7 +77,7 @@ namespace MDDDataAccess
 
         public bool Read() => _reader.Read();
 
-        public async Task<bool> ReadAsync() => await _reader.ReadAsync().ConfigureAwait(false);
+        //public async Task<bool> ReadAsync() => await _reader.ReadAsync().ConfigureAwait(false);
 
         public string GetString(int index) => _reader.GetString(index);
         public int GetInt32(int index) => _reader.GetInt32(index);
