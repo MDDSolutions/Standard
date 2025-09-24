@@ -321,34 +321,31 @@ namespace MDDDataAccess
                         cmd.CommandTimeout = CommandTimeout;
                         if (IsProcedure) cmd.CommandType = CommandType.StoredProcedure;
                         ParameterizeCommand(list, cmd);
-                        int rowcount = 0;
-                        //T r = default;
+                        //int rowcount = 0;
 
                         var l = new List<T>();
-                        //List<Tuple<PropertyInfo, String>> map = null;
                         List<PropertyMapEntry> map = null;
                         Tracker<T> t = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
                         PropertyInfo key = null;
-                        using (SqlDataReader rdr = await ExecuteReaderAsync(cmd, CancellationToken).ConfigureAwait(false))
-                        {
-                            while (await rdr.ReadAsync(CancellationToken).ConfigureAwait(false))
+                        //try
+                        //{
+                            using (SqlDataReader rdr = await ExecuteReaderAsync(cmd, CancellationToken).ConfigureAwait(false))
                             {
-                                try
+                                while (await rdr.ReadAsync(CancellationToken).ConfigureAwait(false))
                                 {
-                                    rowcount++;
-                                    //var r = new T();
+                                    //rowcount++;
                                     T r = null;
                                     ObjectFromReader<T>(rdr, ref map, ref key, ref r, ref t);
                                     l.Add(r);
                                     if (CancellationToken.IsCancellationRequested) return l;
                                 }
-                                catch (Exception ex)
-                                {
-                                    throw new Exception($"SqlRunQueryWithResultsAsync running {cmd.Details()}: error on record {rowcount}", ex);
-                                }
                             }
-                        }
-                        return l;
+                            return l;
+                        //}
+                        //catch (Exception ex)
+                        //{
+                        //    throw new Exception($"SqlRunQueryWithResultsAsync running {cmd.Details()}: error on record {rowcount}", ex);
+                        //}
                     }
                 }
             }
@@ -380,11 +377,9 @@ namespace MDDDataAccess
                             {
                                 while (rdr.Read())
                                 {
-                                    //l.Add((T)Activator.CreateInstance(typeof(T), rdr));
                                     T r = null;
                                     ObjectFromReader<T>(rdr, ref map, ref key, ref r, ref t);
                                     l.Add(r);
-                                    //l.Add(ObjectFromReader<T>(rdr));
                                 }
                             }
                             return l;
