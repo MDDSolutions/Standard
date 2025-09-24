@@ -18,28 +18,42 @@ namespace MDDDataAccess
         public bool EnumParseIgnoreCase { get; set; } = true;
         public void ObjectFromReader<T>(SqlDataReader rdr, ref List<PropertyMapEntry> map, ref PropertyInfo key, ref T r, ref Tracker<T> tracker, bool strict = true) where T : class, new()
         {
-            Tracked<T> tracked = null;
-            PropertyInfo concurrencyproperty = null;
-            // callers must provide a tracker if they want tracking - it is possible to run a query on a trackable object without tracking it
-            // if you plan to just discard the results or something
-            if (tracker != null) 
-            {
-                // if tracking is enabled, we need to see if the object already exists in the tracker
+            var concurrencyproperty = PrepareTracking(rdr, ref key, ref r, ref tracker, out var tracked, out var skipLoad);
+            if (skipLoad) return;
 
-                // don't need this for tracking, but other aspects of the method sometimes do stuff with concurrency, so help it out
+            concurrencyproperty = EnsureConcurrencyProperty(r, strict, concurrencyproperty);
+
+            var descriptors = GetPropertyDescriptors(r, ref key, strict, concurrencyproperty);
+
+            bool hasMap = BuildPropertyMapIfNeeded(rdr, ref map, descriptors, r);
+
+            if (hasMap && map != null && map.Count > 0)
+            {
+                ExecutePropertyMap(rdr, map, r);
+            }
+            else
+            {
+                ExecuteSequentialNoMap(rdr, descriptors, r);
+            }
+
+            FinalizeTracking(tracked, r);
+        }
+        private PropertyInfo PrepareTracking<T>(SqlDataReader rdr, ref PropertyInfo key, ref T r, ref Tracker<T> tracker, out Tracked<T> tracked, out bool skipLoad) where T : class, new()
+        {
+            tracked = null;
+            skipLoad = false;
+            PropertyInfo concurrencyproperty = null;
+
+            if (tracker != null)
+            {
                 if (Tracked<T>.HasConcurrency)
                     concurrencyproperty = Tracked<T>.ConcurrencyProperty;
 
-                // if we already have a reference to the object being loaded, it should be in the tracker
-                // if r is null, then at least the caller doesn't know if the object is already being tracked
                 if (r != null)
                 {
                     var keyvalue = Tracked<T>.GetKeyValue(r);
                     if (!IsDefaultOrNull(keyvalue) && tracker.TryGet(keyvalue, out tracked))
                     {
-                        //if we are explicity providing a dirty object then chances are this is an update operation so we let dirty objects through
-                        //on the other hand, there should be some kind of indicator that the object is in the middle of a save operation so we don't 
-                        //have to assume here - perhaps a BeginSave / EndSave in IObjectTracker?
                         switch (tracked.State)
                         {
                             case TrackedState.Unchanged:
@@ -63,7 +77,6 @@ namespace MDDDataAccess
                 }
                 else
                 {
-                    //r was not provided so we need to get the key value from the reader and see if the object exists in the tracker
                     var keyvalue = rdr[Tracked<T>.KeyDBName];
                     var rdrconcurrency = Tracked<T>.HasConcurrency ? rdr[Tracked<T>.ConcurrencyDBName] : null;
                     if (tracker.TryGet(keyvalue, out tracked))
@@ -73,8 +86,6 @@ namespace MDDDataAccess
                         {
                             case TrackedState.Modified:
                             case TrackedState.Unchanged:
-                                // we can just return the existing object if the concurrency matches whether it is dirty or not
-                                // if the concurrency doesn't match, we can reload it if it is unchanged, but if it is dirty then we have a problem
                                 if (tracked.TryGetEntity(out var existing))
                                 {
                                     r = existing;
@@ -83,7 +94,8 @@ namespace MDDDataAccess
                                     {
                                         if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 56, "OFR cache hit - concurrency match", r.ToString(), typeof(T).Name));
                                         TrackerHitCount++;
-                                        return; // nothing to do - the object is already loaded
+                                        skipLoad = true;
+                                        return concurrencyproperty;
                                     }
                                     else if (curstate == TrackedState.Unchanged)
                                     {
@@ -100,7 +112,6 @@ namespace MDDDataAccess
                                 throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being loaded and is already in the Initializing state");
                             case TrackedState.Invalid:
                             default:
-                                // there was an entry but it has been GC'd - no problem, just revive it - this should be a pretty common occurrence
                                 tracked.BeginInitialization(keyvalue, rdrconcurrency, out r);
                                 if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 51, "OFR revive", $"Type: {typeof(T).Name} ID: {keyvalue}", typeof(T).Name));
                                 break;
@@ -115,279 +126,411 @@ namespace MDDDataAccess
             }
             else
             {
-                // not tracking, so just make sure we have an object to load into
                 if (r == null) r = new T();
+                if (Tracked<T>.HasConcurrency)
+                    concurrencyproperty = Tracked<T>.ConcurrencyProperty;
             }
 
+            return concurrencyproperty;
+        }
+
+        private PropertyInfo EnsureConcurrencyProperty<T>(T target, bool strict, PropertyInfo concurrencyproperty) where T : class
+        {
             if (!strict)
             {
-                //non-strict mode means we don't match all properties to reader columns but it is still pretty strict... the object must have a populated Key property and a concurrency property
-                //this method assumes that the database operation is checking the concurrency property but cannot ensure that
-                var keyinfo = AttributeInfo(r, typeof(ListKeyAttribute));
+                var keyinfo = AttributeInfo(target, typeof(ListKeyAttribute));
                 if (keyinfo == null)
-                   keyinfo = AttributeInfo(r, typeof(ListKeyAttribute));
+                    keyinfo = AttributeInfo(target, typeof(ListKeyAttribute));
                 if (keyinfo.Item1 == null || !keyinfo.Item2)
                     throw new Exception($"DBEngine error: Non-strict ObjectFromReader calls require that the object being loaded have a property marked with ListKeyAttribute and that the property have a value");
 
-                if (concurrencyproperty == null) concurrencyproperty = AttributeProperty<T>(typeof(ListConcurrencyAttribute));
+                if (concurrencyproperty == null)
+                    concurrencyproperty = AttributeProperty<T>(typeof(ListConcurrencyAttribute));
                 if (concurrencyproperty == null)
                     throw new Exception($"DBEngine error: Non-strict ObjectFromReader calls require that the object being loaded have a property marked with ListConcurrencyAttribute");
-
-                //at this point all we need to do is not throw an error if properties are missing from the reader - we still map everything we can find - but we do need to make sure
-                //that the concurrency property *is* in the reader
             }
 
+            return concurrencyproperty;
+        }
 
-            bool nomap = false;
+        private List<PropertyDescriptor> GetPropertyDescriptors<T>(T target, ref PropertyInfo key, bool strict, PropertyInfo concurrencyproperty) where T : class
+        {
+            var descriptors = new List<PropertyDescriptor>();
 
-            if (map == null)
+            foreach (var item in typeof(T).GetProperties(BindingFlags.Public | BindingFlags.Instance))
             {
-                map = new List<PropertyMapEntry>();
+                bool include = true;
+                bool optional = false;
+                string dbName = item.Name;
 
-                // EnsureCorrectPropertyUsage doesn't work - maybe fix it another day
-                //if (Tracking != ObjectTracking.None)
-                //{
-                //    if (r is INotifyPropertyChanged npc)
-                //    {
-                //        npc.EnsureCorrectPropertyUsage();
-                //    }
-                //}
-
-
-
-
-
-
-                foreach (var item in typeof(T).GetProperties(BindingFlags.Public | BindingFlags.Instance))
+                foreach (var attr in item.GetCustomAttributes(true))
                 {
-                    bool include = true;
-                    string DBName = null;
-                    bool optional = false;
-                    foreach (var attr in item.GetCustomAttributes(true))
+                    if (attr is DBIgnoreAttribute)
+                        include = false;
+                    if (attr is DBNameAttribute dbna)
+                        dbName = dbna.DBName;
+                    if (attr is DBOptionalAttribute)
+                        optional = true;
+                    if (attr is ListKeyAttribute)
+                        key = item;
+                    if (attr is DBLoadedTimeAttribute)
                     {
-                        if (attr is DBIgnoreAttribute)
-                            include = false;
-                        if (attr is DBNameAttribute dbna)
-                            DBName = dbna.DBName;
-                        if (attr is DBOptionalAttribute)
-                            optional = true;
-                        if (attr is ListKeyAttribute)
-                            key = item;
-                        if (attr is DBLoadedTimeAttribute)
-                        {
-                            include = false;
-                            nomap = true;
-                            map = null;
-                            item.SetValue(r, DateTime.Now);
-                        }
-
-                    }
-
-                    // in non-strict mode, all properties are optional except the concurrency property
-                    // the key property isn't optional either but we've already checked for it above
-                    // even if the concurrency property is marked with DBOptional, we still require it to be in the reader in non-strict mode
-                    if (!strict) optional = item != concurrencyproperty;
-
-                    if (include && item.CanWrite && (item.PropertyType.Name == "Char" || item.ToString().StartsWith("System.Nullable`1[System.Char]")))
-                    {
-                        nomap = true;
-                        map = null;
-
-                        object o = null;
-                        if (DBName != null)
-                            o = Convert.IsDBNull(rdr[DBName]) ? null : rdr[DBName];
-                        else
-                            o = Convert.IsDBNull(rdr[item.Name]) ? null : rdr[item.Name];
-                        if (o != null)
-                            item.SetValue(r, ((string)o)[0]);
-                        else
-                            item.SetValue(r, default);
-
-                    }
-                    else if (include && item.CanWrite && item.PropertyType.BaseType?.Name != "Enum" && (item.PropertyType.IsValueType || item.PropertyType.Name == "String" || item.PropertyType.Name == "Byte[]"))
-                    {
-                        try
-                        {
-                            if (DBName == null) DBName = item.Name;
-                            bool optcolfound = false;
-                            if (optional)
-                            {
-                                for (int i = 0; i < rdr.FieldCount; i++)
-                                {
-                                    if (rdr.GetName(i).Equals(DBName, StringComparison.InvariantCultureIgnoreCase))
-                                        optcolfound = true;
-                                }
-                            }
-
-                            if (!optional || optcolfound)
-                            {
-                                object o = null;
-
-                                if (r is StringObj)
-                                {
-                                    o = Convert.IsDBNull(rdr[0]) ? null : rdr[0];
-                                    //if (!nomap) map.Add(new Tuple<Action<object, object>, int>(BuildSetAccessor(item.GetSetMethod(true)), 0));
-                                    if (!nomap) map.Add(new PropertyMapEntry { 
-                                        Ordinal = 0,
-                                        //ReaderFunc = GetReaderFunc(item.PropertyType),
-                                        //Setter = BuildCompiledSetter(item),
-                                        MapAction = BuildCompiledMap(item, 0),
-                                        PropertyName = item.Name,
-                                        PropertyTypeName = item.PropertyType.FullName,
-                                        ReaderTypeName = rdr.GetFieldType(0).FullName
-                                    });
-                                }
-                                else if (DBName != null)
-                                {
-                                    o = Convert.IsDBNull(rdr[DBName]) ? null : rdr[DBName];
-                                    var ordinal = rdr.GetOrdinal(DBName);
-                                    //if (!nomap) map.Add(new Tuple<Action<object, object>, int>(BuildSetAccessor(item.GetSetMethod(true)), ordinal));
-                                    if (!nomap) map.Add(new PropertyMapEntry { 
-                                        Ordinal = ordinal,
-                                        //ReaderFunc = GetReaderFunc(item.PropertyType),
-                                        //Setter = BuildCompiledSetter(item),
-                                        MapAction = BuildCompiledMap(item, ordinal),
-                                        PropertyName = item.Name,
-                                        PropertyTypeName = item.PropertyType.FullName,
-                                        ReaderTypeName = rdr.GetFieldType(ordinal).FullName
-                                    });
-                                }
-                                if (o != null)
-                                    item.SetValue(r, o);
-                                else
-                                    item.SetValue(r, default);
-                            }
-                        }
-                        catch (IndexOutOfRangeException)
-                        {
-                            if (!optional)
-                                throw new Exception($"DBEngine internal error: The column '{DBName ?? item.Name}' was specified as a property (or DBName attribute) in the '{r.GetType().Name}' object but was not found in a query meant to populate objects of that type - you must either decorate this property with a DBIgnore attribute if you want ObjectFromReader to always ignore it, or a DBOptional attribute if you want ObjectFromReader to use it if it is there, but ignore it if it is not");
-                        }
-                        catch (Exception ex)
-                        {
-                            throw new Exception($"DBEngine internal error: Error occurred mapping property '{DBName ?? item.Name}' in the '{r.GetType().Name}' object - see inner exception", ex);
-                        }
-                    }
-                    else if (include && item.CanWrite && item.PropertyType.BaseType?.Name == "Enum")
-                    {
-                        nomap = true;
-                        map = null;
-
-                        object o = null;
-                        if (DBName != null)
-                            o = Convert.IsDBNull(rdr[DBName]) ? null : rdr[DBName];
-                        else if (r is StringObj)
-                            o = Convert.IsDBNull(rdr[0]) ? null : rdr[0];
-                        else
-                            o = Convert.IsDBNull(rdr[item.Name]) ? null : rdr[item.Name];
-                        if (o != null)
-                        {
-                            if (o is int)
-                                item.SetValue(r, Enum.ToObject(item.PropertyType, o));
-                            else
-                                item.SetValue(r, Enum.Parse(item.PropertyType, o.ToString(), EnumParseIgnoreCase));
-                        }
-                        else
-                            item.SetValue(r, default);
-                    }
-                    else if (include && item.CanWrite && item.PropertyType is ISerializable && !item.PropertyType.FullName.Contains("System"))
-                    {   //this is meant to handle properties that are serializable user types - i.e. classes that implement ISerializable (or are just decorated with [Serializable])
-                        //it may be possible to implement an Action<object, object> method that does this but what I'm doing here is disabling the "map" and forcing execution to go
-                        //through the non-mapped code here for every row - I don't think that was much worse for performance anyway, but if you want to automatically handle complex
-                        //types then something's got to give...
-
-                        // This is mostly untested at this point...
-
-                        nomap = true;
-                        map = null;
-
-                        try
-                        {
-
-                            byte[] o = null;
-                            if (DBName != null)
-                                o = Convert.IsDBNull(rdr[DBName]) ? null : rdr[DBName] as byte[];
-                            else if (r is StringObj)
-                                o = Convert.IsDBNull(rdr[0]) ? null : rdr[0] as byte[];
-                            else
-                                o = Convert.IsDBNull(rdr[item.Name]) ? null : rdr[item.Name] as byte[];
-                            if (o != null)
-                            {
-                                var formatter = new BinaryFormatter();
-                                using (var stream = new MemoryStream(o))
-                                {
-                                    //if the byte array is a valid serialization of the type of the property, this will work
-                                    //...if not, this will probably puke considerably...
-                                    var o2 = formatter.Deserialize(stream);
-                                    item.SetValue(r, o2);
-                                }
-                            }
-                            else
-                            {
-                                item.SetValue(r, default);
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            throw new Exception($"DBEngine internal error: Error occurred mapping *complex* property '{DBName ?? item.Name}' in the '{r.GetType().Name}' object - see inner exception", ex);
-                        }
+                        include = false;
+                        item.SetValue(target, DateTime.Now);
                     }
                 }
-                if (!nomap && map != null && map.Count != 0) map.Sort((x, y) => x.Ordinal.CompareTo(y.Ordinal));
-            }
-            else
-            {
-                int len = map.Count;
-                foreach (var entry in map)
+
+                if (!include || !item.CanWrite)
+                    continue;
+
+                if (!strict)
+                    optional = item != concurrencyproperty;
+
+                var descriptor = new PropertyDescriptor
                 {
+                    Property = item,
+                    ColumnName = dbName,
+                    Optional = optional,
+                    Handler = CreatePropertyHandler(item),
+                    ForcedOrdinal = target is StringObj ? 0 : (int?)null
+                };
+
+                descriptors.Add(descriptor);
+            }
+
+            return descriptors;
+        }
+
+        private bool BuildPropertyMapIfNeeded<T>(SqlDataReader rdr, ref List<PropertyMapEntry> map, List<PropertyDescriptor> descriptors, T target) where T : class
+        {
+            if (map != null && map.Count > 0)
+                return true;
+
+            if (descriptors == null || descriptors.Count == 0)
+            {
+                map = null;
+                return false;
+            }
+
+            var entries = new List<PropertyMapEntry>();
+
+            foreach (var descriptor in descriptors)
+            {
+                if (descriptor.Handler == null)
+                    continue;
+
+                int ordinal;
+                if (descriptor.ForcedOrdinal.HasValue)
+                {
+                    ordinal = descriptor.ForcedOrdinal.Value;
+                    if (ordinal >= rdr.FieldCount)
+                    {
+                        if (!descriptor.Optional)
+                            throw new Exception($"DBEngine internal error: The column '{descriptor.ColumnName ?? descriptor.Property.Name}' was specified as a property (or DBName attribute) in the '{target.GetType().Name}' object but was not found in a query meant to populate objects of that type - you must either decorate this property with a DBIgnore attribute if you want ObjectFromReader to always ignore it, or a DBOptional attribute if you want ObjectFromReader to use it if it is there, but ignore it if it is not");
+                        else
+                            continue;
+                    }
+                }
+                else
+                {
+                    if (descriptor.Optional && !ColumnExists(rdr, descriptor.ColumnName))
+                        continue;
+
                     try
                     {
-                        //o = Convert.IsDBNull(rdr[map[i].Item2]) ? null : rdr[map[i].Item2];
-                        //map[i].Item1?.Invoke(r, o);
-                        //entry.Setter(r, entry.ReaderFunc(rdr, entry.Ordinal));
-                        entry.MapAction(rdr, r);
+                        ordinal = rdr.GetOrdinal(descriptor.ColumnName);
                     }
-                    catch (Exception ex)
+                    catch (IndexOutOfRangeException)
                     {
-                        object valueForError;
-                        try
-                        {
-                            valueForError = entry.ReaderFunc(rdr, entry.Ordinal);
-                        }
-                        catch
-                        {
-                            valueForError = "<error reading value>";
-                        }
-                        string valueType = valueForError == null ? "<null>" : valueForError.GetType().Name;
-                        var d = r;
-                        string objectvalues = typeof(T).GetProperties(BindingFlags.Public | BindingFlags.Instance).Select(pi => $"{pi.Name}={(pi.GetValue(d) == null ? "<null>" : pi.GetValue(d).ToString())}").Aggregate((a, b) => a + ", " + b);
-                        throw new Exception(
-                            $"DBEngine internal error: Post-mapping error occurred trying to set {r.GetType().Name}.{entry.PropertyName} to {valueForError} the property is an {entry.PropertyTypeName} and the mapper clocked the reader as an {entry.ReaderTypeName} (the data types must match exactly) - see inner exception - values in object: {objectvalues}",
-                            ex
-                        );
+                        if (descriptor.Optional)
+                            continue;
+                        throw new Exception($"DBEngine internal error: The column '{descriptor.ColumnName ?? descriptor.Property.Name}' was specified as a property (or DBName attribute) in the '{target.GetType().Name}' object but was not found in a query meant to populate objects of that type - you must either decorate this property with a DBIgnore attribute if you want ObjectFromReader to always ignore it, or a DBOptional attribute if you want ObjectFromReader to use it if it is there, but ignore it if it is not");
                     }
+                }
+
+                var handler = descriptor.Handler;
+                var readerFunc = handler.ReaderFunc ?? ((Func<SqlDataReader, int, object>)((reader, ord) => reader.IsDBNull(ord) ? null : reader.GetValue(ord)));
+                var mapAction = new Action<SqlDataReader, object>((reader, targetObj) => handler.Assign(reader, ordinal, targetObj));
+                string readerTypeName;
+                try
+                {
+                    readerTypeName = rdr.GetFieldType(ordinal).FullName;
+                }
+                catch
+                {
+                    readerTypeName = "<unknown>";
+                }
+
+                entries.Add(new PropertyMapEntry
+                {
+                    Ordinal = ordinal,
+                    ReaderFunc = readerFunc,
+                    MapAction = mapAction,
+                    PropertyName = descriptor.Property.Name,
+                    PropertyTypeName = descriptor.Property.PropertyType.FullName,
+                    ReaderTypeName = readerTypeName
+                });
+            }
+
+            if (entries.Count == 0)
+            {
+                map = null;
+                return false;
+            }
+
+            entries.Sort((x, y) => x.Ordinal.CompareTo(y.Ordinal));
+            map = entries;
+            return true;
+        }
+
+        private void ExecutePropertyMap<T>(SqlDataReader rdr, List<PropertyMapEntry> map, T target) where T : class
+        {
+            foreach (var entry in map)
+            {
+                try
+                {
+                    entry.MapAction(rdr, target);
+                }
+                catch (Exception ex)
+                {
+                    object valueForError;
+                    try
+                    {
+                        valueForError = entry.ReaderFunc(rdr, entry.Ordinal);
+                    }
+                    catch
+                    {
+                        valueForError = "<error reading value>";
+                    }
+
+                    string objectvalues = string.Join(", ", typeof(T).GetProperties(BindingFlags.Public | BindingFlags.Instance).Select(pi => $"{pi.Name}={(pi.GetValue(target) == null ? "<null>" : pi.GetValue(target).ToString())}"));
+
+                    throw new Exception($"DBEngine internal error: Post-mapping error occurred trying to set {target.GetType().Name}.{entry.PropertyName} to {valueForError} the property is an {entry.PropertyTypeName} and the mapper clocked the reader as an {entry.ReaderTypeName} (the data types must match exactly) - see inner exception - values in object: {objectvalues}", ex);
+                }
+            }
+        }
+
+        private void ExecuteSequentialNoMap<T>(SqlDataReader rdr, List<PropertyDescriptor> descriptors, T target) where T : class
+        {
+            if (descriptors == null || descriptors.Count == 0)
+                return;
+
+            var columnDescriptors = new Dictionary<string, PropertyDescriptor>(StringComparer.InvariantCultureIgnoreCase);
+            var ordinalDescriptors = new Dictionary<int, List<PropertyDescriptor>>();
+
+            foreach (var descriptor in descriptors)
+            {
+                if (descriptor.Handler == null)
+                    continue;
+
+                if (descriptor.ForcedOrdinal.HasValue)
+                {
+                    if (!ordinalDescriptors.TryGetValue(descriptor.ForcedOrdinal.Value, out var list))
+                    {
+                        list = new List<PropertyDescriptor>();
+                        ordinalDescriptors[descriptor.ForcedOrdinal.Value] = list;
+                    }
+                    list.Add(descriptor);
+                }
+                else if (!string.IsNullOrEmpty(descriptor.ColumnName) && !columnDescriptors.ContainsKey(descriptor.ColumnName))
+                {
+                    columnDescriptors.Add(descriptor.ColumnName, descriptor);
                 }
             }
 
-            if (tracked != null)
+            foreach (var descriptor in descriptors.Where(d => !d.Optional))
             {
-                if (!tracked.Initializing)
-                    throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {Tracked<T>.GetKeyValue(r)} has completed loading but was not in the Initializing state");
-                tracked.EndInitialization();
+                if (descriptor.ForcedOrdinal.HasValue)
+                {
+                    if (descriptor.ForcedOrdinal.Value >= rdr.FieldCount)
+                        throw new Exception($"DBEngine internal error: The column '{descriptor.ColumnName ?? descriptor.Property.Name}' was specified as a property (or DBName attribute) in the '{target.GetType().Name}' object but was not found in a query meant to populate objects of that type - you must either decorate this property with a DBIgnore attribute if you want ObjectFromReader to always ignore it, or a DBOptional attribute if you want ObjectFromReader to use it if it is there, but ignore it if it is not");
+                }
+                else if (!ColumnExists(rdr, descriptor.ColumnName))
+                {
+                    throw new Exception($"DBEngine internal error: The column '{descriptor.ColumnName ?? descriptor.Property.Name}' was specified as a property (or DBName attribute) in the '{target.GetType().Name}' object but was not found in a query meant to populate objects of that type - you must either decorate this property with a DBIgnore attribute if you want ObjectFromReader to always ignore it, or a DBOptional attribute if you want ObjectFromReader to use it if it is there, but ignore it if it is not");
+                }
             }
-            //if (Tracking == ObjectTracking.ChangeNotification)
-            //{
-            //    if (r is INotifyPropertyChanged notifier)
-            //    {
-            //        var aggregator = GetOrCreateEventAggregator<T>();
-            //        aggregator.QuickSubscribe(notifier);
-            //    }
-            //    else
-            //    {
-            //        throw new Exception($"DBEngine error: Tracking has been set to {Tracking} but type '{r.GetType().Name}' does not implement INotifyPropertyChanged");
-            //    }
-            //}
+
+            for (int ordinal = 0; ordinal < rdr.FieldCount; ordinal++)
+            {
+                if (ordinalDescriptors.TryGetValue(ordinal, out var ordinalList))
+                {
+                    foreach (var descriptor in ordinalList)
+                    {
+                        descriptor.Handler.Assign(rdr, ordinal, target);
+                    }
+                    continue;
+                }
+
+                var columnName = rdr.GetName(ordinal);
+                if (columnDescriptors.TryGetValue(columnName, out var descriptorForColumn))
+                {
+                    descriptorForColumn.Handler.Assign(rdr, ordinal, target);
+                }
+            }
         }
+
+        private void FinalizeTracking<T>(Tracked<T> tracked, T target) where T : class
+        {
+            if (tracked == null)
+                return;
+
+            if (!tracked.Initializing)
+                throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {Tracked<T>.GetKeyValue(target)} has completed loading but was not in the Initializing state");
+
+            tracked.EndInitialization();
+        }
+
+        private static bool ColumnExists(SqlDataReader rdr, string columnName)
+        {
+            if (string.IsNullOrEmpty(columnName))
+                return false;
+
+            for (int i = 0; i < rdr.FieldCount; i++)
+            {
+                if (rdr.GetName(i).Equals(columnName, StringComparison.InvariantCultureIgnoreCase))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private PropertyHandler CreatePropertyHandler(PropertyInfo property)
+        {
+            var setter = BuildCompiledSetter(property);
+            var propertyType = property.PropertyType;
+            var underlyingNullable = Nullable.GetUnderlyingType(propertyType);
+
+            if (propertyType == typeof(char) || underlyingNullable == typeof(char))
+            {
+                bool isNullable = underlyingNullable == typeof(char);
+                return new PropertyHandler
+                {
+                    ReaderFunc = (reader, ordinal) => reader.IsDBNull(ordinal) ? null : reader.GetValue(ordinal),
+                    Assign = (reader, ordinal, target) =>
+                    {
+                        if (reader.IsDBNull(ordinal))
+                        {
+                            if (isNullable)
+                                setter(target, null);
+                            else
+                                setter(target, default(char));
+                            return;
+                        }
+
+                        var value = reader.GetValue(ordinal);
+                        char charValue;
+                        if (value is string s && !string.IsNullOrEmpty(s))
+                            charValue = s[0];
+                        else if (value is char c)
+                            charValue = c;
+                        else
+                            charValue = Convert.ToChar(value);
+
+                        if (isNullable)
+                            setter(target, (char?)charValue);
+                        else
+                            setter(target, charValue);
+                    }
+                };
+            }
+
+            var enumType = propertyType.IsEnum ? propertyType : (underlyingNullable != null && underlyingNullable.IsEnum ? underlyingNullable : null);
+            if (enumType != null)
+            {
+                bool isNullable = underlyingNullable != null && underlyingNullable.IsEnum;
+                return new PropertyHandler
+                {
+                    ReaderFunc = (reader, ordinal) => reader.IsDBNull(ordinal) ? null : reader.GetValue(ordinal),
+                    Assign = (reader, ordinal, target) =>
+                    {
+                        if (reader.IsDBNull(ordinal))
+                        {
+                            if (isNullable)
+                                setter(target, null);
+                            else
+                                setter(target, Activator.CreateInstance(enumType));
+                            return;
+                        }
+
+                        var raw = reader.GetValue(ordinal);
+                        object enumValue;
+                        if (raw is int || raw is short || raw is long || raw is byte)
+                            enumValue = Enum.ToObject(enumType, raw);
+                        else
+                            enumValue = Enum.Parse(enumType, raw.ToString(), EnumParseIgnoreCase);
+
+                        setter(target, enumValue);
+                    }
+                };
+            }
+
+            if (typeof(ISerializable).IsAssignableFrom(propertyType) && !propertyType.FullName.Contains("System"))
+            {
+                return new PropertyHandler
+                {
+                    ReaderFunc = (reader, ordinal) => reader.IsDBNull(ordinal) ? null : reader.GetValue(ordinal),
+                    Assign = (reader, ordinal, target) =>
+                    {
+                        if (reader.IsDBNull(ordinal))
+                        {
+                            setter(target, GetDefaultValue(propertyType));
+                            return;
+                        }
+
+                        var buffer = reader.GetValue(ordinal) as byte[];
+                        if (buffer != null)
+                        {
+                            var formatter = new BinaryFormatter();
+                            using (var stream = new MemoryStream(buffer))
+                            {
+                                var obj = formatter.Deserialize(stream);
+                                setter(target, obj);
+                            }
+                        }
+                        else
+                        {
+                            setter(target, GetDefaultValue(propertyType));
+                        }
+                    }
+                };
+            }
+
+            var readerFunc = GetReaderFunc(propertyType) ?? ((Func<SqlDataReader, int, object>)((reader, ordinal) => reader.IsDBNull(ordinal) ? null : reader.GetValue(ordinal)));
+
+            return new PropertyHandler
+            {
+                ReaderFunc = readerFunc,
+                Assign = (reader, ordinal, target) =>
+                {
+                    var value = readerFunc(reader, ordinal);
+                    setter(target, value);
+                }
+            };
+        }
+
+        private static object GetDefaultValue(Type type)
+        {
+            if (type.IsValueType)
+                return Activator.CreateInstance(type);
+            return null;
+        }
+
+        private class PropertyDescriptor
+        {
+            public PropertyInfo Property { get; set; }
+            public string ColumnName { get; set; }
+            public bool Optional { get; set; }
+            public PropertyHandler Handler { get; set; }
+            public int? ForcedOrdinal { get; set; }
+        }
+
+        private class PropertyHandler
+        {
+            public Action<SqlDataReader, int, object> Assign { get; set; }
+            public Func<SqlDataReader, int, object> ReaderFunc { get; set; }
+        }
+
         public class PropertyMapEntry
         {
             public int Ordinal;
