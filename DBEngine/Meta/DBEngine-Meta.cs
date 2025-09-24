@@ -128,6 +128,8 @@ namespace MDDDataAccess
                     return SqlDbType.UniqueIdentifier;
                 case "xml":
                     return SqlDbType.Xml;
+                case "sql_variant":
+                    return SqlDbType.Variant;
                 default:
                     throw new ArgumentException($"Unmapped SQL type: {sqltypename}");
             }
@@ -249,6 +251,7 @@ namespace MDDDataAccess
                 case "binary":
                 case "varbinary":
                 case "timestamp":
+                case "image": // Added
                     return typeof(byte[]);
                 case "bit":
                     return typeof(bool);
@@ -258,14 +261,16 @@ namespace MDDDataAccess
                 case "nvarchar":
                 case "text":
                 case "varchar":
-                case "xml":
                     return typeof(string);
+                case "xml":
+                    return typeof(System.Xml.Linq.XDocument); // Changed for structured XML
                 case "date":
                 case "datetime":
                 case "datetime2":
                 case "smalldatetime":
-                case "datetimeoffset":
                     return typeof(DateTime);
+                case "datetimeoffset":
+                    return typeof(DateTimeOffset); // Fixed
                 case "decimal":
                 case "numeric":
                 case "money":
@@ -285,26 +290,34 @@ namespace MDDDataAccess
                     return typeof(byte);
                 case "uniqueidentifier":
                     return typeof(Guid);
+                //case "geometry":
+                //    return typeof(Microsoft.SqlServer.Types.SqlGeometry);
+                //case "geography":
+                //    return typeof(Microsoft.SqlServer.Types.SqlGeography);
+                //case "hierarchyid":
+                //    return typeof(Microsoft.SqlServer.Types.SqlHierarchyId);
+                case "sql_variant":
+                    return typeof(object);
                 default:
                     throw new ArgumentException($"Unmapped SQL type: {sqlTypeName}");
             }
         }
 
 
-        public static string GetClrTypeString(Type type)
+        public static string GetClrTypeString(Type type, bool nullable)
         {
             switch (Type.GetTypeCode(type))
             {
-                case TypeCode.Boolean: return "bool";
-                case TypeCode.Byte: return "byte";
-                case TypeCode.Char: return "char";
-                case TypeCode.DateTime: return "DateTime";
-                case TypeCode.Decimal: return "decimal";
-                case TypeCode.Double: return "double";
-                case TypeCode.Int16: return "short";
-                case TypeCode.Int32: return "int";
-                case TypeCode.Int64: return "long";
-                case TypeCode.Single: return "float";
+                case TypeCode.Boolean: return $"bool{(nullable ? "?" : "")}";
+                case TypeCode.Byte: return $"byte{(nullable ? "?" : "")}";
+                case TypeCode.Char: return $"char{(nullable ? "?" : "")}";
+                case TypeCode.DateTime: return $"DateTime{(nullable ? "?" : "")}";
+                case TypeCode.Decimal: return $"decimal{(nullable ? "?" : "")}";
+                case TypeCode.Double: return $"double{(nullable ? "?" : "")}";
+                case TypeCode.Int16: return $"short{(nullable ? "?" : "")}";
+                case TypeCode.Int32: return $"int{(nullable ? "?" : "")}";
+                case TypeCode.Int64: return $"long{(nullable ? "?" : "")}";
+                case TypeCode.Single: return $"float{(nullable ? "?" : "")}";
                 case TypeCode.String: return "string";
                 default: return type.Name;
             }

@@ -139,19 +139,19 @@ namespace MDDDataAccess
         /// <typeparam name="T"></typeparam>
         /// <param name="obj"></param>
         /// <param name="engine"></param>
-        public static void DBUpsert<T>(this T obj, DBEngine engine = null) where T : new()
+        public static void DBUpsert<T>(this T obj, DBEngine engine = null) where T: class, new()
         {
             if (engine == null) engine = DBEngine.Default;
             engine.DBUpsert(obj);
             //string procname = $"{obj.GetType().Name}_Upsert";
             //engine.RunSqlUpdate(obj, procname, -1, null);
         }
-        public static IList<T> ListBy<T>(this object o, DBEngine engine = null) where T : new()
+        public static IList<T> ListBy<T>(this object o, DBEngine engine = null) where T: class, new()
         {
             if (engine == null) engine = DBEngine.Default;
             return engine.ListBy<T>(o);
         }
-        public async static Task<IList<T>> ListByAsync<T>(this object o, DBEngine engine = null) where T : new()
+        public async static Task<IList<T>> ListByAsync<T>(this object o, DBEngine engine = null) where T: class, new()
         {
             if (engine == null) engine = DBEngine.Default;
             return await engine.ListByAsync<T>(o).ConfigureAwait(false);

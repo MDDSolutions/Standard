@@ -45,7 +45,7 @@ namespace MDDDataAccess
     //            ser.Serialize(stream, this);
     //        }
     //    }
-    //    public static T Load<T>(string FileNameOnly = "ConfigurationSettings.xml") where T : new()
+    //    public static T Load<T>(string FileNameOnly = "ConfigurationSettings.xml") where T: class, new()
     //    {
     //        if (FileName != FileNameOnly)
     //            FileName = FileNameOnly;

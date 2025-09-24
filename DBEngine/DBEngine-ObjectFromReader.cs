@@ -15,94 +15,120 @@ namespace MDDDataAccess
     public partial class DBEngine
     {
         public bool EnumParseIgnoreCase { get; set; } = true;
-        public void ObjectFromReader<T>(SqlDataReader rdr, ref List<Tuple<Action<object, object>, string>> map, ref PropertyInfo key, ref T r, ref IObjectTracker tracker, bool strict = true) where T : new()
+        public void ObjectFromReader<T>(SqlDataReader rdr, ref List<Tuple<Action<object, object>, int>> map, ref PropertyInfo key, ref T r, ref Tracker<T> tracker, bool strict = true) where T : class, new()
         {
-            if (r == null) r = new T();
-
-            Tuple<PropertyInfo, bool> keyinfo = null;
-            PropertyInfo concurrency = null;
-            bool creating = true;
-            if (Tracking != ObjectTracking.None && r is ITrackedEntity ite)
+            Tracked<T> tracked = null;
+            PropertyInfo concurrencyproperty = null;
+            // callers must provide a tracker if they want tracking - it is possible to run a query on a trackable object without tracking it
+            // if you plan to just discard the results or something
+            if (tracker != null) 
             {
                 // if tracking is enabled, we need to see if the object already exists in the tracker
 
-                // if method is being called in a loop, tracker will already be set
-                if (tracker == null) tracker = GetOrCreateTracker<T>() as IObjectTracker;
+                // don't need this for tracking, but other aspects of the method sometimes do stuff with concurrency, so help it out
+                if (Tracked<T>.HasConcurrency)
+                    concurrencyproperty = Tracked<T>.ConcurrencyProperty;
 
-                ///KeyInfo returns a tuple of (PropertyInfo for the property marked with ListKeyAttribute, bool indicating whether or not the property has a value)
-                ///if the property has a value, then the object should have already been created via the tracker - if it wasn't, that's an error
-                keyinfo = AttributeInfo(r, typeof(ListKeyAttribute));
-                if (keyinfo.Item1 == null)
-                    throw new Exception($"DBEngine error: Tracking has been set to {Tracking} but type '{r.GetType().Name}' does not have a property marked with ListKeyAttribute");
-                if (keyinfo.Item2)
+                // if we already have a reference to the object being loaded, it should be in the tracker
+                // if r is null, then at least the caller doesn't know if the object is already being tracked
+                if (r != null)
                 {
-                    //if we are explicity providing a dirty object then chances are this is an update operation so we let dirty objects through
-                    //on the other hand, there should be some kind of indicator that the object is in the middle of a save operation so we don't 
-                    //have to assume here - perhaps a BeginSave / EndSave in IObjectTracker?
-                    //if (ite.IsDirty)
-                    //{
-                    //    //could just quietly return here but depending on why we're querying, there might be confusion as to why we're not loading the values we queried...
-                    //    //return;
-                    //    throw new Exception($"DBEngine error: Tracking has been set to {Tracking} but the object being loaded is already being tracked and is dirty - you must either set Tracking to None or ensure that all objects being loaded are not already being tracked as dirty");
-                    //}
-                    if (tracker.Exists(r))
+                    var keyvalue = Tracked<T>.GetKeyValue(r);
+                    if (!IsDefaultOrNull(keyvalue) && tracker.TryGet(keyvalue, out tracked))
                     {
-                        creating = false;
-                        ite.BeginUpdate();
-                        if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 55, "OFR cache hit", r.ToString(), typeof(T).Name));
+                        //if we are explicity providing a dirty object then chances are this is an update operation so we let dirty objects through
+                        //on the other hand, there should be some kind of indicator that the object is in the middle of a save operation so we don't 
+                        //have to assume here - perhaps a BeginSave / EndSave in IObjectTracker?
+                        switch (tracked.State)
+                        {
+                            case TrackedState.Unchanged:
+                            case TrackedState.Modified:
+                                if (tracked.TryGetEntity(out var existing) && !ReferenceEquals(existing, r))
+                                    throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being (re)loaded but is somehow not the same object as what has been passed to OFR");
+                                tracked.Initializing = true;
+                                if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 55, "OFR cache hit", r.ToString(), typeof(T).Name));
+                                break;
+                            case TrackedState.Initializing:
+                                throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being (re)loaded and is already in the Initializing state");
+                            case TrackedState.Invalid:
+                            default:
+                                throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being (re)loaded and is in an invalid state");
+                        }
                     }
                     else
                     {
-                        throw new Exception($"DBEngine error: Tracking has been set to {Tracking} but the object being loaded is not being tracked - you must either set Tracking to None or ensure that all objects being loaded are first created via the tracker");
+                        throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being (re)loaded and is not in the tracker");
                     }
                 }
-                else // no key value so we need to get the key value from the reader and see if the object exists in the tracker
+                else
                 {
-                    object keyvalue = rdr[keyinfo.Item1.Name];
-                    if (keyvalue == null || keyvalue == DBNull.Value)
-                        throw new Exception($"DBEngine error: Tracking has been set to {Tracking} but the object being loaded has a null key value - you must either set Tracking to None or ensure that all objects being loaded have a valid key value");
-                    var newObj = r;
-                    r = (T)tracker.Retrieve(keyvalue, r);
-                    if (!ReferenceEquals(r,newObj))
+                    //r was not provided so we need to get the key value from the reader and see if the object exists in the tracker
+                    var keyvalue = rdr[Tracked<T>.KeyDBName];
+                    var rdrconcurrency = Tracked<T>.HasConcurrency ? rdr[Tracked<T>.ConcurrencyDBName] : null;
+                    if (tracker.TryGet(keyvalue, out tracked))
                     {
-                        ite = r as ITrackedEntity;
-                        if (ite.IsDirty)
+                        var curstate = tracked.State;
+                        switch (curstate)
                         {
-                            //could just quietly return here but depending on why we're querying, there might be confusion as to why we're not loading the values we queried...
-                            //return;
-                            throw new Exception($"DBEngine error: Tracking has been set to {Tracking} but the object being loaded is already being tracked and is dirty - you must either set Tracking to None or ensure that all objects being loaded are not already being tracked as dirty");
+                            case TrackedState.Modified:
+                            case TrackedState.Unchanged:
+                                // we can just return the existing object if the concurrency matches whether it is dirty or not
+                                // if the concurrency doesn't match, we can reload it if it is unchanged, but if it is dirty then we have a problem
+                                if (tracked.TryGetEntity(out var existing))
+                                {
+                                    r = existing;
+                                    var entityconcurrency = Tracked<T>.GetConcurrencyValue?.Invoke(r);
+                                    if (Tracked<T>.HasConcurrency && ValueEquals(rdrconcurrency, entityconcurrency))
+                                    {
+                                        if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 56, "OFR cache hit - concurrency match", r.ToString(), typeof(T).Name));
+                                        return; // nothing to do - the object is already loaded
+                                    }
+                                    else if (curstate == TrackedState.Unchanged)
+                                    {
+                                        tracked.Initializing = true;
+                                        if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 53, "OFR cache update", r.ToString(), typeof(T).Name));
+                                    }
+                                    else
+                                    {
+                                        throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being loaded and is dirty but the concurrency value in the database does not match the concurrency value of the object - you must either set Tracking to None or ensure that all objects being loaded are not already being tracked as dirty");
+                                    }
+                                }
+                                break;
+                            case TrackedState.Initializing:
+                                throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being loaded and is already in the Initializing state");
+                            case TrackedState.Invalid:
+                            default:
+                                // there was an entry but it has been GC'd - no problem, just revive it - this should be a pretty common occurrence
+                                tracked.BeginInitialization(keyvalue, rdrconcurrency, out r);
+                                if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 51, "OFR revive", $"Type: {typeof(T).Name} ID: {keyvalue}", typeof(T).Name));
+                                break;
                         }
-                        creating = false;
-                        ite.BeginUpdate();
-                        if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 53, "OFR cache update", r.ToString(), typeof(T).Name));
                     }
                     else
                     {
-                        creating = true;
-                        ite.BeginInit();
+                        tracked = tracker.GetOrAdd(keyvalue, rdrconcurrency, out r);
                         if (DebugLevel >= 220) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 51, "OFR create", $"Type: {typeof(T).Name} ID: {keyvalue}", typeof(T).Name));
                     }
                 }
-
-
-                //else
-                //{
-                //    creating = true;
-                //    ite.BeginInit();
-                //}
+            }
+            else
+            {
+                // not tracking, so just make sure we have an object to load into
+                if (r == null) r = new T();
             }
 
             if (!strict)
             {
                 //non-strict mode means we don't match all properties to reader columns but it is still pretty strict... the object must have a populated Key property and a concurrency property
                 //this method assumes that the database operation is checking the concurrency property but cannot ensure that
+                var keyinfo = AttributeInfo(r, typeof(ListKeyAttribute));
                 if (keyinfo == null)
                    keyinfo = AttributeInfo(r, typeof(ListKeyAttribute));
                 if (keyinfo.Item1 == null || !keyinfo.Item2)
                     throw new Exception($"DBEngine error: Non-strict ObjectFromReader calls require that the object being loaded have a property marked with ListKeyAttribute and that the property have a value");
 
-                concurrency = AttributeProperty<T>(typeof(ListConcurrencyAttribute));
-                if (concurrency == null)
+                if (concurrencyproperty == null) concurrencyproperty = AttributeProperty<T>(typeof(ListConcurrencyAttribute));
+                if (concurrencyproperty == null)
                     throw new Exception($"DBEngine error: Non-strict ObjectFromReader calls require that the object being loaded have a property marked with ListConcurrencyAttribute");
 
                 //at this point all we need to do is not throw an error if properties are missing from the reader - we still map everything we can find - but we do need to make sure
@@ -114,7 +140,7 @@ namespace MDDDataAccess
 
             if (map == null)
             {
-                map = new List<Tuple<Action<object, object>, string>>();
+                map = new List<Tuple<Action<object, object>, int>>();
 
                 // EnsureCorrectPropertyUsage doesn't work - maybe fix it another day
                 //if (Tracking != ObjectTracking.None)
@@ -157,7 +183,7 @@ namespace MDDDataAccess
                     // in non-strict mode, all properties are optional except the concurrency property
                     // the key property isn't optional either but we've already checked for it above
                     // even if the concurrency property is marked with DBOptional, we still require it to be in the reader in non-strict mode
-                    if (!strict) optional = item != concurrency;
+                    if (!strict) optional = item != concurrencyproperty;
 
                     if (include && item.CanWrite && (item.PropertyType.Name == "Char" || item.ToString().StartsWith("System.Nullable`1[System.Char]")))
                     {
@@ -197,18 +223,14 @@ namespace MDDDataAccess
                                 if (r is StringObj)
                                 {
                                     o = Convert.IsDBNull(rdr[0]) ? null : rdr[0];
-                                    if (!nomap) map.Add(new Tuple<Action<object, object>, string>(BuildSetAccessor(item.GetSetMethod(true)), rdr.GetName(0)));
+                                    if (!nomap) map.Add(new Tuple<Action<object, object>, int>(BuildSetAccessor(item.GetSetMethod(true)), 0));
                                 }
                                 else if (DBName != null)
                                 {
                                     o = Convert.IsDBNull(rdr[DBName]) ? null : rdr[DBName];
-                                    if (!nomap) map.Add(new Tuple<Action<object, object>, string>(BuildSetAccessor(item.GetSetMethod(true)), DBName));
+                                    var ordinal = rdr.GetOrdinal(DBName);
+                                    if (!nomap) map.Add(new Tuple<Action<object, object>, int>(BuildSetAccessor(item.GetSetMethod(true)), ordinal));
                                 }
-                                //else
-                                //{
-                                //    o = Convert.IsDBNull(rdr[item.Name]) ? null : rdr[item.Name];
-                                //    if (!nomap) map.Add(new Tuple<Action<object, object>, string>(BuildSetAccessor(item.GetSetMethod()), item.Name));
-                                //}
                                 if (o != null)
                                     item.SetValue(r, o);
                                 else
@@ -311,17 +333,11 @@ namespace MDDDataAccess
                 }
             }
 
-            if (Tracking != ObjectTracking.None && r is ITrackedEntity ite2)
+            if (tracked != null)
             {
-                if (creating)
-                {
-                    ite2.EndInit();
-                    if (tracker != null) { r = (T)tracker.Load(r); }
-                }
-                else
-                {
-                    ite2.EndUpdate();
-                }
+                if (!tracked.Initializing)
+                    throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {Tracked<T>.GetKeyValue(r)} has completed loading but was not in the Initializing state");
+                tracked.EndInitialization();
             }
             //if (Tracking == ObjectTracking.ChangeNotification)
             //{

@@ -309,7 +309,7 @@ namespace MDDDataAccess
         #endregion
 
         #region Generics With Results
-        public async Task<List<T>> SqlRunQueryWithResultsAsync<T>(string cmdtext, bool IsProcedure, CancellationToken CancellationToken, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T : new()
+        public async Task<List<T>> SqlRunQueryWithResultsAsync<T>(string cmdtext, bool IsProcedure, CancellationToken CancellationToken, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T: class, new()
         {
             if (!IsProcedure && !AllowAdHoc) throw new Exception("Ad Hoc Queries are not allowed by this DBEngine");
             using (var cn = await getconnectionasync(CancellationToken, ConnectionTimeout, ApplicationName).ConfigureAwait(false))
@@ -326,8 +326,8 @@ namespace MDDDataAccess
 
                         var l = new List<T>();
                         //List<Tuple<PropertyInfo, String>> map = null;
-                        List<Tuple<Action<object, object>, String>> map = null;
-                        IObjectTracker t = null;
+                        List<Tuple<Action<object, object>, int>> map = null;
+                        Tracker<T> t = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
                         PropertyInfo key = null;
                         using (SqlDataReader rdr = await ExecuteReaderAsync(cmd, CancellationToken).ConfigureAwait(false))
                         {
@@ -336,7 +336,8 @@ namespace MDDDataAccess
                                 try
                                 {
                                     rowcount++;
-                                    var r = new T();
+                                    //var r = new T();
+                                    T r = null;
                                     ObjectFromReader<T>(rdr, ref map, ref key, ref r, ref t);
                                     l.Add(r);
                                     if (CancellationToken.IsCancellationRequested) return l;
@@ -353,11 +354,11 @@ namespace MDDDataAccess
             }
             return null;
         }
-        public async Task<List<T>> SqlRunQueryWithResultsStubAsync<T>(string cmdtext, bool IsProcedure, CancellationToken CancellationToken, int ConnectionTimeout = -1, string ApplicationName = null, params ParameterStub[] list) where T : new()
+        public async Task<List<T>> SqlRunQueryWithResultsStubAsync<T>(string cmdtext, bool IsProcedure, CancellationToken CancellationToken, int ConnectionTimeout = -1, string ApplicationName = null, params ParameterStub[] list) where T: class, new()
         {
             return await SqlRunQueryWithResultsAsync<T>(cmdtext, IsProcedure, CancellationToken, ConnectionTimeout, ApplicationName, StubsToSqlParameters(list)).ConfigureAwait(false);
         }
-        public IList<T> SqlRunQueryWithResults<T>(string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T : new()
+        public IList<T> SqlRunQueryWithResults<T>(string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T: class, new()
         {
             if (!IsProcedure && !AllowAdHoc) throw new Exception("Ad Hoc Queries are not allowed by this DBEngine");
             using (var cn = getconnection(ConnectionTimeout, ApplicationName))
@@ -369,19 +370,18 @@ namespace MDDDataAccess
                         cmd.CommandTimeout = CommandTimeout;
                         if (IsProcedure) cmd.CommandType = CommandType.StoredProcedure;
                         ParameterizeCommand(list, cmd);
-                        T r = default;
                         try
                         {
                             var l = new List<T>();
                             PropertyInfo key = null;
-                            List<Tuple<Action<object, object>, String>> map = null;
-                            IObjectTracker t = null;
+                            List<Tuple<Action<object, object>, int>> map = null;
+                            Tracker<T> t = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
                             using (SqlDataReader rdr = ExecuteReader(cmd))
                             {
                                 while (rdr.Read())
                                 {
                                     //l.Add((T)Activator.CreateInstance(typeof(T), rdr));
-                                    r = new T();
+                                    T r = null;
                                     ObjectFromReader<T>(rdr, ref map, ref key, ref r, ref t);
                                     l.Add(r);
                                     //l.Add(ObjectFromReader<T>(rdr));
@@ -398,11 +398,11 @@ namespace MDDDataAccess
             }
             return null;
         }
-        public IList<T> SqlRunQueryWithResultsStub<T>(string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params ParameterStub[] list) where T : new()
+        public IList<T> SqlRunQueryWithResultsStub<T>(string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params ParameterStub[] list) where T: class, new()
         {
             return SqlRunQueryWithResults<T>(cmdtext, IsProcedure, ConnectionTimeout, ApplicationName, StubsToSqlParameters(list));
         }
-        public void SqlRunQueryRowByRow<T>(string cmdtext, Func<T, int, bool> rowcallback, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T : new()
+        public void SqlRunQueryRowByRow<T>(string cmdtext, Func<T, int, bool> rowcallback, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T: class, new()
         {
             if (!IsProcedure && !AllowAdHoc) throw new Exception("Ad Hoc Queries are not allowed by this DBEngine");
             using (var cn = getconnection(ConnectionTimeout, ApplicationName))
@@ -414,19 +414,18 @@ namespace MDDDataAccess
                         cmd.CommandTimeout = CommandTimeout;
                         if (IsProcedure) cmd.CommandType = CommandType.StoredProcedure;
                         ParameterizeCommand(list, cmd);
-                        T r = default;
                         try
                         {
                             PropertyInfo key = null;
-                            List<Tuple<Action<object, object>, String>> map = null;
-                            IObjectTracker t = null;
+                            List<Tuple<Action<object, object>, int>> map = null;
+                            Tracker<T> t = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
                             int rowindex = 0;
                             using (SqlDataReader rdr = ExecuteReader(cmd))
                             {
                                 while (rdr.Read())
                                 {
                                     rowindex++;
-                                    r = new T();
+                                    T r = null;
                                     ObjectFromReader<T>(rdr, ref map, ref key, ref r, ref t);
                                     if (!rowcallback(r, rowindex)) break;
                                 }
@@ -440,7 +439,7 @@ namespace MDDDataAccess
                 }
             }
         }
-        public async Task SqlRunQueryRowByRowAsync<T>(string cmdtext, Func<T, int, CancellationToken, int, Task> rowcallback, bool IsProcedure, CancellationToken cancellationToken, int parallelcallbacks = 5, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T : new()
+        public async Task SqlRunQueryRowByRowAsync<T>(string cmdtext, Func<T, int, CancellationToken, int, Task> rowcallback, bool IsProcedure, CancellationToken cancellationToken, int parallelcallbacks = 5, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T: class, new()
         {
             if (!IsProcedure && !AllowAdHoc) throw new Exception("Ad Hoc Queries are not allowed by this DBEngine");
             using (var cn = await getconnectionasync(cancellationToken, ConnectionTimeout, ApplicationName).ConfigureAwait(false))
@@ -458,8 +457,8 @@ namespace MDDDataAccess
                         try
                         {
                             PropertyInfo key = null;
-                            List<Tuple<Action<object, object>, String>> map = null;
-                            IObjectTracker t = null;
+                            List<Tuple<Action<object, object>, int>> map = null;
+                            Tracker<T> t = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
                             int rowindex = 0;
 
                             using (SqlDataReader rdr = await ExecuteReaderAsync(cmd, cancellationToken).ConfigureAwait(false))
@@ -471,7 +470,7 @@ namespace MDDDataAccess
                                     var availabletask = await Task.WhenAny(tasks.Where(x => x != null).Select(x => x.Item2)).ConfigureAwait(false);
                                     var taskindex = Array.FindIndex(tasks, x => x.Item2 == availabletask);
 
-                                    T r = new T();
+                                    T r = null;
                                     ObjectFromReader<T>(rdr, ref map, ref key, ref r, ref t);
                                     tasks[taskindex] = new Tuple<T, Task>(r, rowcallback(r, rowindex, cancellationToken, taskindex));
 
@@ -489,8 +488,8 @@ namespace MDDDataAccess
             }
         }
         public Tuple<List<T>, List<R>> SqlRunQueryWithResults<T, R>(string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list)
-            where T : new()
-            where R : new()
+            where T: class, new()
+            where R : class, new()
         {
             if (!IsProcedure && !AllowAdHoc) throw new Exception("Ad Hoc Queries are not allowed by this DBEngine");
             var t = new List<T>();
@@ -509,12 +508,13 @@ namespace MDDDataAccess
                             using (SqlDataReader rdr = ExecuteReader(cmd))
                             {
                                 PropertyInfo key = null;
-                                List<Tuple<Action<object, object>, String>> map = null;
-                                IObjectTracker tr = null;
+                                List<Tuple<Action<object, object>, int>> map = null;
+                                Tracker<T> tt = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
+                                Tracker<R> tr = Tracking != ObjectTracking.None && Tracked<R>.IsTrackable ? GetTracker<R>() : null;
                                 while (rdr.Read())
                                 {
-                                    var tc = new T();
-                                    ObjectFromReader(rdr, ref map, ref key, ref tc, ref tr);
+                                    T tc = null;
+                                    ObjectFromReader(rdr, ref map, ref key, ref tc, ref tt);
                                     t.Add(tc);
                                 }
                                 rdr.NextResult();
@@ -525,7 +525,7 @@ namespace MDDDataAccess
                                     tr = null;
                                     while (rdr.Read())
                                     {
-                                        var rc = new R();
+                                        R rc = null;
                                         ObjectFromReader(rdr, ref map, ref key, ref rc, ref tr);
                                         r.Add(rc);
                                     }
@@ -542,8 +542,8 @@ namespace MDDDataAccess
             return new Tuple<List<T>, List<R>>(t, r);
         }
         public async Task<Tuple<List<T>, List<R>>> SqlRunQueryWithResultsAsync<T, R>(string cmdtext, bool IsProcedure, CancellationToken CancellationToken, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list)
-            where T : new()
-            where R : new()
+            where T: class, new()
+            where R : class, new()
         {
             if (!IsProcedure && !AllowAdHoc) throw new Exception("Ad Hoc Queries are not allowed by this DBEngine");
             var t = new List<T>();
@@ -562,12 +562,13 @@ namespace MDDDataAccess
                             using (SqlDataReader rdr = await ExecuteReaderAsync(cmd, CancellationToken).ConfigureAwait(false))
                             {
                                 PropertyInfo key = null;
-                                List<Tuple<Action<object, object>, String>> map = null;
-                                IObjectTracker tr = null;
+                                List<Tuple<Action<object, object>, int>> map = null;
+                                Tracker<T> tt = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
+                                Tracker<R> tr = Tracking != ObjectTracking.None && Tracked<R>.IsTrackable ? GetTracker<R>() : null;
                                 while (await rdr.ReadAsync().ConfigureAwait(false))
                                 {
-                                    var tc = new T();
-                                    ObjectFromReader(rdr, ref map, ref key, ref tc, ref tr);
+                                    T tc = null;
+                                    ObjectFromReader(rdr, ref map, ref key, ref tc, ref tt);
                                     t.Add(tc);
                                 }
                                 await rdr.NextResultAsync().ConfigureAwait(false);
@@ -578,7 +579,7 @@ namespace MDDDataAccess
                                     tr = null;
                                     while (await rdr.ReadAsync().ConfigureAwait(false))
                                     {
-                                        var rc = new R();
+                                        R rc = null;
                                         ObjectFromReader(rdr, ref map, ref key, ref rc, ref tr);
                                         r.Add(rc);
                                     }
@@ -595,14 +596,14 @@ namespace MDDDataAccess
             return new Tuple<List<T>, List<R>>(t, r);
         }
         public async Task<Tuple<List<T>, List<R>>> SqlRunQueryWithResultsStubAsync<T, R>(string cmdtext, bool IsProcedure, CancellationToken CancellationToken, int ConnectionTimeout = -1, string ApplicationName = null, params ParameterStub[] list)
-            where T : new()
-            where R : new()
+            where T: class, new()
+            where R : class, new()
         {
             return await SqlRunQueryWithResultsAsync<T, R>(cmdtext, IsProcedure, CancellationToken, ConnectionTimeout, ApplicationName, StubsToSqlParameters(list)).ConfigureAwait(false);
         }
         public async Task<T> SqlRunQueryHeaderDetailAsync<T, R>(string cmdtext, bool IsProcedure, CancellationToken CancellationToken, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list)
-            where T : new()
-            where R : new()
+            where T: class, new()
+            where R : class, new()
         {
             if (!IsProcedure && !AllowAdHoc) throw new Exception("Ad Hoc Queries are not allowed by this DBEngine");
             using (var cn = await getconnectionasync(CancellationToken, ConnectionTimeout, ApplicationName).ConfigureAwait(false))
@@ -616,19 +617,19 @@ namespace MDDDataAccess
                         ParameterizeCommand(list, cmd);
                         try
                         {
-                            T h = default(T);
+                            T h = null;
                             using (SqlDataReader rdr = await ExecuteReaderAsync(cmd, CancellationToken).ConfigureAwait(false))
                             {
                                 bool found = false;
                                 //List<Tuple<PropertyInfo, String>> map = null;
                                 PropertyInfo key = null;
-                                List<Tuple<Action<object, object>, String>> map = null;
-                                IObjectTracker tr = null;
+                                List<Tuple<Action<object, object>, int>> map = null;
+                                Tracker<T> tt = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
+                                Tracker<R> tr = Tracking != ObjectTracking.None && Tracked<R>.IsTrackable ? GetTracker<R>() : null;
                                 while (await rdr.ReadAsync().ConfigureAwait(false))
                                 {
                                     if (found) throw new Exception("Only one record expected in the header result");
-                                    h = new T();
-                                    ObjectFromReader<T>(rdr, ref map, ref key, ref h, ref tr);
+                                    ObjectFromReader<T>(rdr, ref map, ref key, ref h, ref tt);
                                     found = true;
                                 }
                                 await rdr.NextResultAsync().ConfigureAwait(false);
@@ -640,7 +641,7 @@ namespace MDDDataAccess
                                     tr = null;
                                     while (await rdr.ReadAsync().ConfigureAwait(false))
                                     {
-                                        var r = new R();
+                                        R r = null;
                                         ObjectFromReader<R>(rdr, ref map, ref key, ref r, ref tr);
                                         l.Add(r);
                                     }
@@ -661,14 +662,14 @@ namespace MDDDataAccess
             return default(T);
         }
         public async Task<T> SqlRunQueryHeaderDetailStubAsync<T, R>(string cmdtext, bool IsProcedure, CancellationToken CancellationToken, int ConnectionTimeout = -1, string ApplicationName = null, params ParameterStub[] list)
-            where T : new()
-            where R : new()
+            where T: class, new()
+            where R : class, new()
         {
             return await SqlRunQueryHeaderDetailAsync<T, R>(cmdtext, IsProcedure, CancellationToken, ConnectionTimeout, ApplicationName, StubsToSqlParameters(list)).ConfigureAwait(false);
         }
         public T SqlRunQueryHeaderDetail<T, R>(string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list)
-            where T : new()
-            where R : new()
+            where T: class, new()
+            where R : class, new()
         {
             if (!IsProcedure && !AllowAdHoc) throw new Exception("Ad Hoc Queries are not allowed by this DBEngine");
             using (var cn = getconnection(ConnectionTimeout, ApplicationName))
@@ -682,18 +683,19 @@ namespace MDDDataAccess
                         ParameterizeCommand(list, cmd);
                         try
                         {
-                            T h = default(T);
+                            T h = null;
                             using (SqlDataReader rdr = ExecuteReader(cmd))
                             {
                                 bool found = false;
                                 //List<Tuple<PropertyInfo, String>> map = null;
                                 PropertyInfo key = null;
-                                List<Tuple<Action<object, object>, String>> map = null;
-                                IObjectTracker tr = null;
+                                List<Tuple<Action<object, object>, int>> map = null;
+                                Tracker<T> tt = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
+                                Tracker<R> tr = Tracking != ObjectTracking.None && Tracked<R>.IsTrackable ? GetTracker<R>() : null;
                                 while (rdr.Read())
                                 {
                                     if (found) throw new Exception("Only one record expected in the header result");
-                                    ObjectFromReader<T>(rdr, ref map, ref key, ref h, ref tr);
+                                    ObjectFromReader<T>(rdr, ref map, ref key, ref h, ref tt);
                                     found = true;
                                 }
                                 rdr.NextResult();
@@ -705,7 +707,7 @@ namespace MDDDataAccess
                                     tr = null;
                                     while (rdr.Read())
                                     {
-                                        var r = new R();
+                                        R r = null;
                                         ObjectFromReader<R>(rdr, ref map, ref key, ref r, ref tr);
                                         l.Add(r);
                                     }
@@ -726,8 +728,8 @@ namespace MDDDataAccess
             return default(T);
         }
         public IList<T> SqlRunQueryCombined<T, R>(string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list)
-            where T : new()
-            where R : new()
+            where T: class, new()
+            where R : class, new()
         {
             /* the idea here is that the result set contains both T and R fields in each row but T has a sub-object of type R
              * otherwise we'd return 2 lists or something? we could return a List<Tuple<T,R>> but presumably these objects are related somehow
@@ -752,12 +754,12 @@ namespace MDDDataAccess
                         {
                             var l = new List<T>();
                             PropertyInfo tkey = null;
-                            List<Tuple<Action<object, object>, String>> tmap = null;
-                            IObjectTracker ttrk = null;
+                            List<Tuple<Action<object, object>, int>> tmap = null;
+                            Tracker<T> ttrk = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
 
                             PropertyInfo rkey = null;
-                            List<Tuple<Action<object, object>, String>> rmap = null;
-                            IObjectTracker rtrk = null;
+                            List<Tuple<Action<object, object>, int>> rmap = null;
+                            Tracker<R> rtrk = Tracking != ObjectTracking.None && Tracked<R>.IsTrackable ? GetTracker<R>() : null;
 
                             var subobj = typeof(T).GetPropertyOfType(typeof(R));
                             if (subobj == null)
@@ -767,11 +769,11 @@ namespace MDDDataAccess
                             {
                                 while (rdr.Read())
                                 {
-                                    tobj = new T();
+                                    tobj = null;
                                     ObjectFromReader(rdr, ref tmap, ref tkey, ref tobj, ref ttrk);
                                     l.Add(tobj);
 
-                                    robj = new R();
+                                    robj = null;
                                     ObjectFromReader(rdr, ref rmap, ref rkey, ref robj, ref rtrk);
                                    
                                     subobj.SetValue(tobj, robj);
@@ -791,12 +793,13 @@ namespace MDDDataAccess
         #endregion
 
         #region Generics Update
-        bool runsqlupdateinternal<T>(T obj, string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, bool strict = true, params SqlParameter[] list) where T : new()
+        bool runsqlupdateinternal<T>(T obj, string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, bool strict = true, params SqlParameter[] list) where T: class, new()
         {
-            if (Tracking != ObjectTracking.None && obj is ITrackedEntity ite)
+            Tracker<T> t = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
+            if (t != null)
             {
-                if (!ite.IsTracked(this))
-                    throw new Exception("The object provided for update is an ITrackedEntity and ObjectTracking is enabled - the object was somehow loaded outside the tracking system and so cannot be updated");
+                if (!t.TryGet(Tracked<T>.GetKeyValue(obj), out var tracked) || tracked == null)
+                    throw new Exception("The object provided for update is trackable but is not currently being tracked - the object was somehow loaded outside the tracking system and so cannot be updated");
             }
             bool found = false;
             if (!IsProcedure && !AllowAdHoc) throw new Exception("Ad Hoc Queries are not allowed by this DBEngine");
@@ -814,8 +817,7 @@ namespace MDDDataAccess
                             using (SqlDataReader rdr = ExecuteReader(cmd))
                             {
                                 PropertyInfo key = null;
-                                List<Tuple<Action<object, object>, String>> map = null;
-                                IObjectTracker t = null;
+                                List<Tuple<Action<object, object>, int>> map = null;
                                 while (rdr.Read())
                                 {
                                     if (found) throw new Exception("Only one record expected in the update result");
@@ -834,20 +836,20 @@ namespace MDDDataAccess
             }
             return found;
         }
-        public bool RunSqlUpdate<T>(T obj, string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T : new()
+        public bool RunSqlUpdate<T>(T obj, string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T: class, new()
         {
             return runsqlupdateinternal(obj, cmdtext, IsProcedure, ConnectionTimeout, ApplicationName, true, list);
         }
-        public bool RunSqlUpdateNonStrict<T>(T obj, string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T : new()
+        public bool RunSqlUpdateNonStrict<T>(T obj, string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T: class, new()
         {
             return runsqlupdateinternal(obj, cmdtext, IsProcedure, ConnectionTimeout, ApplicationName, false, list);
         }
-        public bool RunSqlUpdate<T>(T obj, string procName, int ConnectionTimeout = -1, string ApplicationName = null) where T : new()
+        public bool RunSqlUpdate<T>(T obj, string procName, int ConnectionTimeout = -1, string ApplicationName = null) where T: class, new()
         {
             var plist = AutoParam(obj, procName);
             return RunSqlUpdate(obj, procName, true, ConnectionTimeout, ApplicationName, plist);
         }
-        public async Task<bool> RunSqlUpdateAsync<T>(T obj, string cmdtext, bool IsProcedure, CancellationToken token, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T : new()
+        public async Task<bool> RunSqlUpdateAsync<T>(T obj, string cmdtext, bool IsProcedure, CancellationToken token, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T: class, new()
         {
 
             if (Tracking != ObjectTracking.None && obj is ITrackedEntity ite)
@@ -873,8 +875,8 @@ namespace MDDDataAccess
                             {
                                 if (token.IsCancellationRequested) return false;
                                 PropertyInfo key = null;
-                                List<Tuple<Action<object, object>, String>> map = null;
-                                IObjectTracker t = null;
+                                List<Tuple<Action<object, object>, int>> map = null;
+                                Tracker<T> t = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
                                 while (await rdr.ReadAsync(token).ConfigureAwait(false))
                                 {
                                     if (token.IsCancellationRequested) return false;
@@ -893,14 +895,14 @@ namespace MDDDataAccess
             }
             return found;
         }
-        public async Task<bool> RunSqlUpdateAsync<T>(T obj, string procName, CancellationToken token, int ConnectionTimeout = -1, string ApplicationName = null) where T : new()
+        public async Task<bool> RunSqlUpdateAsync<T>(T obj, string procName, CancellationToken token, int ConnectionTimeout = -1, string ApplicationName = null) where T: class, new()
         {
             var plist = AutoParam(obj, procName);
             return await RunSqlUpdateAsync(obj, procName, true, token, ConnectionTimeout, ApplicationName, plist).ConfigureAwait(false);
         }
         public bool RunSqlUpdateHeaderDetail<T, R>(T obj, string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list)
-            where T : new()
-            where R : new()
+            where T: class, new()
+            where R : class, new()
         {
             bool found = false;
             if (!IsProcedure && !AllowAdHoc) throw new Exception("Ad Hoc Queries are not allowed by this DBEngine");
@@ -918,12 +920,13 @@ namespace MDDDataAccess
                             using (SqlDataReader rdr = ExecuteReader(cmd))
                             {
                                 PropertyInfo key = null;
-                                List<Tuple<Action<object, object>, String>> map = null;
-                                IObjectTracker tr = null;
+                                List<Tuple<Action<object, object>, int>> map = null;
+                                Tracker<T> tt = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
+                                Tracker<R> tr = Tracking != ObjectTracking.None && Tracked<R>.IsTrackable ? GetTracker<R>() : null;
                                 while (rdr.Read())
                                 {
                                     if (found) throw new Exception("Only one record expected in the update result");
-                                    ObjectFromReader(rdr, ref map, ref key, ref obj, ref tr);
+                                    ObjectFromReader(rdr, ref map, ref key, ref obj, ref tt);
                                     found = true;
                                 }
                                 rdr.NextResult();
@@ -935,7 +938,7 @@ namespace MDDDataAccess
                                     tr = null;
                                     while (rdr.Read())
                                     {
-                                        var r = new R();
+                                        R r = null;
                                         ObjectFromReader<R>(rdr, ref map, ref key, ref r, ref tr);
                                         l.Add(r);
                                     }
@@ -954,11 +957,11 @@ namespace MDDDataAccess
             }
             return found;
         }
-        public bool RunSqlUpdateStub<T>(T obj, string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params ParameterStub[] list) where T : new()
+        public bool RunSqlUpdateStub<T>(T obj, string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params ParameterStub[] list) where T: class, new()
         {
             return RunSqlUpdate(obj, cmdtext, IsProcedure, ConnectionTimeout, ApplicationName, StubsToSqlParameters(list));
         }
-        public bool RunSqlUpdateStub<T>(T obj, string procName, int ConnectionTimeout = -1, string ApplicationName = null) where T : new()
+        public bool RunSqlUpdateStub<T>(T obj, string procName, int ConnectionTimeout = -1, string ApplicationName = null) where T: class, new()
         {
             var plist = AutoParam(obj, procName);
             return RunSqlUpdate(obj, procName, true, ConnectionTimeout, ApplicationName, plist);

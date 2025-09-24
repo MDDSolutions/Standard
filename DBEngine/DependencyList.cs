@@ -8,7 +8,7 @@ using System.Threading;
 
 namespace MDDDataAccess
 {
-    public class DependencyList<T> where T : new()
+    public class DependencyList<T> where T: class, new()
     {
 
         // This whole thing is broken - a bunch of stuff needed to be commented out to make other stuff work

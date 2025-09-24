@@ -432,11 +432,77 @@ namespace MDDDataAccess
             }
             return new Tuple<PropertyInfo, bool>(null, false);
         }
+        public static bool ValueEquals(object val1, object val2)
+        {
+            if (val1 == null && val2 == null) return true;
+            if (val1 == null || val2 == null) return false;
+            if (ReferenceEquals(val1, val2)) return true;
+
+            if (val1 is ValueType && val2 is ValueType)
+                return val1.Equals(val2);
+
+            if (val1 is string s1 && val2 is string s2)
+                return string.Equals(s1, s2, StringComparison.Ordinal);
+
+            if (val1 is byte[] b1 && val2 is byte[] b2)
+                return b1.SequenceEqual(b2);
+
+            // Fast path for other primitive arrays (int[], long[], etc.)
+            if (val1 is Array arr1 && val2 is Array arr2)
+            {
+                var t = arr1.GetType().GetElementType();
+                if (t != null && t.IsPrimitive)
+                {
+                    if (arr1.Length != arr2.Length) return false;
+                    for (int i = 0; i < arr1.Length; i++)
+                        if (!Equals(arr1.GetValue(i), arr2.GetValue(i)))
+                            return false;
+                    return true;
+                }
+                // Fallback for non-primitive arrays
+                return arr1.Cast<object>().SequenceEqual(arr2.Cast<object>());
+            }
+
+            // Value types and other reference types
+            return val1.Equals(val2);
+        }
+        public static bool IsDefaultOrNull(object key)
+        {
+            if (key == null)
+                return true;
+
+            var type = key.GetType();
+
+            // Int32: treat 0 as default
+            if (type == typeof(int))
+                return (int)key == 0;           
+            
+            // String: treat null or empty as default
+            if (type == typeof(string))
+                return string.IsNullOrEmpty((string)key);
+
+            // Guid: treat Guid.Empty as default
+            if (type == typeof(Guid))
+                return (Guid)key == Guid.Empty;
+
+            // Long: treat 0 as default
+            if (type == typeof(long))
+                return (long)key == 0L;
+
+            // Add more types as needed...
+
+            // For other value types, compare to Activator.CreateInstance(type)
+            if (type.IsValueType)
+                return key.Equals(Activator.CreateInstance(type));
+
+            // For all other cases, just check for null
+            return false;
+        }
     }
 }
 
 
-//public static T ObjectFromReader<T>(SqlDataReader rdr, ref List<Tuple<PropertyInfo, String>> map) where T : new()
+//public static T ObjectFromReader<T>(SqlDataReader rdr, ref List<Tuple<PropertyInfo, String>> map) where T: class, new()
 //{
 //    var r = new T();
 
@@ -486,7 +552,7 @@ namespace MDDDataAccess
 //    }
 //    return r;
 //}
-//public static T ObjectFromReader<T>(SqlDataReader rdr) where T : new()
+//public static T ObjectFromReader<T>(SqlDataReader rdr) where T: class, new()
 //{
 //    var r = new T();
 //        foreach (var item in r.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance))
@@ -504,7 +570,7 @@ namespace MDDDataAccess
 //        }
 //    return r;
 //}
-//public static T ObjectFromReader<T>(SqlDataReader rdr, ref List<Tuple<Action<object, object>, String>> map, ref PropertyInfo key) where T : new()
+//public static T ObjectFromReader<T>(SqlDataReader rdr, ref List<Tuple<Action<object, object>, String>> map, ref PropertyInfo key) where T: class, new()
 //{
 //    var r = new T();
 

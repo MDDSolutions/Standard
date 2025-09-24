@@ -364,14 +364,14 @@ namespace MDDDataAccess
         /// </summary>
         /// <typeparam name="T"></typeparam>
         /// <returns></returns>
-        public IList<T> ListOf<T>() where T : new()
+        public IList<T> ListOf<T>() where T: class, new()
         {
             var procname = $"{typeof(T).Name}_Select";
             var selectattr = typeof(T).GetCustomAttribute<DBSelectAttribute>();
             if (selectattr != null) procname = selectattr.SelectProcName;
             return SqlRunQueryWithResults<T>(procname, true, -1, null);
         }
-        public async Task<IList<T>> ListOfAsync<T>(CancellationToken token) where T : new()
+        public async Task<IList<T>> ListOfAsync<T>(CancellationToken token) where T: class, new()
         {
             var procname = $"{typeof(T).Name}_Select";
             var selectattr = typeof(T).GetCustomAttribute<DBSelectAttribute>();
@@ -380,14 +380,14 @@ namespace MDDDataAccess
         }
 
 
-        public IList<T> ListBy<T>(object obj) where T : new()
+        public IList<T> ListBy<T>(object obj) where T: class, new()
         {
             var procname = $"{typeof(T).Name}_Select";
             var selectattr = typeof(T).GetCustomAttribute<DBSelectByAttribute>();
             if (selectattr != null) procname = selectattr.SelectProcName;
             return SqlRunQueryWithResults<T>(procname, true, -1, null, AutoParam(obj, procname));
         }
-        public async Task<IList<T>> ListByAsync<T>(object obj) where T : new()
+        public async Task<IList<T>> ListByAsync<T>(object obj) where T: class, new()
         {
             var procname = $"{typeof(T).Name}_Select";
             var selectattr = typeof(T).GetCustomAttribute<DBSelectByAttribute>();
@@ -401,7 +401,7 @@ namespace MDDDataAccess
             if (deleteattr != null) procname = deleteattr.DeleteProcName;
             SqlRunProcedure(procname, obj, -1, null);
         }
-        public void DBUpsert<T>(T obj) where T : new()
+        public void DBUpsert<T>(T obj) where T: class, new()
         {
             string procname = $"{obj.GetType().Name}_Upsert";
             var upsertattr = obj.GetType().GetCustomAttribute<DBUpsertAttribute>();
