@@ -439,7 +439,8 @@ namespace MDDDataAccess
                 }
             }
         }
-        public async Task SqlRunQueryRowByRowAsync<T>(string cmdtext, Func<T, int, CancellationToken, int, Task> rowcallback, bool IsProcedure, CancellationToken cancellationToken, int parallelcallbacks = 5, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T: class, new()
+        public delegate Task RowCallback<T>(T entity, int rowIndex, CancellationToken cancellationToken, int workerId);
+        public async Task SqlRunQueryRowByRowAsync<T>(string cmdtext, RowCallback<T> rowcallback, bool IsProcedure, CancellationToken cancellationToken, int parallelcallbacks = 5, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T: class, new()
         {
             if (!IsProcedure && !AllowAdHoc) throw new Exception("Ad Hoc Queries are not allowed by this DBEngine");
             using (var cn = await getconnectionasync(cancellationToken, ConnectionTimeout, ApplicationName).ConfigureAwait(false))
