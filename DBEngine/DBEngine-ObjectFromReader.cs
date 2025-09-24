@@ -1,21 +1,22 @@
-﻿using System;
+﻿using MDDFoundation;
+using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Data.SqlClient;
 using System.IO;
-using System.Reflection;
-using System.Runtime.Serialization.Formatters.Binary;
-using System.Runtime.Serialization;
-using System.Text;
-using System.ComponentModel;
-using MDDFoundation;
 using System.Linq;
+using System.Linq.Expressions;
+using System.Reflection;
+using System.Runtime.Serialization;
+using System.Runtime.Serialization.Formatters.Binary;
+using System.Text;
 
 namespace MDDDataAccess
 {
     public partial class DBEngine
     {
         public bool EnumParseIgnoreCase { get; set; } = true;
-        public void ObjectFromReader<T>(SqlDataReader rdr, ref List<Tuple<Action<object, object>, int>> map, ref PropertyInfo key, ref T r, ref Tracker<T> tracker, bool strict = true) where T : class, new()
+        public void ObjectFromReader<T>(SqlDataReader rdr, ref List<PropertyMapEntry> map, ref PropertyInfo key, ref T r, ref Tracker<T> tracker, bool strict = true) where T : class, new()
         {
             Tracked<T> tracked = null;
             PropertyInfo concurrencyproperty = null;
@@ -141,7 +142,7 @@ namespace MDDDataAccess
 
             if (map == null)
             {
-                map = new List<Tuple<Action<object, object>, int>>();
+                map = new List<PropertyMapEntry>();
 
                 // EnsureCorrectPropertyUsage doesn't work - maybe fix it another day
                 //if (Tracking != ObjectTracking.None)
@@ -225,13 +226,29 @@ namespace MDDDataAccess
                                 if (r is StringObj)
                                 {
                                     o = Convert.IsDBNull(rdr[0]) ? null : rdr[0];
-                                    if (!nomap) map.Add(new Tuple<Action<object, object>, int>(BuildSetAccessor(item.GetSetMethod(true)), 0));
+                                    //if (!nomap) map.Add(new Tuple<Action<object, object>, int>(BuildSetAccessor(item.GetSetMethod(true)), 0));
+                                    if (!nomap) map.Add(new PropertyMapEntry { 
+                                        Setter = BuildCompiledSetter(item),
+                                        Ordinal = 0,
+                                        ReaderFunc = GetReaderFunc(item.PropertyType),
+                                        PropertyName = item.Name,
+                                        PropertyTypeName = item.PropertyType.FullName,
+                                        ReaderTypeName = rdr.GetFieldType(0).FullName
+                                    });
                                 }
                                 else if (DBName != null)
                                 {
                                     o = Convert.IsDBNull(rdr[DBName]) ? null : rdr[DBName];
                                     var ordinal = rdr.GetOrdinal(DBName);
-                                    if (!nomap) map.Add(new Tuple<Action<object, object>, int>(BuildSetAccessor(item.GetSetMethod(true)), ordinal));
+                                    //if (!nomap) map.Add(new Tuple<Action<object, object>, int>(BuildSetAccessor(item.GetSetMethod(true)), ordinal));
+                                    if (!nomap) map.Add(new PropertyMapEntry { 
+                                        Setter = BuildCompiledSetter(item),
+                                        Ordinal = ordinal,
+                                        ReaderFunc = GetReaderFunc(item.PropertyType),
+                                        PropertyName = item.Name,
+                                        PropertyTypeName = item.PropertyType.FullName,
+                                        ReaderTypeName = rdr.GetFieldType(ordinal).FullName
+                                    });
                                 }
                                 if (o != null)
                                     item.SetValue(r, o);
@@ -314,23 +331,37 @@ namespace MDDDataAccess
                         }
                     }
                 }
-                if (!nomap && map != null && map.Count != 0) map.Sort((x, y) => x.Item2.CompareTo(y.Item2));
+                if (!nomap && map != null && map.Count != 0) map.Sort((x, y) => x.Ordinal.CompareTo(y.Ordinal));
             }
             else
             {
                 int len = map.Count;
-                object o = null;
-                for (int i = 0; i < len; i++)
+                foreach (var entry in map)
                 {
                     try
                     {
-                        o = Convert.IsDBNull(rdr[map[i].Item2]) ? null : rdr[map[i].Item2];
-                        map[i].Item1?.Invoke(r, o);
+                        //o = Convert.IsDBNull(rdr[map[i].Item2]) ? null : rdr[map[i].Item2];
+                        //map[i].Item1?.Invoke(r, o);
+                        entry.Setter(r, entry.ReaderFunc(rdr, entry.Ordinal));
                     }
                     catch (Exception ex)
                     {
-                        if (o == null) o = "<null>";
-                        throw new Exception($"DBEngine internal error: Post-mapping error occurred trying to set {r.GetType().Name}.{map[i].Item2} to {o} which is a {o.GetType().Name} (the data types must match exactly) - see inner exception", ex);
+                        object valueForError;
+                        try
+                        {
+                            valueForError = entry.ReaderFunc(rdr, entry.Ordinal);
+                        }
+                        catch
+                        {
+                            valueForError = "<error reading value>";
+                        }
+                        string valueType = valueForError == null ? "<null>" : valueForError.GetType().Name;
+                        var d = r;
+                        string objectvalues = typeof(T).GetProperties(BindingFlags.Public | BindingFlags.Instance).Select(pi => $"{pi.Name}={(pi.GetValue(d) == null ? "<null>" : pi.GetValue(d).ToString())}").Aggregate((a, b) => a + ", " + b);
+                        throw new Exception(
+                            $"DBEngine internal error: Post-mapping error occurred trying to set {r.GetType().Name}.{entry.PropertyName} to {valueForError} the property is an {entry.PropertyTypeName} and the mapper clocked the reader as an {entry.ReaderTypeName} (the data types must match exactly) - see inner exception - values in object: {objectvalues}",
+                            ex
+                        );
                     }
                 }
             }
@@ -353,6 +384,99 @@ namespace MDDDataAccess
             //        throw new Exception($"DBEngine error: Tracking has been set to {Tracking} but type '{r.GetType().Name}' does not implement INotifyPropertyChanged");
             //    }
             //}
+        }
+        public class PropertyMapEntry
+        {
+            public Action<object, object> Setter;
+            public int Ordinal;
+            public Func<SqlDataReader, int, object> ReaderFunc;
+            public string PropertyName { get; set; }
+            public string  PropertyTypeName { get; set; }
+            public string ReaderTypeName { get; set; }
+        }
+        // Helper to build compiled setter
+        private static Action<object, object> BuildCompiledSetter(PropertyInfo property)
+        {
+            var targetType = property.DeclaringType;
+            var valueType = property.PropertyType;
+
+            var targetExp = Expression.Parameter(typeof(object), "target");
+            var valueExp = Expression.Parameter(typeof(object), "value");
+
+            var castTargetExp = Expression.Convert(targetExp, targetType);
+            var castValueExp = Expression.Convert(valueExp, valueType);
+
+            var propertyExp = Expression.Property(castTargetExp, property);
+            var assignExp = Expression.Assign(propertyExp, castValueExp);
+
+            var lambda = Expression.Lambda<Action<object, object>>(assignExp, targetExp, valueExp);
+            return lambda.Compile();
+        }
+
+        // Helper to get type-specific reader
+        private static Func<SqlDataReader, int, object> GetReaderFunc(Type type)
+        {
+            // Nullable types
+            if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(Nullable<>))
+            {
+                var underlyingType = Nullable.GetUnderlyingType(type);
+                if (underlyingType == typeof(int))
+                    return (rdr, ordinal) => rdr.IsDBNull(ordinal) ? (int?)null : rdr.GetInt32(ordinal);
+                if (underlyingType == typeof(long))
+                    return (rdr, ordinal) => rdr.IsDBNull(ordinal) ? (long?)null : rdr.GetInt64(ordinal);
+                if (underlyingType == typeof(short))
+                    return (rdr, ordinal) => rdr.IsDBNull(ordinal) ? (short?)null : rdr.GetInt16(ordinal);
+                if (underlyingType == typeof(byte))
+                    return (rdr, ordinal) => rdr.IsDBNull(ordinal) ? (byte?)null : rdr.GetByte(ordinal);
+                if (underlyingType == typeof(bool))
+                    return (rdr, ordinal) => rdr.IsDBNull(ordinal) ? (bool?)null : rdr.GetBoolean(ordinal);
+                if (underlyingType == typeof(float))
+                    return (rdr, ordinal) => rdr.IsDBNull(ordinal) ? (float?)null : rdr.GetFloat(ordinal);
+                if (underlyingType == typeof(double))
+                    return (rdr, ordinal) => rdr.IsDBNull(ordinal) ? (double?)null : rdr.GetDouble(ordinal);
+                if (underlyingType == typeof(decimal))
+                    return (rdr, ordinal) => rdr.IsDBNull(ordinal) ? (decimal?)null : rdr.GetDecimal(ordinal);
+                if (underlyingType == typeof(Guid))
+                    return (rdr, ordinal) => rdr.IsDBNull(ordinal) ? (Guid?)null : rdr.GetGuid(ordinal);
+                if (underlyingType == typeof(DateTime))
+                    return (rdr, ordinal) => rdr.IsDBNull(ordinal) ? (DateTime?)null : rdr.GetDateTime(ordinal);
+                if (underlyingType == typeof(DateTimeOffset))
+                    return (rdr, ordinal) => rdr.IsDBNull(ordinal) ? (DateTimeOffset?)null : rdr.GetFieldValue<DateTimeOffset>(ordinal);
+                // Add more nullable types as needed
+            }
+
+            // Non-nullable types
+            if (type == typeof(int))
+                return (rdr, ordinal) => rdr.GetInt32(ordinal);
+            if (type == typeof(long))
+                return (rdr, ordinal) => rdr.GetInt64(ordinal);
+            if (type == typeof(short))
+                return (rdr, ordinal) => rdr.GetInt16(ordinal);
+            if (type == typeof(byte))
+                return (rdr, ordinal) => rdr.GetByte(ordinal);
+            if (type == typeof(bool))
+                return (rdr, ordinal) => rdr.GetBoolean(ordinal);
+            if (type == typeof(float))
+                return (rdr, ordinal) => rdr.GetFloat(ordinal);
+            if (type == typeof(double))
+                return (rdr, ordinal) => rdr.GetDouble(ordinal);
+            if (type == typeof(decimal))
+                return (rdr, ordinal) => rdr.GetDecimal(ordinal);
+            if (type == typeof(Guid))
+                return (rdr, ordinal) => rdr.GetGuid(ordinal);
+            if (type == typeof(DateTime))
+                return (rdr, ordinal) => rdr.GetDateTime(ordinal);
+            if (type == typeof(DateTimeOffset))
+                return (rdr, ordinal) => rdr.GetFieldValue<DateTimeOffset>(ordinal);
+
+            // Reference types
+            if (type == typeof(string))
+                return (rdr, ordinal) => rdr.IsDBNull(ordinal) ? null : rdr.GetString(ordinal);
+            if (type == typeof(byte[]))
+                return (rdr, ordinal) => rdr.IsDBNull(ordinal) ? null : (byte[])rdr.GetValue(ordinal);
+
+            // Fallback for other types
+            return (rdr, ordinal) => rdr.IsDBNull(ordinal) ? null : rdr.GetValue(ordinal);
         }
     }
 }

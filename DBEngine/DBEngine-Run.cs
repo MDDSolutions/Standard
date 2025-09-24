@@ -326,7 +326,7 @@ namespace MDDDataAccess
 
                         var l = new List<T>();
                         //List<Tuple<PropertyInfo, String>> map = null;
-                        List<Tuple<Action<object, object>, int>> map = null;
+                        List<PropertyMapEntry> map = null;
                         Tracker<T> t = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
                         PropertyInfo key = null;
                         using (SqlDataReader rdr = await ExecuteReaderAsync(cmd, CancellationToken).ConfigureAwait(false))
@@ -374,7 +374,7 @@ namespace MDDDataAccess
                         {
                             var l = new List<T>();
                             PropertyInfo key = null;
-                            List<Tuple<Action<object, object>, int>> map = null;
+                            List<PropertyMapEntry> map = null;
                             Tracker<T> t = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
                             using (SqlDataReader rdr = ExecuteReader(cmd))
                             {
@@ -417,7 +417,7 @@ namespace MDDDataAccess
                         try
                         {
                             PropertyInfo key = null;
-                            List<Tuple<Action<object, object>, int>> map = null;
+                            List<PropertyMapEntry> map = null;
                             Tracker<T> t = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
                             int rowindex = 0;
                             using (SqlDataReader rdr = ExecuteReader(cmd))
@@ -458,7 +458,7 @@ namespace MDDDataAccess
                         try
                         {
                             PropertyInfo key = null;
-                            List<Tuple<Action<object, object>, int>> map = null;
+                            List<PropertyMapEntry> map = null;
                             Tracker<T> t = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
                             int rowindex = 0;
 
@@ -509,7 +509,7 @@ namespace MDDDataAccess
                             using (SqlDataReader rdr = ExecuteReader(cmd))
                             {
                                 PropertyInfo key = null;
-                                List<Tuple<Action<object, object>, int>> map = null;
+                                List<PropertyMapEntry> map = null;
                                 Tracker<T> tt = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
                                 Tracker<R> tr = Tracking != ObjectTracking.None && Tracked<R>.IsTrackable ? GetTracker<R>() : null;
                                 while (rdr.Read())
@@ -563,7 +563,7 @@ namespace MDDDataAccess
                             using (SqlDataReader rdr = await ExecuteReaderAsync(cmd, CancellationToken).ConfigureAwait(false))
                             {
                                 PropertyInfo key = null;
-                                List<Tuple<Action<object, object>, int>> map = null;
+                                List<PropertyMapEntry> map = null;
                                 Tracker<T> tt = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
                                 Tracker<R> tr = Tracking != ObjectTracking.None && Tracked<R>.IsTrackable ? GetTracker<R>() : null;
                                 while (await rdr.ReadAsync().ConfigureAwait(false))
@@ -624,7 +624,7 @@ namespace MDDDataAccess
                                 bool found = false;
                                 //List<Tuple<PropertyInfo, String>> map = null;
                                 PropertyInfo key = null;
-                                List<Tuple<Action<object, object>, int>> map = null;
+                                List<PropertyMapEntry> map = null;
                                 Tracker<T> tt = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
                                 Tracker<R> tr = Tracking != ObjectTracking.None && Tracked<R>.IsTrackable ? GetTracker<R>() : null;
                                 while (await rdr.ReadAsync().ConfigureAwait(false))
@@ -690,7 +690,7 @@ namespace MDDDataAccess
                                 bool found = false;
                                 //List<Tuple<PropertyInfo, String>> map = null;
                                 PropertyInfo key = null;
-                                List<Tuple<Action<object, object>, int>> map = null;
+                                List<PropertyMapEntry> map = null;
                                 Tracker<T> tt = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
                                 Tracker<R> tr = Tracking != ObjectTracking.None && Tracked<R>.IsTrackable ? GetTracker<R>() : null;
                                 while (rdr.Read())
@@ -755,11 +755,11 @@ namespace MDDDataAccess
                         {
                             var l = new List<T>();
                             PropertyInfo tkey = null;
-                            List<Tuple<Action<object, object>, int>> tmap = null;
+                            List<PropertyMapEntry> tmap = null;
                             Tracker<T> ttrk = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
 
                             PropertyInfo rkey = null;
-                            List<Tuple<Action<object, object>, int>> rmap = null;
+                            List<PropertyMapEntry> rmap = null;
                             Tracker<R> rtrk = Tracking != ObjectTracking.None && Tracked<R>.IsTrackable ? GetTracker<R>() : null;
 
                             var subobj = typeof(T).GetPropertyOfType(typeof(R));
@@ -818,7 +818,7 @@ namespace MDDDataAccess
                             using (SqlDataReader rdr = ExecuteReader(cmd))
                             {
                                 PropertyInfo key = null;
-                                List<Tuple<Action<object, object>, int>> map = null;
+                                List<PropertyMapEntry> map = null;
                                 while (rdr.Read())
                                 {
                                     if (found) throw new Exception("Only one record expected in the update result");
@@ -876,7 +876,7 @@ namespace MDDDataAccess
                             {
                                 if (token.IsCancellationRequested) return false;
                                 PropertyInfo key = null;
-                                List<Tuple<Action<object, object>, int>> map = null;
+                                List<PropertyMapEntry> map = null;
                                 Tracker<T> t = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
                                 while (await rdr.ReadAsync(token).ConfigureAwait(false))
                                 {
@@ -921,7 +921,7 @@ namespace MDDDataAccess
                             using (SqlDataReader rdr = ExecuteReader(cmd))
                             {
                                 PropertyInfo key = null;
-                                List<Tuple<Action<object, object>, int>> map = null;
+                                List<PropertyMapEntry> map = null;
                                 Tracker<T> tt = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
                                 Tracker<R> tr = Tracking != ObjectTracking.None && Tracked<R>.IsTrackable ? GetTracker<R>() : null;
                                 while (rdr.Read())
