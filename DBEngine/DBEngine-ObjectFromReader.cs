@@ -81,6 +81,7 @@ namespace MDDDataAccess
                                     if (Tracked<T>.HasConcurrency && ValueEquals(rdrconcurrency, entityconcurrency))
                                     {
                                         if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 56, "OFR cache hit - concurrency match", r.ToString(), typeof(T).Name));
+                                        TrackerHitCount++;
                                         return; // nothing to do - the object is already loaded
                                     }
                                     else if (curstate == TrackedState.Unchanged)
@@ -150,6 +151,7 @@ namespace MDDDataAccess
                 //        npc.EnsureCorrectPropertyUsage();
                 //    }
                 //}
+
 
 
 
@@ -312,7 +314,7 @@ namespace MDDDataAccess
                         }
                     }
                 }
-
+                if (!nomap && map != null && map.Count != 0) map.Sort((x, y) => x.Item2.CompareTo(y.Item2));
             }
             else
             {

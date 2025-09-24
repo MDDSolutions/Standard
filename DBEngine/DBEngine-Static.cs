@@ -498,6 +498,7 @@ namespace MDDDataAccess
             // For all other cases, just check for null
             return false;
         }
+        public static int TrackerHitCount { get; private set;} = 0;
     }
 }
 

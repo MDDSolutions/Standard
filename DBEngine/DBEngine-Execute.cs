@@ -3,6 +3,7 @@ using System;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Data;
 using System.Data.SqlClient;
 using System.Diagnostics;
 using System.Text;
@@ -19,6 +20,8 @@ namespace MDDDataAccess
         public byte DebugLevel { get; set; } = 0;
         //public const string LogFileName = "DBEngine_log.txt";
         public RichLog Log { get; set; } = new RichLog("DBEngine",null);
+
+        public CommandBehavior DefaultCommandBehavior { get; set; } = CommandBehavior.Default;
 
         public void ExecuteScript(string script)
         {
@@ -90,12 +93,13 @@ namespace MDDDataAccess
                 throw new Exception("AdHoc commands are not allowed by this DBEngine");
             }
         }
-        private SqlDataReader ExecuteReader(SqlCommand cmd)
+        private SqlDataReader ExecuteReader(SqlCommand cmd, CommandBehavior behavior = default)
         {
+            if (behavior == default) behavior = DefaultCommandBehavior;
             var start = Environment.TickCount;
             try
             {
-                var rdr = cmd.ExecuteReader();
+                var rdr = cmd.ExecuteReader(behavior);
                 PostExecution(cmd, start);
                 return rdr;
             }
@@ -105,12 +109,13 @@ namespace MDDDataAccess
                 throw ex;
             }
         }
-        private async Task<SqlDataReader> ExecuteReaderAsync(SqlCommand cmd, CancellationToken token)
+        private async Task<SqlDataReader> ExecuteReaderAsync(SqlCommand cmd, CancellationToken token, CommandBehavior behavior = default)
         {
+            if (behavior == default) behavior = DefaultCommandBehavior;
             var start = Environment.TickCount;
             try
             {
-                var rdr = await cmd.ExecuteReaderAsync(token).ConfigureAwait(false);
+                var rdr = await cmd.ExecuteReaderAsync(behavior, token).ConfigureAwait(false);
                 PostExecution(cmd, start);
                 return rdr;
             }
