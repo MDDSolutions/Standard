@@ -133,7 +133,6 @@ namespace MDDDataAccess
 
             return concurrencyproperty;
         }
-
         private PropertyInfo EnsureConcurrencyProperty<T>(T target, bool strict, PropertyInfo concurrencyproperty) where T : class
         {
             if (!strict)
@@ -152,7 +151,6 @@ namespace MDDDataAccess
 
             return concurrencyproperty;
         }
-
         private List<PropertyDescriptor> GetPropertyDescriptors<T>(T target, ref PropertyInfo key, bool strict, PropertyInfo concurrencyproperty) where T : class
         {
             var descriptors = new List<PropertyDescriptor>();
@@ -200,7 +198,6 @@ namespace MDDDataAccess
 
             return descriptors;
         }
-
         private bool BuildPropertyMapIfNeeded<T>(SqlDataReader rdr, ref List<PropertyMapEntry> map, List<PropertyDescriptor> descriptors, T target) where T : class
         {
             if (map != null && map.Count > 0)
@@ -282,7 +279,6 @@ namespace MDDDataAccess
             map = entries;
             return true;
         }
-
         private void ExecutePropertyMap<T>(SqlDataReader rdr, List<PropertyMapEntry> map, T target) where T : class
         {
             foreach (var entry in map)
@@ -309,7 +305,6 @@ namespace MDDDataAccess
                 }
             }
         }
-
         private void ExecuteSequentialNoMap<T>(SqlDataReader rdr, List<PropertyDescriptor> descriptors, T target) where T : class
         {
             if (descriptors == null || descriptors.Count == 0)
@@ -369,8 +364,7 @@ namespace MDDDataAccess
                 }
             }
         }
-
-        private void FinalizeTracking<T>(Tracked<T> tracked, T target) where T : class
+        private void FinalizeTracking<T>(Tracked<T> tracked, T target) where T : class, new()
         {
             if (tracked == null)
                 return;
@@ -380,7 +374,6 @@ namespace MDDDataAccess
 
             tracked.EndInitialization();
         }
-
         private static bool ColumnExists(SqlDataReader rdr, string columnName)
         {
             if (string.IsNullOrEmpty(columnName))
@@ -394,7 +387,6 @@ namespace MDDDataAccess
 
             return false;
         }
-
         private PropertyHandler CreatePropertyHandler(PropertyInfo property)
         {
             var setter = BuildCompiledSetter(property);
@@ -508,14 +500,12 @@ namespace MDDDataAccess
                 }
             };
         }
-
         private static object GetDefaultValue(Type type)
         {
             if (type.IsValueType)
                 return Activator.CreateInstance(type);
             return null;
         }
-
         private class PropertyDescriptor
         {
             public PropertyInfo Property { get; set; }
@@ -524,13 +514,11 @@ namespace MDDDataAccess
             public PropertyHandler Handler { get; set; }
             public int? ForcedOrdinal { get; set; }
         }
-
         private class PropertyHandler
         {
             public Action<SqlDataReader, int, object> Assign { get; set; }
             public Func<SqlDataReader, int, object> ReaderFunc { get; set; }
         }
-
         public class PropertyMapEntry
         {
             public int Ordinal;
@@ -559,7 +547,6 @@ namespace MDDDataAccess
             var lambda = Expression.Lambda<Action<object, object>>(assignExp, targetExp, valueExp);
             return lambda.Compile();
         }
-
         // Helper to get type-specific reader
         private static Func<SqlDataReader, int, object> GetReaderFunc(Type type)
         {
