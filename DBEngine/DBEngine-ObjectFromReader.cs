@@ -21,13 +21,16 @@ namespace MDDDataAccess
             var concurrencyproperty = PrepareTracking(rdr, ref key, ref r, ref tracker, out var tracked, out var skipLoad);
             if (skipLoad) return;
 
-            concurrencyproperty = EnsureConcurrencyProperty(r, strict, concurrencyproperty);
+            List<PropertyDescriptor> descriptors = null;
+            if (map == null)
+            {
+                if (!strict) concurrencyproperty = EnsureConcurrencyProperty(r, concurrencyproperty);
 
-            var descriptors = GetPropertyDescriptors(r, ref key, strict, concurrencyproperty);
+                descriptors = GetPropertyDescriptors(r, ref key, strict, concurrencyproperty);
 
-            bool hasMap = BuildPropertyMapIfNeeded(rdr, ref map, descriptors, r);
-
-            if (hasMap && map != null && map.Count > 0)
+                bool hasMap = BuildPropertyMapIfNeeded(rdr, ref map, descriptors, r);
+            }
+            if (map != null)
             {
                 ExecutePropertyMap(rdr, map, r);
             }
@@ -36,7 +39,7 @@ namespace MDDDataAccess
                 ExecuteSequentialNoMap(rdr, descriptors, r);
             }
 
-            FinalizeTracking(tracked, r);
+            if (tracked != null) FinalizeTracking(tracked, r);
         }
         private PropertyInfo PrepareTracking<T>(SqlDataReader rdr, ref PropertyInfo key, ref T r, ref Tracker<T> tracker, out Tracked<T> tracked, out bool skipLoad) where T : class, new()
         {
@@ -133,21 +136,18 @@ namespace MDDDataAccess
 
             return concurrencyproperty;
         }
-        private PropertyInfo EnsureConcurrencyProperty<T>(T target, bool strict, PropertyInfo concurrencyproperty) where T : class
+        private PropertyInfo EnsureConcurrencyProperty<T>(T target, PropertyInfo concurrencyproperty) where T : class
         {
-            if (!strict)
-            {
-                var keyinfo = AttributeInfo(target, typeof(ListKeyAttribute));
-                if (keyinfo == null)
-                    keyinfo = AttributeInfo(target, typeof(ListKeyAttribute));
-                if (keyinfo.Item1 == null || !keyinfo.Item2)
-                    throw new Exception($"DBEngine error: Non-strict ObjectFromReader calls require that the object being loaded have a property marked with ListKeyAttribute and that the property have a value");
+            var keyinfo = AttributeInfo(target, typeof(ListKeyAttribute));
+            if (keyinfo == null)
+                keyinfo = AttributeInfo(target, typeof(ListKeyAttribute));
+            if (keyinfo.Item1 == null || !keyinfo.Item2)
+                throw new Exception($"DBEngine error: Non-strict ObjectFromReader calls require that the object being loaded have a property marked with ListKeyAttribute and that the property have a value");
 
-                if (concurrencyproperty == null)
-                    concurrencyproperty = AttributeProperty<T>(typeof(ListConcurrencyAttribute));
-                if (concurrencyproperty == null)
-                    throw new Exception($"DBEngine error: Non-strict ObjectFromReader calls require that the object being loaded have a property marked with ListConcurrencyAttribute");
-            }
+            if (concurrencyproperty == null)
+                concurrencyproperty = AttributeProperty<T>(typeof(ListConcurrencyAttribute));
+            if (concurrencyproperty == null)
+                throw new Exception($"DBEngine error: Non-strict ObjectFromReader calls require that the object being loaded have a property marked with ListConcurrencyAttribute");
 
             return concurrencyproperty;
         }
@@ -366,9 +366,6 @@ namespace MDDDataAccess
         }
         private void FinalizeTracking<T>(Tracked<T> tracked, T target) where T : class, new()
         {
-            if (tracked == null)
-                return;
-
             if (!tracked.Initializing)
                 throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {Tracked<T>.GetKeyValue(target)} has completed loading but was not in the Initializing state");
 
