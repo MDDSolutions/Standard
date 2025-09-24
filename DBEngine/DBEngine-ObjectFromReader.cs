@@ -228,9 +228,10 @@ namespace MDDDataAccess
                                     o = Convert.IsDBNull(rdr[0]) ? null : rdr[0];
                                     //if (!nomap) map.Add(new Tuple<Action<object, object>, int>(BuildSetAccessor(item.GetSetMethod(true)), 0));
                                     if (!nomap) map.Add(new PropertyMapEntry { 
-                                        Setter = BuildCompiledSetter(item),
                                         Ordinal = 0,
-                                        ReaderFunc = GetReaderFunc(item.PropertyType),
+                                        //ReaderFunc = GetReaderFunc(item.PropertyType),
+                                        //Setter = BuildCompiledSetter(item),
+                                        MapAction = BuildCompiledMap(item, 0),
                                         PropertyName = item.Name,
                                         PropertyTypeName = item.PropertyType.FullName,
                                         ReaderTypeName = rdr.GetFieldType(0).FullName
@@ -242,9 +243,10 @@ namespace MDDDataAccess
                                     var ordinal = rdr.GetOrdinal(DBName);
                                     //if (!nomap) map.Add(new Tuple<Action<object, object>, int>(BuildSetAccessor(item.GetSetMethod(true)), ordinal));
                                     if (!nomap) map.Add(new PropertyMapEntry { 
-                                        Setter = BuildCompiledSetter(item),
                                         Ordinal = ordinal,
-                                        ReaderFunc = GetReaderFunc(item.PropertyType),
+                                        //ReaderFunc = GetReaderFunc(item.PropertyType),
+                                        //Setter = BuildCompiledSetter(item),
+                                        MapAction = BuildCompiledMap(item, ordinal),
                                         PropertyName = item.Name,
                                         PropertyTypeName = item.PropertyType.FullName,
                                         ReaderTypeName = rdr.GetFieldType(ordinal).FullName
@@ -342,7 +344,8 @@ namespace MDDDataAccess
                     {
                         //o = Convert.IsDBNull(rdr[map[i].Item2]) ? null : rdr[map[i].Item2];
                         //map[i].Item1?.Invoke(r, o);
-                        entry.Setter(r, entry.ReaderFunc(rdr, entry.Ordinal));
+                        //entry.Setter(r, entry.ReaderFunc(rdr, entry.Ordinal));
+                        entry.MapAction(rdr, r);
                     }
                     catch (Exception ex)
                     {
@@ -387,9 +390,10 @@ namespace MDDDataAccess
         }
         public class PropertyMapEntry
         {
-            public Action<object, object> Setter;
             public int Ordinal;
+            public Action<object, object> Setter;
             public Func<SqlDataReader, int, object> ReaderFunc;
+            public Action<SqlDataReader, object> MapAction; // alternative to Setter + ReaderFunc
             public string PropertyName { get; set; }
             public string  PropertyTypeName { get; set; }
             public string ReaderTypeName { get; set; }
@@ -477,6 +481,73 @@ namespace MDDDataAccess
 
             // Fallback for other types
             return (rdr, ordinal) => rdr.IsDBNull(ordinal) ? null : rdr.GetValue(ordinal);
+        }
+        private static Action<SqlDataReader, object> BuildCompiledMap(PropertyInfo property, int ordinal)
+        {
+            var targetType = property.DeclaringType;
+            var propertyType = property.PropertyType;
+
+            var readerParam = Expression.Parameter(typeof(SqlDataReader), "rdr");
+            var targetParam = Expression.Parameter(typeof(object), "target");
+
+            // Cast target to correct type
+            var castTarget = Expression.Convert(targetParam, targetType);
+
+            // Build reader logic
+            Expression valueExp;
+            MethodInfo isDbNullMethod = typeof(SqlDataReader).GetMethod("IsDBNull");
+            var ordinalExp = Expression.Constant(ordinal);
+
+            if (propertyType.IsGenericType && propertyType.GetGenericTypeDefinition() == typeof(Nullable<>))
+            {
+                var underlyingType = Nullable.GetUnderlyingType(propertyType);
+                var getMethod = typeof(SqlDataReader).GetMethod("Get" + underlyingType.Name, new[] { typeof(int) });
+                var nullValue = Expression.Constant(null, propertyType);
+
+                valueExp = Expression.Condition(
+                    Expression.Call(readerParam, isDbNullMethod, ordinalExp),
+                    nullValue,
+                    Expression.Convert(Expression.Call(readerParam, getMethod, ordinalExp), propertyType)
+                );
+            }
+            else if (propertyType == typeof(string))
+            {
+                var getStringMethod = typeof(SqlDataReader).GetMethod("GetString");
+                valueExp = Expression.Condition(
+                    Expression.Call(readerParam, isDbNullMethod, ordinalExp),
+                    Expression.Constant(null, typeof(string)),
+                    Expression.Call(readerParam, getStringMethod, ordinalExp)
+                );
+            }
+            else if (propertyType == typeof(byte[]))
+            {
+                valueExp = Expression.Condition(
+                    Expression.Call(readerParam, isDbNullMethod, ordinalExp),
+                    Expression.Constant(null, typeof(byte[])),
+                    Expression.Convert(Expression.Call(readerParam, typeof(SqlDataReader).GetMethod("GetValue"), ordinalExp), typeof(byte[]))
+                );
+            }
+            else if (propertyType.IsValueType)
+            {
+                var getMethod = typeof(SqlDataReader).GetMethod("Get" + propertyType.Name, new[] { typeof(int) });
+                valueExp = Expression.Call(readerParam, getMethod, ordinalExp);
+            }
+            else
+            {
+                // Fallback: object
+                valueExp = Expression.Condition(
+                    Expression.Call(readerParam, isDbNullMethod, ordinalExp),
+                    Expression.Constant(null),
+                    Expression.Call(readerParam, typeof(SqlDataReader).GetMethod("GetValue"), ordinalExp)
+                );
+            }
+
+            // Set property
+            var setMethod = property.GetSetMethod(true);
+            var setExp = Expression.Call(castTarget, setMethod, valueExp);
+
+            var lambda = Expression.Lambda<Action<SqlDataReader, object>>(setExp, readerParam, targetParam);
+            return lambda.Compile();
         }
     }
 }
