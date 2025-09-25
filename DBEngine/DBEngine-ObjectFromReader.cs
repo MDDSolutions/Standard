@@ -389,7 +389,7 @@ namespace MDDDataAccess
             //public int? ForcedOrdinal { get; set; }
             public override string ToString() => $"rdr({Ordinal}): rdr({ColumnName}) -> {Property.Name} - {Property.PropertyType.Name}";
         }
-
+        [Serializable]
         public class DBEnginePostMappingException<T> : Exception
         {
             public T TargetObject { get; }
@@ -425,6 +425,7 @@ namespace MDDDataAccess
                 return sb.ToString();
             }
         }
+        [Serializable]
         public class DBEngineColumnRequiredException : Exception
         {
             public string PropertyName { get; }
