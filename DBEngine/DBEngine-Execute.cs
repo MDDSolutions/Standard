@@ -21,7 +21,7 @@ namespace MDDDataAccess
         //public const string LogFileName = "DBEngine_log.txt";
         public RichLog Log { get; set; } = new RichLog("DBEngine",null);
 
-        public CommandBehavior DefaultCommandBehavior { get; set; } = CommandBehavior.Default;
+        public CommandBehavior DefaultCommandBehavior { get; set; } = CommandBehavior.SequentialAccess;
 
         public void ExecuteScript(string script)
         {
