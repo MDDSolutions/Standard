@@ -209,14 +209,37 @@ namespace MDDDataAccess
             if (propertyType.IsGenericType && propertyType.GetGenericTypeDefinition() == typeof(Nullable<>))
             {
                 var underlyingType = Nullable.GetUnderlyingType(propertyType);
-                var getter = ResolveReaderGetter(underlyingType);
                 var nullValue = Expression.Constant(null, propertyType);
-                var readCall = Expression.Call(readerParam, getter, ordinalExp);
 
-                valueExp = Expression.Condition(
-                    Expression.Call(readerParam, isDbNullMethod, ordinalExp),
-                    nullValue,
-                    Expression.Convert(readCall, propertyType));
+                if (underlyingType == typeof(char))
+                {
+                    var getter = ResolveReaderGetter(typeof(string));
+                    var readCall = Expression.Call(readerParam, getter, ordinalExp);
+                    var strVar = Expression.Variable(typeof(string), "str");
+                    var charMethod = typeof(string).GetMethod("get_Chars", new[] { typeof(int) });
+                    var charValue = Expression.Call(strVar, charMethod, Expression.Constant(0));
+
+                    valueExp = Expression.Condition(
+                        Expression.Call(readerParam, isDbNullMethod, ordinalExp),
+                        nullValue,
+                        Expression.Block(
+                            new[] { strVar },
+                            Expression.Assign(strVar, readCall),
+                            Expression.Condition(
+                                Expression.GreaterThan(Expression.Property(strVar, "Length"), Expression.Constant(0)),
+                                Expression.Convert(charValue, propertyType),
+                                nullValue)));
+                }
+                else
+                {
+                    var getter = ResolveReaderGetter(underlyingType);
+                    var readCall = Expression.Call(readerParam, getter, ordinalExp);
+
+                    valueExp = Expression.Condition(
+                        Expression.Call(readerParam, isDbNullMethod, ordinalExp),
+                        nullValue,
+                        Expression.Convert(readCall, propertyType));
+                }
             }
             else if (propertyType == typeof(string))
             {
@@ -232,6 +255,25 @@ namespace MDDDataAccess
                     Expression.Call(readerParam, isDbNullMethod, ordinalExp),
                     Expression.Constant(null, typeof(byte[])),
                     Expression.Convert(Expression.Call(readerParam, typeof(SqlDataReader).GetMethod("GetValue"), ordinalExp), typeof(byte[])));
+            }
+            else if (propertyType == typeof(char))
+            {
+                var getter = ResolveReaderGetter(typeof(string));
+                var readCall = Expression.Call(readerParam, getter, ordinalExp);
+                var strVar = Expression.Variable(typeof(string), "str");
+                var charMethod = typeof(string).GetMethod("get_Chars", new[] { typeof(int) });
+                var defaultChar = Expression.Constant('\0', typeof(char));
+
+                valueExp = Expression.Condition(
+                    Expression.Call(readerParam, isDbNullMethod, ordinalExp),
+                    defaultChar,
+                    Expression.Block(
+                        new[] { strVar },
+                        Expression.Assign(strVar, readCall),
+                        Expression.Condition(
+                            Expression.GreaterThan(Expression.Property(strVar, "Length"), Expression.Constant(0)),
+                            Expression.Call(strVar, charMethod, Expression.Constant(0)),
+                            defaultChar)));
             }
             else if (propertyType.IsValueType)
             {
