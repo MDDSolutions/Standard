@@ -90,3 +90,13 @@ with revamped OFR,  single compiled method and sequential access
 | DBEngine_POCOAsync | 707.7 ms | 15.49 ms | 44.94 ms | 28000.0000 | 27000.0000 | 2000.0000 | 217.88 MB |
 | Dapper_POCO        | 712.4 ms | 13.81 ms | 24.91 ms | 37000.0000 | 20000.0000 | 3000.0000 | 282.72 MB |
 | Dapper_POCOAsync   | 726.5 ms | 14.52 ms | 21.28 ms | 39000.0000 | 21000.0000 | 3000.0000 | 295.37 MB |
+
+after all tests pass with tracking / OFR integration (not that tracking was enabled)
+this was in the middle of the night - I think some backups were running or something
+(CustomerOrders)
+| Method             | Mean     | Error    | StdDev   | Gen0       | Gen1       | Gen2       | Allocated |
+|------------------- |---------:|---------:|---------:|-----------:|-----------:|-----------:|----------:|
+| DBEngine_POCO      | 893.5 ms | 17.37 ms | 16.25 ms | 36000.0000 | 35000.0000 | 10000.0000 | 217.88 MB |
+| DBEngine_POCOAsync | 868.2 ms | 16.50 ms | 14.63 ms | 36000.0000 | 35000.0000 | 10000.0000 | 217.88 MB |
+| Dapper_POCO        | 895.7 ms | 17.86 ms | 27.28 ms | 42000.0000 | 25000.0000 |  8000.0000 | 282.72 MB |
+| Dapper_POCOAsync   | 925.1 ms | 18.44 ms | 31.81 ms | 45000.0000 | 27000.0000 |  9000.0000 |  295.4 MB |

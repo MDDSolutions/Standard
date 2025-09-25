@@ -47,13 +47,17 @@ namespace MDDDataAccess
         private void BuildPropertyMap<T>(SqlDataReader rdr, ref List<PropertyMapEntry> map, ref PropertyInfo key, bool strict, PropertyInfo concurrencyproperty)
         {
             map = new List<PropertyMapEntry>();
+
+            var ColumOrdinals = GetColumnOrdinals(rdr);
+
+
             foreach (var item in typeof(T).GetProperties(BindingFlags.Public | BindingFlags.Instance).Where(x => x.CanWrite))
             {
                 var type = item.PropertyType;
                 if (type.IsValueType || type == typeof(string) || type.IsArray)
                 {
                     var entry = new PropertyMapEntry();
-                    entry.Optional = item.GetSetMethod(true).IsPublic;
+                    entry.Optional = !item.GetSetMethod(true).IsPublic;
                     entry.ColumnName = item.Name;
                     entry.Property = item;
                     bool include = true;
@@ -82,17 +86,33 @@ namespace MDDDataAccess
                     if (include && !special)
                     {
                         if (!strict) entry.Optional = item != concurrencyproperty;
-                        try
+                        if (ColumOrdinals.TryGetValue(entry.ColumnName, out var ordinals))
                         {
-                            entry.Ordinal = rdr.GetOrdinal(entry.ColumnName);
+                            entry.Ordinal = ordinals[0];
+                            //when building a map for a single object, any given column should only appear once but I don't necessarily
+                            //want to throw if it has more than one - I may have a version of BuildPropertyMap that handles 2 types - then things get a little
+                            //more interesting with columns like created_date / modified_date - for now, I'll just end up using the first one I find
                         }
-                        catch (IndexOutOfRangeException)
+                        else
                         {
                             if (!entry.Optional)
-                                throw new Exception($"DBEngine internal error: The column '{entry.ColumnName}' was specified as a property (or DBName attribute) in the '{typeof(T).Name}' object but was not found in a query meant to populate objects of that type - you must either decorate this property with a DBIgnore attribute if you want ObjectFromReader to always ignore it, or a DBOptional attribute if you want ObjectFromReader to use it if it is there, but ignore it if it is not");
+                                throw new DBEngineColumnRequiredException(
+                                    item.Name,
+                                    item.PropertyType.FullName,
+                                    entry.ColumnName,
+                                    typeof(T).Name,
+                                    entry.Optional,
+                                    $"DBEngine internal error: The column '{entry.ColumnName}' was specified as a property (or DBName attribute) in the '{typeof(T).Name}' object but was not found in a query meant to populate objects of that type. " +
+                                    "You must either decorate this property with a DBIgnore attribute if you want ObjectFromReader to always ignore it, or a DBOptional attribute if you want ObjectFromReader to use it if it is there, but ignore it if it is not."
+                                );
+                            else
+                                include = false;
                         }
-                        entry.ReaderTypeName = rdr.GetFieldType(entry.Ordinal).FullName;
-                        entry.MapAction = BuildCompiledMap(item, entry.Ordinal);
+                        if (include)
+                        {
+                            entry.ReaderTypeName = rdr.GetFieldType(entry.Ordinal).FullName;
+                            entry.MapAction = BuildCompiledMap(item, entry.Ordinal);
+                        }
                     }
                     if (include) map.Add(entry);
                 }
@@ -114,9 +134,25 @@ namespace MDDDataAccess
                 }
                 catch (Exception ex)
                 {
-                    string objectvalues = string.Join(", ", typeof(T).GetProperties(BindingFlags.Public | BindingFlags.Instance).Select(pi => $"{pi.Name}={(pi.GetValue(target) == null ? "<null>" : pi.GetValue(target).ToString())}"));
+                    string objectvalues = null;
+                    try
+                    {
+                        objectvalues = string.Join("\r", typeof(T).GetProperties(BindingFlags.Public | BindingFlags.Instance).Select(pi => $"{pi.Name}={(pi.GetValue(target) == null ? "<null>" : pi.GetValue(target).ToString())}"));
+                    }
+                    catch (Exception ex2)
+                    {
+                        objectvalues = $"Error getting object values: {ex2.Message}";
+                    }
 
-                    throw new Exception($"DBEngine internal error: Post-mapping error occurred trying to set {target.GetType().Name}.{entry.Property.Name}. the property is an {entry.Property.PropertyType.FullName} and the mapper clocked the reader as an {entry.ReaderTypeName} (the data types must match exactly) - see inner exception - values in object: {objectvalues}", ex);
+                    throw new DBEnginePostMappingException<T>(
+                        target,
+                        entry.Property.Name,
+                        entry.Property.PropertyType.FullName,
+                        entry.ReaderTypeName,
+                        objectvalues,
+                        $"DBEngine internal error: Post-mapping error occurred trying to set {target.GetType().Name}.{entry.Property.Name} - {entry.ReaderTypeName} -> {entry.Property.PropertyType.FullName}",
+                        ex
+                    );
                 }
             }
         }
@@ -219,6 +255,21 @@ namespace MDDDataAccess
 
             var lambda = Expression.Lambda<Action<SqlDataReader, object>>(setExp, readerParam, targetParam);
             return lambda.Compile();
+        }
+        private static Dictionary<string, List<int>> GetColumnOrdinals(SqlDataReader rdr)
+        {
+            var dict = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < rdr.FieldCount; i++)
+            {
+                var name = rdr.GetName(i);
+                if (!dict.TryGetValue(name, out var list))
+                {
+                    list = new List<int>();
+                    dict[name] = list;
+                }
+                list.Add(i);
+            }
+            return dict;
         }
 
         private static Action<SqlDataReader, object> BuildCompiledMap_original(PropertyInfo property, int ordinal)
@@ -323,7 +374,7 @@ namespace MDDDataAccess
         }
         public class PropertyMapEntry
         {
-            public int Ordinal { get; set; }
+            public int Ordinal { get; set; } = -100000; //default(int) is a valid value - the first column in the reader - this value must be set to a valid value intentionally if the entry is to be used
             public Action<object, object> Setter;
             public Func<SqlDataReader, int, object> ReaderFunc;
             public Action<SqlDataReader, object> MapAction; // alternative to Setter + ReaderFunc
@@ -336,9 +387,80 @@ namespace MDDDataAccess
             public string ColumnName { get; set; }
             public bool Optional { get; set; }
             //public int? ForcedOrdinal { get; set; }
+            public override string ToString() => $"rdr({Ordinal}): rdr({ColumnName}) -> {Property.Name} - {Property.PropertyType.Name}";
         }
 
+        public class DBEnginePostMappingException<T> : Exception
+        {
+            public T TargetObject { get; }
+            public string PropertyName { get; }
+            public string PropertyType { get; }
+            public string ReaderType { get; }
+            public string ObjectValues { get; }
 
+            public DBEnginePostMappingException(
+                T targetObject,
+                string propertyName,
+                string propertyType,
+                string readerType,
+                string objectValues,
+                string message,
+                Exception innerException)
+                : base(message, innerException)
+            {
+                TargetObject = targetObject;
+                PropertyName = propertyName;
+                PropertyType = propertyType;
+                ReaderType = readerType;
+                ObjectValues = objectValues;
+            }
+            public override string ToString()
+            {
+                var sb = new StringBuilder();
+                sb.AppendLine(base.ToString());
+                sb.AppendLine($"Property: {PropertyName}");
+                sb.AppendLine($"PropertyType: {PropertyType}");
+                sb.AppendLine($"ReaderType: {ReaderType}");
+                sb.AppendLine($"ObjectValues: {ObjectValues}");
+                return sb.ToString();
+            }
+        }
+        public class DBEngineColumnRequiredException : Exception
+        {
+            public string PropertyName { get; }
+            public string PropertyType { get; }
+            public string ColumnName { get; }
+            public string ObjectType { get; }
+            public bool IsOptional { get; }
+
+            public DBEngineColumnRequiredException(
+                string propertyName,
+                string propertyType,
+                string columnName,
+                string objectType,
+                bool isOptional,
+                string message)
+                : base(message)
+            {
+                PropertyName = propertyName;
+                PropertyType = propertyType;
+                ColumnName = columnName;
+                ObjectType = objectType;
+                IsOptional = isOptional;
+            }
+
+            public override string ToString()
+            {
+                var sb = new StringBuilder();
+                sb.AppendLine(base.ToString());
+                sb.AppendLine($"Property: {PropertyName}");
+                sb.AppendLine($"PropertyType: {PropertyType}");
+                sb.AppendLine($"ColumnName: {ColumnName}");
+                sb.AppendLine($"ObjectType: {ObjectType}");
+                sb.AppendLine($"IsOptional: {IsOptional}");
+                return sb.ToString();
+            }
+        }
 
         private PropertyInfo PrepareTracking_original<T>(SqlDataReader rdr, ref PropertyInfo key, ref T r, ref Tracker<T> tracker, out Tracked<T> existingtracked, out bool skipLoad) where T : class, new()
         {
