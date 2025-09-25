@@ -110,8 +110,8 @@ namespace MDDDataAccess
                         }
                         if (include)
                         {
-                            entry.ReaderTypeName = rdr.GetFieldType(entry.Ordinal).FullName;
-                            entry.MapAction = BuildCompiledMap(item, entry.Ordinal);
+                            entry.ReaderType = rdr.GetFieldType(entry.Ordinal);
+                            BuildCompiledMap(entry);
                         }
                     }
                     if (include) map.Add(entry);
@@ -148,16 +148,16 @@ namespace MDDDataAccess
                         target,
                         entry.Property.Name,
                         entry.Property.PropertyType.FullName,
-                        entry.ReaderTypeName,
+                        entry.ReaderType.Name,
                         objectvalues,
-                        $"DBEngine internal error: Post-mapping error occurred trying to set {target.GetType().Name}.{entry.Property.Name} - {entry.ReaderTypeName} -> {entry.Property.PropertyType.FullName}",
+                        $"DBEngine internal error: Post-mapping error occurred trying to set {target.GetType().Name}.{entry.Property.Name} - {entry.ReaderType.Name} -> {entry.Property.PropertyType.FullName}",
                         ex
                     );
                 }
             }
         }
 
-        private static MethodInfo ResolveReaderGetter(Type type)
+        private static MethodInfo ResolveReaderGetter_old(Type type)
         {
             var t = Nullable.GetUnderlyingType(type) ?? type;
 
@@ -190,10 +190,213 @@ namespace MDDDataAccess
                                      m.GetParameters()[0].ParameterType == typeof(int));
             return generic?.MakeGenericMethod(t);
         }
-        private static Action<SqlDataReader, object> BuildCompiledMap(PropertyInfo property, int ordinal)
+        private static MethodInfo ResolveReaderGetter(Type type)
         {
-            var targetType = property.DeclaringType;
-            var propertyType = property.PropertyType;
+            var t = Nullable.GetUnderlyingType(type) ?? type;
+
+            // Map of CLR types to SqlDataReader getters
+            var map = new Dictionary<Type, string>
+                {
+                    { typeof(bool),          "GetBoolean" },
+                    { typeof(byte),          "GetByte" },
+                    { typeof(short),         "GetInt16" },
+                    { typeof(int),           "GetInt32" },
+                    { typeof(long),          "GetInt64" },
+                    { typeof(float),         "GetFloat" },        // maps SQL real
+                    { typeof(double),        "GetDouble" },
+                    { typeof(decimal),       "GetDecimal" },
+                    { typeof(DateTime),      "GetDateTime" },
+                    { typeof(DateTimeOffset),"GetDateTimeOffset" },
+                    { typeof(TimeSpan),      "GetTimeSpan" },
+                    { typeof(Guid),          "GetGuid" },
+                    { typeof(string),        "GetString" },
+                    { typeof(byte[]),        "GetSqlBinary" },    // but usually use GetValue + cast
+                };
+
+            if (map.TryGetValue(t, out var name))
+            {
+                return typeof(SqlDataReader).GetMethod(name, new[] { typeof(int) });
+            }
+
+            // Fallback: use generic GetFieldValue<T>(int)
+            var generic = typeof(SqlDataReader)
+                .GetMethods(BindingFlags.Instance | BindingFlags.Public)
+                .FirstOrDefault(m =>
+                    m.Name == "GetFieldValue" &&
+                    m.IsGenericMethodDefinition &&
+                    m.GetParameters().Length == 1 &&
+                    m.GetParameters()[0].ParameterType == typeof(int));
+
+            return generic?.MakeGenericMethod(t);
+        }
+
+        private static void BuildCompiledMap(PropertyMapEntry entry)
+        {
+            try
+            {
+                var targetType = entry.Property.DeclaringType;
+                var propertyType = entry.Property.PropertyType;
+
+                var readerParam = Expression.Parameter(typeof(SqlDataReader), "rdr");
+                var targetParam = Expression.Parameter(typeof(object), "target");
+                var castTarget = Expression.Convert(targetParam, targetType);
+
+                var ordinalExp = Expression.Constant(entry.Ordinal);
+                var isDbNullMethod = typeof(SqlDataReader).GetMethod(nameof(SqlDataReader.IsDBNull));
+
+                Expression valueExp;
+
+                // Special case: byte[] must go through GetValue + cast
+                if (propertyType == typeof(byte[]))
+                {
+                    var getValue = typeof(SqlDataReader).GetMethod(nameof(SqlDataReader.GetValue), new[] { typeof(int) });
+                    var readCall = Expression.Call(readerParam, getValue, ordinalExp);
+
+                    valueExp = Expression.Condition(
+                        Expression.Call(readerParam, isDbNullMethod, ordinalExp),
+                        Expression.Constant(null, typeof(byte[])),
+                        Expression.Convert(readCall, typeof(byte[]))
+                    );
+                }
+                // Special case: Char (nullable or not)
+                else if (propertyType == typeof(char) ||
+                        (propertyType.IsGenericType && propertyType.GetGenericTypeDefinition() == typeof(Nullable<>) &&
+                         Nullable.GetUnderlyingType(propertyType) == typeof(char)))
+                {
+                    var getter = ResolveReaderGetter(typeof(string));
+                    var readCall = Expression.Call(readerParam, getter, ordinalExp);
+                    var strVar = Expression.Variable(typeof(string), "str");
+                    var charMethod = typeof(string).GetMethod("get_Chars", new[] { typeof(int) });
+
+                    Expression nonNullExp;
+                    if (propertyType == typeof(char))
+                    {
+                        // strict char: throw if length != 1
+                        var exCtor = typeof(InvalidOperationException).GetConstructor(new[] { typeof(string) });
+                        var throwExpr = Expression.Throw(
+                            Expression.New(exCtor, Expression.Constant("String value cannot be mapped to char because its length is not exactly 1.")),
+                            typeof(char)
+                        );
+
+                        nonNullExp = Expression.Block(
+                            new[] { strVar },
+                            Expression.Assign(strVar, readCall),
+                            Expression.Condition(
+                                Expression.Equal(Expression.Property(strVar, "Length"), Expression.Constant(1)),
+                                Expression.Call(strVar, charMethod, Expression.Constant(0)),
+                                throwExpr
+                            )
+                        );
+
+                        valueExp = Expression.Condition(
+                            Expression.Call(readerParam, isDbNullMethod, ordinalExp),
+                            Expression.Constant('\0', typeof(char)),
+                            nonNullExp
+                        );
+                    }
+                    else
+                    {
+                        // nullable char: return null if length == 0
+                        var charValue = Expression.Call(strVar, charMethod, Expression.Constant(0));
+                        nonNullExp = Expression.Block(
+                            new[] { strVar },
+                            Expression.Assign(strVar, readCall),
+                            Expression.Condition(
+                                Expression.GreaterThan(Expression.Property(strVar, "Length"), Expression.Constant(0)),
+                                Expression.Convert(charValue, propertyType),
+                                Expression.Constant(null, propertyType)
+                            )
+                        );
+
+                        valueExp = Expression.Condition(
+                            Expression.Call(readerParam, isDbNullMethod, ordinalExp),
+                            Expression.Constant(null, propertyType),
+                            nonNullExp
+                        );
+                    }
+                }
+                // Special case: enum from string
+                else if (propertyType.IsEnum && entry.ReaderType == typeof(string))
+                {
+                    var getter = ResolveReaderGetter(typeof(string));
+                    var readCall = Expression.Call(readerParam, getter, ordinalExp);
+
+                    var enumParse = typeof(Enum).GetMethod(
+                        nameof(Enum.Parse),
+                        new[] { typeof(Type), typeof(string), typeof(bool) }
+                    );
+                    var parseCall = Expression.Call(
+                        enumParse,
+                        Expression.Constant(propertyType),
+                        readCall,
+                        Expression.Constant(true) // ignore case
+                    );
+
+                    valueExp = Expression.Condition(
+                        Expression.Call(readerParam, isDbNullMethod, ordinalExp),
+                        Expression.Default(propertyType),
+                        Expression.Convert(parseCall, propertyType)
+                    );
+                }
+                else
+                {
+                    // Everything else: use the native getter + convert if needed
+                    var getter = ResolveReaderGetter(entry.ReaderType)
+                                 ?? typeof(SqlDataReader).GetMethod(nameof(SqlDataReader.GetValue), new[] { typeof(int) });
+                    var readCall = Expression.Call(readerParam, getter, ordinalExp);
+
+                    Expression converted = getter.ReturnType == propertyType
+                        ? (Expression)readCall
+                        : Expression.Convert(readCall, propertyType);
+
+                    // If nullable<T>, wrap conversion inside Nullable<T>
+                    if (propertyType.IsGenericType && propertyType.GetGenericTypeDefinition() == typeof(Nullable<>))
+                    {
+                        var nullValue = Expression.Constant(null, propertyType);
+                        valueExp = Expression.Condition(
+                            Expression.Call(readerParam, isDbNullMethod, ordinalExp),
+                            nullValue,
+                            Expression.Convert(readCall, propertyType)
+                        );
+                    }
+                    else if (propertyType == typeof(string))
+                    {
+                        valueExp = Expression.Condition(
+                            Expression.Call(readerParam, isDbNullMethod, ordinalExp),
+                            Expression.Constant(null, typeof(string)),
+                            readCall
+                        );
+                    }
+                    else
+                    {
+                        valueExp = Expression.Condition(
+                            Expression.Call(readerParam, isDbNullMethod, ordinalExp),
+                            Expression.Default(propertyType),
+                            converted
+                        );
+                    }
+                }
+
+                // Assign to property
+                var setMethod = entry.Property.GetSetMethod(true);
+                var setExp = Expression.Call(castTarget, setMethod, valueExp);
+
+                var lambda = Expression.Lambda<Action<SqlDataReader, object>>(setExp, readerParam, targetParam);
+                entry.MapAction = lambda.Compile();
+            }
+            catch (Exception ex)
+            {
+                throw new DBEngineMappingException(entry,
+                    $"DBEngine internal error: Unable to map {entry.Property.DeclaringType.Name}.{entry.Property.Name} - {entry.ReaderType.FullName} -> {entry.Property.PropertyType.FullName} - see inner exception",
+                    ex
+                );
+            }
+        }
+
+        private static void BuildCompiledMap_old(PropertyMapEntry entry)
+        {
+            var targetType = entry.Property.DeclaringType;
+            var propertyType = entry.Property.PropertyType;
 
             var readerParam = Expression.Parameter(typeof(SqlDataReader), "rdr");
             var targetParam = Expression.Parameter(typeof(object), "target");
@@ -204,7 +407,7 @@ namespace MDDDataAccess
             // Build reader logic
             Expression valueExp;
             MethodInfo isDbNullMethod = typeof(SqlDataReader).GetMethod("IsDBNull");
-            var ordinalExp = Expression.Constant(ordinal);
+            var ordinalExp = Expression.Constant(entry.Ordinal);
 
             if (propertyType.IsGenericType && propertyType.GetGenericTypeDefinition() == typeof(Nullable<>))
             {
@@ -264,6 +467,13 @@ namespace MDDDataAccess
                 var charMethod = typeof(string).GetMethod("get_Chars", new[] { typeof(int) });
                 var defaultChar = Expression.Constant('\0', typeof(char));
 
+                // Exception to throw if length != 1
+                var exCtor = typeof(InvalidOperationException).GetConstructor(new[] { typeof(string) });
+                var throwExpr = Expression.Throw(
+                    Expression.New(exCtor, Expression.Constant("String value cannot be mapped to char because its length is not exactly 1.")),
+                    typeof(char) // must match the expected return type
+                );
+
                 valueExp = Expression.Condition(
                     Expression.Call(readerParam, isDbNullMethod, ordinalExp),
                     defaultChar,
@@ -271,16 +481,50 @@ namespace MDDDataAccess
                         new[] { strVar },
                         Expression.Assign(strVar, readCall),
                         Expression.Condition(
-                            Expression.GreaterThan(Expression.Property(strVar, "Length"), Expression.Constant(0)),
+                            Expression.Equal(Expression.Property(strVar, "Length"), Expression.Constant(1)),
                             Expression.Call(strVar, charMethod, Expression.Constant(0)),
-                            defaultChar)));
+                            throwExpr
+                        )
+                    )
+                );
+            }
+            else if (propertyType.IsEnum && entry.ReaderType == typeof(string))
+            {
+                var getter = ResolveReaderGetter(typeof(string));
+                var readCall = Expression.Call(readerParam, getter, ordinalExp);
+                var enumParse = typeof(Enum).GetMethod(
+                        "Parse",
+                        new[] { typeof(Type), typeof(string), typeof(bool) }
+                    );
+                var parseCall = Expression.Call(
+                    enumParse,
+                    Expression.Constant(propertyType),
+                    readCall,
+                    Expression.Constant(true) // ignoreCase
+                );
+                valueExp = Expression.Condition(
+                    Expression.Call(readerParam, isDbNullMethod, ordinalExp),
+                    Expression.Default(propertyType),
+                    Expression.Convert(parseCall, propertyType)
+                );
             }
             else if (propertyType.IsValueType)
             {
-                var getter = ResolveReaderGetter(propertyType)
-                             ?? typeof(SqlDataReader).GetMethod("GetValue", new[] { typeof(int) });
-                var call = Expression.Call(readerParam, getter, ordinalExp);
-                valueExp = getter.ReturnType == propertyType ? (Expression)call : Expression.Convert(call, propertyType);
+                try
+                {
+                    var getter = ResolveReaderGetter(entry.ReaderType)
+                                 ?? typeof(SqlDataReader).GetMethod("GetValue", new[] { typeof(int) });
+                    var call = Expression.Call(readerParam, getter, ordinalExp);
+                    valueExp = getter.ReturnType == propertyType ? (Expression)call : Expression.Convert(call, propertyType);
+                }
+                catch (InvalidOperationException ex)
+                {
+
+                    throw new DBEngineMappingException(entry, 
+                        $"DBEngine internal error: Unable to map {targetType.Name}.{entry.Property.Name} - {entry.ReaderType.FullName} -> {entry.Property.PropertyType.FullName} - see inner exception",
+                        ex
+                    );
+                }
             }
             else
             {
@@ -292,11 +536,11 @@ namespace MDDDataAccess
 
 
             // Set property
-            var setMethod = property.GetSetMethod(true);
+            var setMethod = entry.Property.GetSetMethod(true);
             var setExp = Expression.Call(castTarget, setMethod, valueExp);
 
             var lambda = Expression.Lambda<Action<SqlDataReader, object>>(setExp, readerParam, targetParam);
-            return lambda.Compile();
+            entry.MapAction = lambda.Compile();
         }
         private static Dictionary<string, List<int>> GetColumnOrdinals(SqlDataReader rdr)
         {
@@ -417,18 +661,11 @@ namespace MDDDataAccess
         public class PropertyMapEntry
         {
             public int Ordinal { get; set; } = -100000; //default(int) is a valid value - the first column in the reader - this value must be set to a valid value intentionally if the entry is to be used
-            public Action<object, object> Setter;
-            public Func<SqlDataReader, int, object> ReaderFunc;
             public Action<SqlDataReader, object> MapAction; // alternative to Setter + ReaderFunc
-            //public PropertyHandler Handler { get; set; }
-
-            //public string PropertyName { get; set; }
-            //public string  PropertyTypeName { get; set; }
-            public string ReaderTypeName { get; set; }
+            public Type ReaderType { get; set; }
             public PropertyInfo Property { get; set; }
             public string ColumnName { get; set; }
             public bool Optional { get; set; }
-            //public int? ForcedOrdinal { get; set; }
             public override string ToString() => $"rdr({Ordinal}): rdr({ColumnName}) -> {Property.Name} - {Property.PropertyType.Name}";
         }
         [Serializable]
@@ -504,109 +741,133 @@ namespace MDDDataAccess
                 return sb.ToString();
             }
         }
-
-        private PropertyInfo PrepareTracking_original<T>(SqlDataReader rdr, ref PropertyInfo key, ref T r, ref Tracker<T> tracker, out Tracked<T> existingtracked, out bool skipLoad) where T : class, new()
+        [Serializable]
+        public class DBEngineMappingException : Exception
         {
-            existingtracked = null;
-            skipLoad = false;
-            PropertyInfo concurrencyproperty = null;
-
-            if (tracker != null)
+            public PropertyMapEntry PropertyMapEntry { get; set; }
+            public DBEngineMappingException(
+                PropertyMapEntry propertyMapEntry,
+                string message,
+                Exception innerException)
+                : base(message, innerException)
             {
-                if (Tracked<T>.HasConcurrency)
-                    concurrencyproperty = Tracked<T>.ConcurrencyProperty;
-
-                if (r != null)
-                {
-                    var keyvalue = Tracked<T>.GetKeyValue(r);
-                    if (!IsDefaultOrNull(keyvalue) && tracker.TryGet(keyvalue, out existingtracked))
-                    {
-                        switch (existingtracked.State)
-                        {
-                            case TrackedState.Unchanged:
-                            case TrackedState.Modified:
-                                if (existingtracked.TryGetEntity(out var existing) && !ReferenceEquals(existing, r))
-                                    throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being (re)loaded but is somehow not the same object as what has been passed to OFR");
-                                existingtracked.Initializing = true;
-                                if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 55, "OFR cache hit", r.ToString(), typeof(T).Name));
-                                break;
-                            case TrackedState.Initializing:
-                                throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being (re)loaded and is already in the Initializing state");
-                            case TrackedState.Invalid:
-                            default:
-                                throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being (re)loaded and is in an invalid state");
-                        }
-                    }
-                    else
-                    {
-                        throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being (re)loaded and is not in the tracker");
-                    }
-                }
-                else
-                {
-                    var keyvalue = rdr[Tracked<T>.KeyDBName];
-                    var rdrconcurrency = Tracked<T>.HasConcurrency ? rdr[Tracked<T>.ConcurrencyDBName] : null;
-                    if (tracker.TryGet(keyvalue, out existingtracked))
-                    {
-                        var curstate = existingtracked.State;
-                        switch (curstate)
-                        {
-                            case TrackedState.Modified:
-                            case TrackedState.Unchanged:
-                                if (existingtracked.TryGetEntity(out var existing))
-                                {
-                                    r = existing;
-                                    var entityconcurrency = Tracked<T>.GetConcurrencyValue?.Invoke(r);
-                                    if (Tracked<T>.HasConcurrency && ValueEquals(rdrconcurrency, entityconcurrency))
-                                    {
-                                        if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 56, "OFR cache hit - concurrency match", r.ToString(), typeof(T).Name));
-                                        TrackerHitCount++;
-                                        skipLoad = true;
-                                        return concurrencyproperty;
-                                    }
-                                    else if (curstate == TrackedState.Unchanged)
-                                    {
-                                        existingtracked.Initializing = true;
-                                        if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 53, "OFR cache update", r.ToString(), typeof(T).Name));
-                                    }
-                                    else
-                                    {
-                                        throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being loaded and is dirty but the concurrency value in the database does not match the concurrency value of the object - you must either set Tracking to None or ensure that all objects being loaded are not already being tracked as dirty");
-                                    }
-                                }
-                                break;
-                            case TrackedState.Initializing:
-                                throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being loaded and is already in the Initializing state");
-                            case TrackedState.Invalid:
-                            default:
-                                existingtracked.BeginInitialization(keyvalue, rdrconcurrency, out r);
-                                if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 51, "OFR revive", $"Type: {typeof(T).Name} ID: {keyvalue}", typeof(T).Name));
-                                break;
-                        }
-                    }
-                    else
-                    {
-                        existingtracked = tracker.GetOrAdd(keyvalue, rdrconcurrency, out r);
-                        if (DebugLevel >= 220) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 51, "OFR create", $"Type: {typeof(T).Name} ID: {keyvalue}", typeof(T).Name));
-                    }
-                }
+                PropertyMapEntry = propertyMapEntry;
             }
-            else
+            public override string ToString()
             {
-                if (r == null) r = new T();
-                if (Tracked<T>.HasConcurrency)
-                    concurrencyproperty = Tracked<T>.ConcurrencyProperty;
+                var sb = new StringBuilder();
+                sb.AppendLine(base.ToString());
+                sb.AppendLine($"Property: {PropertyMapEntry.Property.Name}");
+                sb.AppendLine($"PropertyType: {PropertyMapEntry.Property.PropertyType.FullName}");
+                sb.AppendLine($"ColumnName: {PropertyMapEntry.ColumnName}");
+                sb.AppendLine($"ObjectType: {PropertyMapEntry.Property.DeclaringType.Name}");
+                sb.AppendLine($"ReaderType: {PropertyMapEntry.ReaderType.Name}");
+                return sb.ToString();
             }
-
-            return concurrencyproperty;
         }
-        private void FinalizeTracking<T>(Tracked<T> tracked, T target) where T : class, new()
-        {
-            if (!tracked.Initializing)
-                throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {Tracked<T>.GetKeyValue(target)} has completed loading but was not in the Initializing state");
 
-            tracked.EndInitialization();
-        }
+        //private PropertyInfo PrepareTracking_original<T>(SqlDataReader rdr, ref PropertyInfo key, ref T r, ref Tracker<T> tracker, out Tracked<T> existingtracked, out bool skipLoad) where T : class, new()
+        //{
+        //    existingtracked = null;
+        //    skipLoad = false;
+        //    PropertyInfo concurrencyproperty = null;
+
+        //    if (tracker != null)
+        //    {
+        //        if (Tracked<T>.HasConcurrency)
+        //            concurrencyproperty = Tracked<T>.ConcurrencyProperty;
+
+        //        if (r != null)
+        //        {
+        //            var keyvalue = Tracked<T>.GetKeyValue(r);
+        //            if (!IsDefaultOrNull(keyvalue) && tracker.TryGet(keyvalue, out existingtracked))
+        //            {
+        //                switch (existingtracked.State)
+        //                {
+        //                    case TrackedState.Unchanged:
+        //                    case TrackedState.Modified:
+        //                        if (existingtracked.TryGetEntity(out var existing) && !ReferenceEquals(existing, r))
+        //                            throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being (re)loaded but is somehow not the same object as what has been passed to OFR");
+        //                        existingtracked.Initializing = true;
+        //                        if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 55, "OFR cache hit", r.ToString(), typeof(T).Name));
+        //                        break;
+        //                    case TrackedState.Initializing:
+        //                        throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being (re)loaded and is already in the Initializing state");
+        //                    case TrackedState.Invalid:
+        //                    default:
+        //                        throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being (re)loaded and is in an invalid state");
+        //                }
+        //            }
+        //            else
+        //            {
+        //                throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being (re)loaded and is not in the tracker");
+        //            }
+        //        }
+        //        else
+        //        {
+        //            var keyvalue = rdr[Tracked<T>.KeyDBName];
+        //            var rdrconcurrency = Tracked<T>.HasConcurrency ? rdr[Tracked<T>.ConcurrencyDBName] : null;
+        //            if (tracker.TryGet(keyvalue, out existingtracked))
+        //            {
+        //                var curstate = existingtracked.State;
+        //                switch (curstate)
+        //                {
+        //                    case TrackedState.Modified:
+        //                    case TrackedState.Unchanged:
+        //                        if (existingtracked.TryGetEntity(out var existing))
+        //                        {
+        //                            r = existing;
+        //                            var entityconcurrency = Tracked<T>.GetConcurrencyValue?.Invoke(r);
+        //                            if (Tracked<T>.HasConcurrency && ValueEquals(rdrconcurrency, entityconcurrency))
+        //                            {
+        //                                if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 56, "OFR cache hit - concurrency match", r.ToString(), typeof(T).Name));
+        //                                TrackerHitCount++;
+        //                                skipLoad = true;
+        //                                return concurrencyproperty;
+        //                            }
+        //                            else if (curstate == TrackedState.Unchanged)
+        //                            {
+        //                                existingtracked.Initializing = true;
+        //                                if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 53, "OFR cache update", r.ToString(), typeof(T).Name));
+        //                            }
+        //                            else
+        //                            {
+        //                                throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being loaded and is dirty but the concurrency value in the database does not match the concurrency value of the object - you must either set Tracking to None or ensure that all objects being loaded are not already being tracked as dirty");
+        //                            }
+        //                        }
+        //                        break;
+        //                    case TrackedState.Initializing:
+        //                        throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being loaded and is already in the Initializing state");
+        //                    case TrackedState.Invalid:
+        //                    default:
+        //                        existingtracked.BeginInitialization(keyvalue, rdrconcurrency, out r);
+        //                        if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 51, "OFR revive", $"Type: {typeof(T).Name} ID: {keyvalue}", typeof(T).Name));
+        //                        break;
+        //                }
+        //            }
+        //            else
+        //            {
+        //                existingtracked = tracker.GetOrAdd(keyvalue, rdrconcurrency, out r);
+        //                if (DebugLevel >= 220) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 51, "OFR create", $"Type: {typeof(T).Name} ID: {keyvalue}", typeof(T).Name));
+        //            }
+        //        }
+        //    }
+        //    else
+        //    {
+        //        if (r == null) r = new T();
+        //        if (Tracked<T>.HasConcurrency)
+        //            concurrencyproperty = Tracked<T>.ConcurrencyProperty;
+        //    }
+
+        //    return concurrencyproperty;
+        //}
+        //private void FinalizeTracking<T>(Tracked<T> tracked, T target) where T : class, new()
+        //{
+        //    if (!tracked.Initializing)
+        //        throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {Tracked<T>.GetKeyValue(target)} has completed loading but was not in the Initializing state");
+
+        //    tracked.EndInitialization();
+        //}
 
         //private List<PropertyMapEntry> GetPropertyDescriptors<T>(T target, ref PropertyInfo key, bool strict, PropertyInfo concurrencyproperty) where T : class
         //{

@@ -139,7 +139,6 @@ namespace MDDDataAccess
                 throw ex;
             }
         }
-
         private void PostExecution(SqlCommand cmd, int start)
         {
             var elapsed = Environment.TickCount - start;
@@ -156,7 +155,6 @@ namespace MDDDataAccess
                 }, 2);
             }
         }
-
         private void ExecuteNonQuery(SqlCommand cmd)
         {
             var start = Environment.TickCount;
@@ -171,7 +169,6 @@ namespace MDDDataAccess
                 throw ex;
             }
         }
-
         private void LogError(SqlCommand cmd, int start, Exception ex)
         {
             Log.Entry(new DBExecutionEntry
@@ -183,7 +180,6 @@ namespace MDDDataAccess
                 Details = PrintExecStatement(cmd)
             }, 2);
         }
-
         private object ExecuteScalar(SqlCommand cmd)
         {
             var start = Environment.TickCount;
