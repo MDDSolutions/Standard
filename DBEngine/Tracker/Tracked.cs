@@ -1,11 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Globalization;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Reflection;
-using System.Text;
-using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Text;
 
 
 namespace MDDDataAccess
@@ -33,7 +34,7 @@ namespace MDDDataAccess
         public static Action<T, object> SetKeyValue;
         public static Func<T, object> GetConcurrencyValue;
         public static Action<T, object> SetConcurrencyValue;
-        private static Dictionary<string,Func<T, object>> AllPropertyDelegates;
+        private static Dictionary<string,PropertyDelegateInfo<T>> AllPropertyDelegates;
         private static readonly ConditionalWeakTable<T, Tracked<T>> _entityToTracked = new ConditionalWeakTable<T, Tracked<T>>();
         private static readonly object initLock = new object();
         public static void Initialize(Type keyAttributeType = null, Type concurrencyAttributeType = null)
@@ -98,14 +99,16 @@ namespace MDDDataAccess
                     SetConcurrencyValue = null;
                 }
 
-                AllPropertyDelegates = new Dictionary<string, Func<T, object>>();
-                foreach (var prop in type.GetProperties().Where(IsTrackableProperty))
-                {
-                    var propAccess = System.Linq.Expressions.Expression.Property(entityParam, prop);
-                    var propConvert = System.Linq.Expressions.Expression.Convert(propAccess, typeof(object));
-                    var propDelegate = System.Linq.Expressions.Expression.Lambda<Func<T, object>>(propConvert, entityParam).Compile();
-                    AllPropertyDelegates.Add(prop.Name, propDelegate);
-                }
+                //AllPropertyDelegates = new Dictionary<string, Func<T, object>>();
+                //foreach (var prop in type.GetProperties().Where(IsTrackableProperty))
+                //{
+                //    var propAccess = System.Linq.Expressions.Expression.Property(entityParam, prop);
+                //    var propConvert = System.Linq.Expressions.Expression.Convert(propAccess, typeof(object));
+                //    var propDelegate = System.Linq.Expressions.Expression.Lambda<Func<T, object>>(propConvert, entityParam).Compile();
+                //    AllPropertyDelegates.Add(prop.Name, propDelegate);
+                //}
+
+                BuildPropertyDelegates();
 
                 if (typeof(NotifierObject).IsAssignableFrom(typeof(T)))
                 {
@@ -115,6 +118,8 @@ namespace MDDDataAccess
                 istrackable = true;
             }
         }
+
+
 
         private static void WeakPropertyChangedHandler(object sender, PropertyChangedEventArgs e)
         {
@@ -211,7 +216,6 @@ namespace MDDDataAccess
                 {
                     if (entity is INotifyPropertyChanged inpc)
                     {
-                        // Use a weak handler or be sure to unsubscribe on Detach/Dispose to avoid leaks.
                         _dirtyProps.Clear();
 
                         if (_entityToTracked.TryGetValue(entity, out _))
@@ -230,7 +234,7 @@ namespace MDDDataAccess
                     }
 
                     foreach (var kw in AllPropertyDelegates)
-                        _originalValues.Add(kw.Key, kw.Value.Invoke(entity));
+                        _originalValues.Add(kw.Key, kw.Value.Getter.Invoke(entity));
                 }
 
                 Initializing = false;
@@ -246,7 +250,7 @@ namespace MDDDataAccess
             // If property is trackable, compare to original and update cache.
             if (_originalValues.TryGetValue(e.PropertyName, out var original))
             {
-                var current = AllPropertyDelegates[e.PropertyName].Invoke(entity);
+                var current = AllPropertyDelegates[e.PropertyName].Getter.Invoke(entity);
                 if (!DBEngine.ValueEquals(current, original))
                 {
                     _dirtyProps.Add(e.PropertyName);
@@ -311,7 +315,7 @@ namespace MDDDataAccess
                     }
                     foreach (var kv in _originalValues)
                     {
-                        var current = AllPropertyDelegates[kv.Key].Invoke(entity);
+                        var current = AllPropertyDelegates[kv.Key].Getter.Invoke(entity);
                         if (!DBEngine.ValueEquals(current, kv.Value))
                         {
                             return TrackedState.Modified;
@@ -336,7 +340,7 @@ namespace MDDDataAccess
                         foreach (var propName in _dirtyProps)
                         {
                             var original = _originalValues[propName];
-                            var current = AllPropertyDelegates[propName].Invoke(entity);
+                            var current = AllPropertyDelegates[propName].Getter.Invoke(entity);
                             result[propName] = (original, current);
                         }
                     }
@@ -345,7 +349,7 @@ namespace MDDDataAccess
                 {
                     foreach (var kv in _originalValues)
                     {
-                        var current = AllPropertyDelegates[kv.Key].Invoke(entity);
+                        var current = AllPropertyDelegates[kv.Key].Getter.Invoke(entity);
                         if (!DBEngine.ValueEquals(current, kv.Value))
                         {
                             result[kv.Key] = (kv.Value, current);
@@ -355,42 +359,51 @@ namespace MDDDataAccess
             }
             return result;
         }
-        private static bool IsTrackableProperty(PropertyInfo prop)
+        private static void BuildPropertyDelegates()
         {
-            if (!prop.CanRead || !prop.CanWrite)
-                return false;
+            AllPropertyDelegates = new Dictionary<string, PropertyDelegateInfo<T>>();
+            var type = typeof(T);
+            foreach (var prop in type.GetProperties().Where(x => x.CanWrite && x.CanRead))
+            {
+                var delegateinfo = new PropertyDelegateInfo<T>();
+                var skip = false;
+                foreach (var attr in prop.GetCustomAttributes())
+                {
+                    if (attr is ListKeyAttribute) skip = true;
+                    if (attr is ListConcurrencyAttribute) skip = true;
+                    if (attr is DBOptionalAttribute) delegateinfo.Optional = true;
+                    if (attr is DBIgnoreAttribute) delegateinfo.Ignore = true;
+                }
+                if (!skip)
+                {
+                    var proptype = prop.PropertyType;
+                    if (!proptype.IsValueType && proptype != typeof(string) && !proptype.IsArray)
+                        delegateinfo.Optional = true;
 
-            if (prop.GetCustomAttributes(typeof(ListKeyAttribute), true).Any())
-                return false;
 
-            if (prop.GetCustomAttributes(typeof(ListConcurrencyAttribute), true).Any())
-                return false;
+                    // parameter: (T entity)
+                    var entityParam = Expression.Parameter(typeof(T), "entity");
 
-            if (prop.GetCustomAttributes(typeof(DBIgnoreAttribute), true).Any())
-                return false;
+                    // ===== Build Getter =====
+                    var propAccess = Expression.Property(entityParam, prop);
+                    var propConvert = Expression.Convert(propAccess, typeof(object));
+                    var getter = Expression.Lambda<Func<T, object>>(propConvert, entityParam).Compile();
 
-            if (prop.GetCustomAttributes(typeof(DBOptionalAttribute), true).Any())
-                return false;
+                    // ===== Build Setter =====
+                    // parameters: (T entity, object value)
+                    var valueParam = Expression.Parameter(typeof(object), "value");
 
-            var type = prop.PropertyType;
+                    var assign = Expression.Assign(
+                        propAccess,
+                        Expression.Convert(valueParam, prop.PropertyType));
 
-            // Track value types (primitives, structs, enums, etc.)
-            if (type.IsValueType)
-                return true;            
+                    var setter = Expression.Lambda<Action<T, object>>(assign, entityParam, valueParam).Compile();
 
-            // Always track strings
-            if (type == typeof(string))
-                return true;
-
-            // track arrays
-            if (type.IsArray)
-                return true;
-
-            if (typeof(System.Collections.IEnumerable).IsAssignableFrom(type))
-                return false;
-
-            // Otherwise, skip (likely navigation property or complex type)
-            return false;
+                    delegateinfo.Getter = getter;
+                    delegateinfo.Setter = setter;
+                    AllPropertyDelegates.Add(prop.Name, delegateinfo);
+                }
+            }
         }
         public bool TryGetEntity(out T e)
         {
@@ -402,6 +415,37 @@ namespace MDDDataAccess
             e = null;
             return false;
         }
+        public void CopyValues(T from, bool withinitialization)
+        {
+            if (TryGetEntity(out T to))
+            {
+                if (withinitialization) Initializing = true;
+
+                var fromkey = GetKeyValue(from);
+                var tokey = GetKeyValue(to);
+                if (!DBEngine.ValueEquals(fromkey, tokey)) throw new Exception($"Cannot copy values on {typeof(T).Name} with key {fromkey} to an object with key {tokey}");
+
+                foreach (var delegateinfo in AllPropertyDelegates.Values)
+                {
+                    var copy = true;
+                    if (delegateinfo.Optional || delegateinfo.Ignore)
+                    {
+                        //for optional or Ignored properties, only copy the value
+                        //if the one in the from object looks more interesting than the one in the to object
+                        var fromval = delegateinfo.Getter(from);
+                        var toval = delegateinfo.Getter(to);
+
+                        copy = !DBEngine.ValueEquals(fromval, toval) && (DBEngine.IsDefaultOrNull(toval) || !DBEngine.IsDefaultOrNull(fromval));
+                    }
+                    if (copy) delegateinfo.Setter(to, delegateinfo.Getter(from));
+                }
+                if (withinitialization) EndInitialization();
+            }
+            else
+            {
+                throw new Exception("Copy Values called on an tracker with no valid entity");
+            }
+        }
         public override string ToString()
         {
             return $"{typeof(T).Name} [Key={KeyValue?.ToString() ?? "null"}, State={State}]";
@@ -409,5 +453,13 @@ namespace MDDDataAccess
     }
     public enum TrackedState { Initializing, Unchanged, Modified, Invalid }
     public enum DirtyCheckMode { FullScan, Cached, Advanced }
-
+    public class PropertyDelegateInfo<T>
+    {
+        public bool Optional { get; set; } = false;
+        public bool Ignore { get; set; } = false;
+        public Func<T, object> Getter { get; set; }
+        public Action<T, object> Setter { get; set; }
     }
+
+
+}

@@ -19,114 +19,15 @@ namespace MDDDataAccess
         public bool EnumParseIgnoreCase { get; set; } = true;
         public void ObjectFromReader<T>(SqlDataReader rdr, ref List<PropertyMapEntry> map, ref PropertyInfo key, ref T r, ref Tracker<T> tracker, bool strict = true) where T : class, new()
         {
-            var concurrencyproperty = PrepareTracking(rdr, ref key, ref r, ref tracker, out var tracked, out var skipLoad);
-            if (skipLoad) return;
-
             if (map == null)
             {
+                PropertyInfo concurrencyproperty = null;
                 if (!strict) concurrencyproperty = EnsureConcurrencyProperty(r, concurrencyproperty);
-
                 BuildPropertyMap<T>(rdr, ref map, ref key, strict, concurrencyproperty);
             }
-
+            if (r == null) r = new T();
             ExecutePropertyMap(rdr, map, r);
-
-            if (tracked != null) FinalizeTracking(tracked, r);
-        }
-        private PropertyInfo PrepareTracking<T>(SqlDataReader rdr, ref PropertyInfo key, ref T r, ref Tracker<T> tracker, out Tracked<T> tracked, out bool skipLoad) where T : class, new()
-        {
-            tracked = null;
-            skipLoad = false;
-            PropertyInfo concurrencyproperty = null;
-
-            if (tracker != null)
-            {
-                if (Tracked<T>.HasConcurrency)
-                    concurrencyproperty = Tracked<T>.ConcurrencyProperty;
-
-                if (r != null)
-                {
-                    var keyvalue = Tracked<T>.GetKeyValue(r);
-                    if (!IsDefaultOrNull(keyvalue) && tracker.TryGet(keyvalue, out tracked))
-                    {
-                        switch (tracked.State)
-                        {
-                            case TrackedState.Unchanged:
-                            case TrackedState.Modified:
-                                if (tracked.TryGetEntity(out var existing) && !ReferenceEquals(existing, r))
-                                    throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being (re)loaded but is somehow not the same object as what has been passed to OFR");
-                                tracked.Initializing = true;
-                                if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 55, "OFR cache hit", r.ToString(), typeof(T).Name));
-                                break;
-                            case TrackedState.Initializing:
-                                throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being (re)loaded and is already in the Initializing state");
-                            case TrackedState.Invalid:
-                            default:
-                                throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being (re)loaded and is in an invalid state");
-                        }
-                    }
-                    else
-                    {
-                        throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being (re)loaded and is not in the tracker");
-                    }
-                }
-                else
-                {
-                    var keyvalue = rdr[Tracked<T>.KeyDBName];
-                    var rdrconcurrency = Tracked<T>.HasConcurrency ? rdr[Tracked<T>.ConcurrencyDBName] : null;
-                    if (tracker.TryGet(keyvalue, out tracked))
-                    {
-                        var curstate = tracked.State;
-                        switch (curstate)
-                        {
-                            case TrackedState.Modified:
-                            case TrackedState.Unchanged:
-                                if (tracked.TryGetEntity(out var existing))
-                                {
-                                    r = existing;
-                                    var entityconcurrency = Tracked<T>.GetConcurrencyValue?.Invoke(r);
-                                    if (Tracked<T>.HasConcurrency && ValueEquals(rdrconcurrency, entityconcurrency))
-                                    {
-                                        if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 56, "OFR cache hit - concurrency match", r.ToString(), typeof(T).Name));
-                                        TrackerHitCount++;
-                                        skipLoad = true;
-                                        return concurrencyproperty;
-                                    }
-                                    else if (curstate == TrackedState.Unchanged)
-                                    {
-                                        tracked.Initializing = true;
-                                        if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 53, "OFR cache update", r.ToString(), typeof(T).Name));
-                                    }
-                                    else
-                                    {
-                                        throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being loaded and is dirty but the concurrency value in the database does not match the concurrency value of the object - you must either set Tracking to None or ensure that all objects being loaded are not already being tracked as dirty");
-                                    }
-                                }
-                                break;
-                            case TrackedState.Initializing:
-                                throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being loaded and is already in the Initializing state");
-                            case TrackedState.Invalid:
-                            default:
-                                tracked.BeginInitialization(keyvalue, rdrconcurrency, out r);
-                                if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 51, "OFR revive", $"Type: {typeof(T).Name} ID: {keyvalue}", typeof(T).Name));
-                                break;
-                        }
-                    }
-                    else
-                    {
-                        tracked = tracker.GetOrAdd(keyvalue, rdrconcurrency, out r);
-                        if (DebugLevel >= 220) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 51, "OFR create", $"Type: {typeof(T).Name} ID: {keyvalue}", typeof(T).Name));
-                    }
-                }
-            }
-            else
-            {
-                if (r == null) r = new T();
-                if (Tracked<T>.HasConcurrency)
-                    concurrencyproperty = Tracked<T>.ConcurrencyProperty;
-            }
-
-            return concurrencyproperty;
+            if (tracker != null) tracker.GetOrAdd(ref r);
         }
         private PropertyInfo EnsureConcurrencyProperty<T>(T target, PropertyInfo concurrencyproperty) where T : class
         {
@@ -213,29 +114,13 @@ namespace MDDDataAccess
                 }
                 catch (Exception ex)
                 {
-                    object valueForError;
-                    try
-                    {
-                        valueForError = entry.ReaderFunc(rdr, entry.Ordinal);
-                    }
-                    catch
-                    {
-                        valueForError = "<error reading value>";
-                    }
-
                     string objectvalues = string.Join(", ", typeof(T).GetProperties(BindingFlags.Public | BindingFlags.Instance).Select(pi => $"{pi.Name}={(pi.GetValue(target) == null ? "<null>" : pi.GetValue(target).ToString())}"));
 
-                    throw new Exception($"DBEngine internal error: Post-mapping error occurred trying to set {target.GetType().Name}.{entry.Property.Name} to {valueForError} the property is an {entry.Property.PropertyType.FullName} and the mapper clocked the reader as an {entry.ReaderTypeName} (the data types must match exactly) - see inner exception - values in object: {objectvalues}", ex);
+                    throw new Exception($"DBEngine internal error: Post-mapping error occurred trying to set {target.GetType().Name}.{entry.Property.Name}. the property is an {entry.Property.PropertyType.FullName} and the mapper clocked the reader as an {entry.ReaderTypeName} (the data types must match exactly) - see inner exception - values in object: {objectvalues}", ex);
                 }
             }
         }
-        private void FinalizeTracking<T>(Tracked<T> tracked, T target) where T : class, new()
-        {
-            if (!tracked.Initializing)
-                throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {Tracked<T>.GetKeyValue(target)} has completed loading but was not in the Initializing state");
 
-            tracked.EndInitialization();
-        }
         private static MethodInfo ResolveReaderGetter(Type type)
         {
             var t = Nullable.GetUnderlyingType(type) ?? type;
@@ -454,6 +339,109 @@ namespace MDDDataAccess
         }
 
 
+
+        private PropertyInfo PrepareTracking_original<T>(SqlDataReader rdr, ref PropertyInfo key, ref T r, ref Tracker<T> tracker, out Tracked<T> existingtracked, out bool skipLoad) where T : class, new()
+        {
+            existingtracked = null;
+            skipLoad = false;
+            PropertyInfo concurrencyproperty = null;
+
+            if (tracker != null)
+            {
+                if (Tracked<T>.HasConcurrency)
+                    concurrencyproperty = Tracked<T>.ConcurrencyProperty;
+
+                if (r != null)
+                {
+                    var keyvalue = Tracked<T>.GetKeyValue(r);
+                    if (!IsDefaultOrNull(keyvalue) && tracker.TryGet(keyvalue, out existingtracked))
+                    {
+                        switch (existingtracked.State)
+                        {
+                            case TrackedState.Unchanged:
+                            case TrackedState.Modified:
+                                if (existingtracked.TryGetEntity(out var existing) && !ReferenceEquals(existing, r))
+                                    throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being (re)loaded but is somehow not the same object as what has been passed to OFR");
+                                existingtracked.Initializing = true;
+                                if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 55, "OFR cache hit", r.ToString(), typeof(T).Name));
+                                break;
+                            case TrackedState.Initializing:
+                                throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being (re)loaded and is already in the Initializing state");
+                            case TrackedState.Invalid:
+                            default:
+                                throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being (re)loaded and is in an invalid state");
+                        }
+                    }
+                    else
+                    {
+                        throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being (re)loaded and is not in the tracker");
+                    }
+                }
+                else
+                {
+                    var keyvalue = rdr[Tracked<T>.KeyDBName];
+                    var rdrconcurrency = Tracked<T>.HasConcurrency ? rdr[Tracked<T>.ConcurrencyDBName] : null;
+                    if (tracker.TryGet(keyvalue, out existingtracked))
+                    {
+                        var curstate = existingtracked.State;
+                        switch (curstate)
+                        {
+                            case TrackedState.Modified:
+                            case TrackedState.Unchanged:
+                                if (existingtracked.TryGetEntity(out var existing))
+                                {
+                                    r = existing;
+                                    var entityconcurrency = Tracked<T>.GetConcurrencyValue?.Invoke(r);
+                                    if (Tracked<T>.HasConcurrency && ValueEquals(rdrconcurrency, entityconcurrency))
+                                    {
+                                        if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 56, "OFR cache hit - concurrency match", r.ToString(), typeof(T).Name));
+                                        TrackerHitCount++;
+                                        skipLoad = true;
+                                        return concurrencyproperty;
+                                    }
+                                    else if (curstate == TrackedState.Unchanged)
+                                    {
+                                        existingtracked.Initializing = true;
+                                        if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 53, "OFR cache update", r.ToString(), typeof(T).Name));
+                                    }
+                                    else
+                                    {
+                                        throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being loaded and is dirty but the concurrency value in the database does not match the concurrency value of the object - you must either set Tracking to None or ensure that all objects being loaded are not already being tracked as dirty");
+                                    }
+                                }
+                                break;
+                            case TrackedState.Initializing:
+                                throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {keyvalue} is being loaded and is already in the Initializing state");
+                            case TrackedState.Invalid:
+                            default:
+                                existingtracked.BeginInitialization(keyvalue, rdrconcurrency, out r);
+                                if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 51, "OFR revive", $"Type: {typeof(T).Name} ID: {keyvalue}", typeof(T).Name));
+                                break;
+                        }
+                    }
+                    else
+                    {
+                        existingtracked = tracker.GetOrAdd(keyvalue, rdrconcurrency, out r);
+                        if (DebugLevel >= 220) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 51, "OFR create", $"Type: {typeof(T).Name} ID: {keyvalue}", typeof(T).Name));
+                    }
+                }
+            }
+            else
+            {
+                if (r == null) r = new T();
+                if (Tracked<T>.HasConcurrency)
+                    concurrencyproperty = Tracked<T>.ConcurrencyProperty;
+            }
+
+            return concurrencyproperty;
+        }
+        private void FinalizeTracking<T>(Tracked<T> tracked, T target) where T : class, new()
+        {
+            if (!tracked.Initializing)
+                throw new Exception($"DBEngine.ObjectFromReader ERROR: Tracking has been set to {Tracking} but an object of type {typeof(T).Name} with a key value of {Tracked<T>.GetKeyValue(target)} has completed loading but was not in the Initializing state");
+
+            tracked.EndInitialization();
+        }
 
         //private List<PropertyMapEntry> GetPropertyDescriptors<T>(T target, ref PropertyInfo key, bool strict, PropertyInfo concurrencyproperty) where T : class
         //{

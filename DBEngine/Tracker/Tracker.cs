@@ -17,6 +17,9 @@ namespace MDDDataAccess
         private DBEngine DBEngine { get; }
         private readonly ConcurrentDictionary<object, Tracked<T>> trackedObjects = new ConcurrentDictionary<object, Tracked<T>>();
         /// <summary>
+        /// This is the one that will now never be used - the problem was if you put an unbaked T in the tracker and then you puke when trying to finish baking it, you're
+        /// left with a mess... so we now fully load the object and then pass it to the other GetOrAdd - there is now a CopyValues function in Tracker<typeparamref name="T"/>
+        /// to deal with any merging that needs to happen - this also allowed sequential access on the reader (although the benchmark on it wasn't any better)
         /// Use this method when you are in the process of loading an entity from the database.  The idea is to get the key and concurrency values from the database row,
         /// call this method to get a tracked entity (which may be a new instance, or an existing instance), and then load the data into the entity instance returned if
         /// you still need to.  The out parameter 'entity' will be a new instance if the entity was not already being tracked, or it will be the existing instance if it was.
@@ -90,6 +93,8 @@ namespace MDDDataAccess
             return tracked;
         }
         /// <summary>
+        /// Never mind the comment below - leaving it there because who knows if I change my mind again... this is now the main way to load or "Attach" entities to the tracker
+        /// make sure the entity is fully baked / initialized - we don't want any invalid entities in the tracker
         /// This method should probably not ever be used - if you're tracking, don't fully initialize an entity outside of the tracker.
         /// call the other GetOrAdd method with the key and concurrency values instead - it will give you back an uninitialized entity to load into.
         /// </summary>
@@ -102,32 +107,58 @@ namespace MDDDataAccess
             var key = Tracked<T>.GetKeyValue(entity);
             if (key == null)
                 throw new InvalidOperationException($"The entity provided for {typeof(T).FullName} has a null key value");
-            var concurrency = Tracked<T>.GetConcurrencyValue?.Invoke(entity);
 
-            T lentity = entity;
+            T loading = entity;
+            var loadingconcurrency = Tracked<T>.GetConcurrencyValue?.Invoke(loading);
 
             var tracked = trackedObjects.AddOrUpdate(
                 key, 
-                k => new Tracked<T>(lentity),
-                (k, existing) =>
+                k => new Tracked<T>(loading),
+                (k, existingtracked) =>
                 {
-                    /* The whole point here is that the entity has been fully initialized outside of the tracker, and so should not exist
-                     * ...if it does, we'll have to do some stuff to reconcile the two instances.
-                     * ...not doing that right now...
-                     */
-                    T e;
-                    if (existing.TryGetEntity(out e))
+                    if (existingtracked.TryGetEntity(out T existingentity))
                     {
-                        if (ReferenceEquals(e, lentity))
-                            //same instance - nothing to do
-                            return existing;
+                        if (ReferenceEquals(existingentity, loading))
+                        {
+                            //entity may have been updated, but now that it has been reloaded, it should be reinitialized
+                            existingtracked.Initializing = true;
+                            existingtracked.EndInitialization();
+                            return existingtracked;
+                        }
                         else
-                            //different instances - not sure what to do here yet
-                            throw new NotImplementedException("An entity with the same key is already being tracked - reconciling two different instances is not implemented.");
+                        {
+                            switch (existingtracked.State)
+                            {
+                                case TrackedState.Unchanged:
+                                    //object exists and is unchanged in the tracker - if the concurrency property is the same, our load was for naught - we can just return the existing value
+                                    //if the object does not have concurrency, I guess we just blindly merge the values from the loaded object - they could be new, but who knows?
+                                    //if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 55, "OFR cache hit", r.ToString(), typeof(T).Name));
+
+                                    if (!Tracked<T>.HasConcurrency || !DBEngine.ValueEquals(loadingconcurrency, Tracked<T>.GetConcurrencyValue(existingentity)))
+                                        existingtracked.CopyValues(loading, true);
+                                    loading = existingentity;
+                                    return existingtracked;
+                                case TrackedState.Modified:
+                                    //if the object exists and is modified, then we don't want any values from the new object whether it's concurrency value matches or not
+                                    //if the concurrency value does not match, then we are probably previewing a future concurrency conflict but not sure what to do about it
+                                    //now - whoever has the object and hasn't saved it yet is going to get an error, but there is no mechanism here to tell them
+                                    //whoever is loading the object is going to get the dirty, unsaved one and not the version in the database - that might be a clue
+                                    //if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 55, "OFR cache hit", r.ToString(), typeof(T).Name));
+                                    if (Tracked<T>.HasConcurrency && !DBEngine.ValueEquals(loadingconcurrency, Tracked<T>.GetConcurrencyValue(existingentity)))
+                                        throw new Exception($"Concurrency Mismatch on an object of type {typeof(T).Name} with key value {key}");
+                                    loading = existingentity;
+                                    return existingtracked;
+                                case TrackedState.Initializing:
+                                    throw new InvalidOperationException($"There is an object in the {typeof(T).Name} tracker with key {key} in an initializing state - this really shouldn't happen");
+                                case TrackedState.Invalid:
+                                default:
+                                    return new Tracked<T>(loading);
+                            }
+                        }
                     }
-                    return new Tracked<T>(lentity);
+                    return new Tracked<T>(loading);
                 });
-            entity = lentity;
+            entity = loading;
             return tracked;
         }
 
