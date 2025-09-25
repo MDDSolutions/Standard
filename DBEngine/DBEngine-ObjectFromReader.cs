@@ -156,40 +156,6 @@ namespace MDDDataAccess
                 }
             }
         }
-
-        private static MethodInfo ResolveReaderGetter_old(Type type)
-        {
-            var t = Nullable.GetUnderlyingType(type) ?? type;
-
-            // Fast path: known SqlDataReader getters
-            var map = new Dictionary<Type, string>
-                {
-                    { typeof(bool),     "GetBoolean" },
-                    { typeof(byte),     "GetByte" },
-                    { typeof(short),    "GetInt16" },
-                    { typeof(int),      "GetInt32" },
-                    { typeof(long),     "GetInt64" },
-                    { typeof(float),    "GetFloat" },   // Single -> GetFloat
-                    { typeof(double),   "GetDouble" },
-                    { typeof(decimal),  "GetDecimal" },
-                    { typeof(DateTime), "GetDateTime" },
-                    { typeof(Guid),     "GetGuid" },
-                    { typeof(char),     "GetChar" },
-                    { typeof(string),   "GetString" },
-                };
-
-            if (map.TryGetValue(t, out var name))
-                return typeof(SqlDataReader).GetMethod(name, new[] { typeof(int) });
-
-            // Fallback: GetFieldValue<T>(int)
-            var generic = typeof(SqlDataReader)
-                .GetMethods(BindingFlags.Instance | BindingFlags.Public)
-                .FirstOrDefault(m => m.Name == "GetFieldValue" &&
-                                     m.IsGenericMethodDefinition &&
-                                     m.GetParameters().Length == 1 &&
-                                     m.GetParameters()[0].ParameterType == typeof(int));
-            return generic?.MakeGenericMethod(t);
-        }
         private static MethodInfo ResolveReaderGetter(Type type)
         {
             var t = Nullable.GetUnderlyingType(type) ?? type;
@@ -215,19 +181,19 @@ namespace MDDDataAccess
 
             if (map.TryGetValue(t, out var name))
             {
-                return typeof(SqlDataReader).GetMethod(name, new[] { typeof(int) });
+                    return typeof(SqlDataReader).GetMethod(name, new[] { typeof(int) });
             }
 
             // Fallback: use generic GetFieldValue<T>(int)
-            var generic = typeof(SqlDataReader)
+            var fallback = typeof(SqlDataReader)
                 .GetMethods(BindingFlags.Instance | BindingFlags.Public)
-                .FirstOrDefault(m =>
-                    m.Name == "GetFieldValue" &&
-                    m.IsGenericMethodDefinition &&
-                    m.GetParameters().Length == 1 &&
-                    m.GetParameters()[0].ParameterType == typeof(int));
 
-            return generic?.MakeGenericMethod(t);
+                .First(m => m.Name == nameof(SqlDataReader.GetFieldValue) &&
+                            m.IsGenericMethodDefinition &&
+                            m.GetParameters().Length == 1 &&
+                            m.GetParameters()[0].ParameterType == typeof(int));
+
+            return fallback.MakeGenericMethod(t);
         }
 
         private static void BuildCompiledMap(PropertyMapEntry entry)
@@ -246,21 +212,27 @@ namespace MDDDataAccess
 
                 Expression valueExp;
 
-                // Special case: byte[] must go through GetValue + cast
+
+                // Special case: byte[] → GetFieldValue<byte[]>
                 if (propertyType == typeof(byte[]))
                 {
-                    var getValue = typeof(SqlDataReader).GetMethod(nameof(SqlDataReader.GetValue), new[] { typeof(int) });
+                    var generic = typeof(SqlDataReader)
+                        .GetMethods(BindingFlags.Instance | BindingFlags.Public)
+                        .First(m => m.Name == nameof(SqlDataReader.GetFieldValue) &&
+                                    m.IsGenericMethodDefinition &&
+                                    m.GetParameters().Length == 1 &&
+                                    m.GetParameters()[0].ParameterType == typeof(int));
+                    var getValue = generic.MakeGenericMethod(typeof(byte[]));
                     var readCall = Expression.Call(readerParam, getValue, ordinalExp);
-
                     valueExp = Expression.Condition(
                         Expression.Call(readerParam, isDbNullMethod, ordinalExp),
                         Expression.Constant(null, typeof(byte[])),
-                        Expression.Convert(readCall, typeof(byte[]))
+                        readCall
                     );
                 }
                 // Special case: Char (nullable or not)
                 else if (propertyType == typeof(char) ||
-                        (propertyType.IsGenericType && propertyType.GetGenericTypeDefinition() == typeof(Nullable<>) &&
+                    (propertyType.IsGenericType && propertyType.GetGenericTypeDefinition() == typeof(Nullable<>) &&
                          Nullable.GetUnderlyingType(propertyType) == typeof(char)))
                 {
                     var getter = ResolveReaderGetter(typeof(string));

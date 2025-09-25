@@ -100,3 +100,11 @@ this was in the middle of the night - I think some backups were running or somet
 | DBEngine_POCOAsync | 868.2 ms | 16.50 ms | 14.63 ms | 36000.0000 | 35000.0000 | 10000.0000 | 217.88 MB |
 | Dapper_POCO        | 895.7 ms | 17.86 ms | 27.28 ms | 42000.0000 | 25000.0000 |  8000.0000 | 282.72 MB |
 | Dapper_POCOAsync   | 925.1 ms | 18.44 ms | 31.81 ms | 45000.0000 | 27000.0000 |  9000.0000 |  295.4 MB |
+
+after all refactorings and such - before diving into ensuring everything translates over in VideoTitles
+| Method             | Mean     | Error    | StdDev   | Median   | Gen0       | Gen1       | Gen2      | Allocated |
+|------------------- |---------:|---------:|---------:|---------:|-----------:|-----------:|----------:|----------:|
+| DBEngine_POCO      | 675.4 ms | 12.58 ms | 15.45 ms | 675.8 ms | 28000.0000 | 27000.0000 | 2000.0000 | 217.88 MB |
+| DBEngine_POCOAsync | 715.2 ms | 17.44 ms | 51.43 ms | 702.5 ms | 28000.0000 | 27000.0000 | 2000.0000 | 217.88 MB |
+| Dapper_POCO        | 706.2 ms | 13.84 ms | 21.55 ms | 703.3 ms | 37000.0000 | 20000.0000 | 3000.0000 | 282.72 MB |
+| Dapper_POCOAsync   | 744.6 ms | 15.23 ms | 44.92 ms | 729.1 ms | 39000.0000 | 21000.0000 | 3000.0000 | 295.37 MB |
