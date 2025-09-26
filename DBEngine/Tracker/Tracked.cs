@@ -64,15 +64,15 @@ namespace MDDDataAccess
                 var keyAttr = KeyProperty.GetCustomAttributes(typeof(DBNameAttribute), true).FirstOrDefault() as DBNameAttribute;
                 KeyDBName = keyAttr?.DBName ?? KeyProperty.Name;
 
-                var entityParam = System.Linq.Expressions.Expression.Parameter(typeof(T), "entity");
-                var keyAccess = System.Linq.Expressions.Expression.Property(entityParam, KeyProperty);
-                var keyConvert = System.Linq.Expressions.Expression.Convert(keyAccess, typeof(object));
-                GetKeyValue = System.Linq.Expressions.Expression.Lambda<Func<T, object>>(keyConvert, entityParam).Compile();
+                var entityParam = Expression.Parameter(typeof(T), "entity");
+                var keyAccess = Expression.Property(entityParam, KeyProperty);
+                var keyConvert = Expression.Convert(keyAccess, typeof(object));
+                GetKeyValue = Expression.Lambda<Func<T, object>>(keyConvert, entityParam).Compile();
 
-                var keyValueParam = System.Linq.Expressions.Expression.Parameter(typeof(object), "value");
-                var keyConvertBack = System.Linq.Expressions.Expression.Convert(keyValueParam, KeyProperty.PropertyType);
-                var keyAssign = System.Linq.Expressions.Expression.Assign(keyAccess, keyConvertBack);
-                SetKeyValue = System.Linq.Expressions.Expression.Lambda<Action<T, object>>(keyAssign, entityParam, keyValueParam).Compile();
+                var keyValueParam = Expression.Parameter(typeof(object), "value");
+                var keyConvertBack = Expression.Convert(keyValueParam, KeyProperty.PropertyType);
+                var keyAssign = Expression.Assign(keyAccess, keyConvertBack);
+                SetKeyValue = Expression.Lambda<Action<T, object>>(keyAssign, entityParam, keyValueParam).Compile();
 
 
                 // find concurrency property
@@ -82,14 +82,14 @@ namespace MDDDataAccess
                     var concurrencyAttr = ConcurrencyProperty.GetCustomAttributes(typeof(DBNameAttribute), true).FirstOrDefault() as DBNameAttribute;
                     ConcurrencyDBName = concurrencyAttr?.DBName ?? ConcurrencyProperty.Name;
                     HasConcurrency = true;
-                    var concurrencyAccess = System.Linq.Expressions.Expression.Property(entityParam, ConcurrencyProperty);
-                    var concurrencyConvert = System.Linq.Expressions.Expression.Convert(concurrencyAccess, typeof(object));
-                    GetConcurrencyValue = System.Linq.Expressions.Expression.Lambda<Func<T, object>>(concurrencyConvert, entityParam).Compile();
+                    var concurrencyAccess = Expression.Property(entityParam, ConcurrencyProperty);
+                    var concurrencyConvert = Expression.Convert(concurrencyAccess, typeof(object));
+                    GetConcurrencyValue = Expression.Lambda<Func<T, object>>(concurrencyConvert, entityParam).Compile();
 
-                    var concurrencyValueParam = System.Linq.Expressions.Expression.Parameter(typeof(object), "value");
-                    var concurrencyConvertBack = System.Linq.Expressions.Expression.Convert(concurrencyValueParam, ConcurrencyProperty.PropertyType);
-                    var concurrencyAssign = System.Linq.Expressions.Expression.Assign(concurrencyAccess, concurrencyConvertBack);
-                    SetConcurrencyValue = System.Linq.Expressions.Expression.Lambda<Action<T, object>>(concurrencyAssign, entityParam, concurrencyValueParam).Compile();
+                    var concurrencyValueParam = Expression.Parameter(typeof(object), "value");
+                    var concurrencyConvertBack = Expression.Convert(concurrencyValueParam, ConcurrencyProperty.PropertyType);
+                    var concurrencyAssign = Expression.Assign(concurrencyAccess, concurrencyConvertBack);
+                    SetConcurrencyValue = Expression.Lambda<Action<T, object>>(concurrencyAssign, entityParam, concurrencyValueParam).Compile();
                 }
                 else
                 {

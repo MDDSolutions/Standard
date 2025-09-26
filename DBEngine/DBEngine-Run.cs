@@ -325,7 +325,7 @@ namespace MDDDataAccess
 
                         var l = new List<T>();
                         List<PropertyMapEntry> map = null;
-                        Tracker<T> t = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
+                        Tracker<T> t = Tracking != ObjectTracking.None ? GetTracker<T>() : null;
                         PropertyInfo key = null;
                         try
                         {
@@ -356,13 +356,14 @@ namespace MDDDataAccess
         {
             return await SqlRunQueryWithResultsAsync<T>(cmdtext, IsProcedure, CancellationToken, ConnectionTimeout, ApplicationName, StubsToSqlParameters(list)).ConfigureAwait(false);
         }
-        public IList<T> SqlRunQueryWithResults<T>(string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T: class, new()
+        public IList<T> SqlRunQueryWithResults<T>(string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T : class, new()
         {
             if (!IsProcedure && !AllowAdHoc) throw new Exception("Ad Hoc Queries are not allowed by this DBEngine");
             using (var cn = getconnection(ConnectionTimeout, ApplicationName))
             {
                 if (cn != null)
                 {
+
                     using (SqlCommand cmd = new SqlCommand(cmdtext, cn))
                     {
                         cmd.CommandTimeout = CommandTimeout;
@@ -374,6 +375,7 @@ namespace MDDDataAccess
                             PropertyInfo key = null;
                             List<PropertyMapEntry> map = null;
                             Tracker<T> t = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
+
                             using (SqlDataReader rdr = ExecuteReader(cmd))
                             {
                                 while (rdr.Read())
@@ -381,6 +383,7 @@ namespace MDDDataAccess
                                     T r = null;
                                     ObjectFromReader<T>(rdr, ref map, ref key, ref r, ref t);
                                     l.Add(r);
+
                                 }
                             }
                             return l;
@@ -394,6 +397,69 @@ namespace MDDDataAccess
             }
             return null;
         }
+
+
+        public IList<T> SqlRunQueryWithResultsWithMetrics<T>(string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T : class, new()
+        {
+            IQueryExecutionMetrics metrics = new QueryExecutionMetrics();
+            List<T> l = null;
+
+            if (!IsProcedure && !AllowAdHoc) throw new Exception("Ad Hoc Queries are not allowed by this DBEngine");
+            using (metrics.MeasureConnection())
+            using (var cn = getconnection(ConnectionTimeout, ApplicationName))
+            {
+                if (cn != null)
+                {
+                    using (metrics.MeasureCommand())
+                    using (SqlCommand cmd = new SqlCommand(cmdtext, cn))
+                    {
+                        cmd.CommandTimeout = CommandTimeout;
+                        if (IsProcedure) cmd.CommandType = CommandType.StoredProcedure;
+                        ParameterizeCommand(list, cmd);
+                        try
+                        {
+                            l = new List<T>();
+                            PropertyInfo key = null;
+                            List<PropertyMapEntry> map = null;
+                            Tracker<T> t = Tracking != ObjectTracking.None ? GetTracker<T>() : null;
+                            using (metrics.MeasureReaderOpen())
+                            using (SqlDataReader rdr = ExecuteReader(cmd))
+                            {
+                                while (rdr.Read())
+                                {
+                                    T r = null;
+                                    ObjectFromReaderWithMetrics<T>(rdr, ref map, ref key, ref r, ref t, true, metrics);
+                                    l.Add(r);
+                                    metrics.IncrementRowCount();
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            throw ex;
+                        }
+                    }
+                }
+            }
+            if (KeepStats)
+            {
+                new CommandExecutionLog
+                {
+                    ExecDateTime = DateTime.Now,
+                    ExecCommand = cmdtext,
+                    ConnectionTime = Convert.ToSingle(metrics.ConnectionTime) / 10000f,
+                    CommandTime = Convert.ToSingle(metrics.CommandPreparationTime) / 10000f,
+                    ReaderTime = Convert.ToSingle(metrics.ReaderOpenTime) / 10000f,
+                    MapBuildTime = Convert.ToSingle(metrics.MapBuildTime) / 10000f,
+                    HydrationTime = Convert.ToSingle(metrics.HydrationTime) / 10000f,
+                    TrackerTime = Convert.ToSingle(metrics.TrackerProcessingTime) / 10000f
+                }.DBUpsert();
+            }
+            return l;
+        }
+
+
+
         public IList<T> SqlRunQueryWithResultsStub<T>(string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params ParameterStub[] list) where T: class, new()
         {
             return SqlRunQueryWithResults<T>(cmdtext, IsProcedure, ConnectionTimeout, ApplicationName, StubsToSqlParameters(list));
@@ -414,7 +480,7 @@ namespace MDDDataAccess
                         {
                             PropertyInfo key = null;
                             List<PropertyMapEntry> map = null;
-                            Tracker<T> t = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
+                            Tracker<T> t = Tracking != ObjectTracking.None ? GetTracker<T>() : null;
                             int rowindex = 0;
                             using (SqlDataReader rdr = ExecuteReader(cmd))
                             {
@@ -455,7 +521,7 @@ namespace MDDDataAccess
                         {
                             PropertyInfo key = null;
                             List<PropertyMapEntry> map = null;
-                            Tracker<T> t = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
+                            Tracker<T> t = Tracking != ObjectTracking.None ? GetTracker<T>() : null;
                             int rowindex = 0;
 
                             using (SqlDataReader rdr = await ExecuteReaderAsync(cmd, cancellationToken).ConfigureAwait(false))
@@ -510,7 +576,7 @@ namespace MDDDataAccess
                     int rowindex = 0;
                     PropertyInfo key = null;
                     List<PropertyMapEntry> map = null;
-                    Tracker<T> t = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
+                    Tracker<T> t = Tracking != ObjectTracking.None ? GetTracker<T>() : null;
 
                     using (var rdr = await ExecuteReaderAsync(cmd, cancellationToken).ConfigureAwait(false))
                     {
@@ -575,8 +641,8 @@ namespace MDDDataAccess
                             {
                                 PropertyInfo key = null;
                                 List<PropertyMapEntry> map = null;
-                                Tracker<T> tt = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
-                                Tracker<R> tr = Tracking != ObjectTracking.None && Tracked<R>.IsTrackable ? GetTracker<R>() : null;
+                                Tracker<T> tt = Tracking != ObjectTracking.None ? GetTracker<T>() : null;
+                                Tracker<R> tr = Tracking != ObjectTracking.None ? GetTracker<R>() : null;
                                 while (rdr.Read())
                                 {
                                     T tc = null;
@@ -629,8 +695,8 @@ namespace MDDDataAccess
                             {
                                 PropertyInfo key = null;
                                 List<PropertyMapEntry> map = null;
-                                Tracker<T> tt = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
-                                Tracker<R> tr = Tracking != ObjectTracking.None && Tracked<R>.IsTrackable ? GetTracker<R>() : null;
+                                Tracker<T> tt = Tracking != ObjectTracking.None ? GetTracker<T>() : null;
+                                Tracker<R> tr = Tracking != ObjectTracking.None ? GetTracker<R>() : null;
                                 while (rdr.Read())
                                 {
                                     T tc = null;
@@ -690,8 +756,8 @@ namespace MDDDataAccess
                                 //List<Tuple<PropertyInfo, String>> map = null;
                                 PropertyInfo key = null;
                                 List<PropertyMapEntry> map = null;
-                                Tracker<T> tt = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
-                                Tracker<R> tr = Tracking != ObjectTracking.None && Tracked<R>.IsTrackable ? GetTracker<R>() : null;
+                                Tracker<T> tt = Tracking != ObjectTracking.None ? GetTracker<T>() : null;
+                                Tracker<R> tr = Tracking != ObjectTracking.None ? GetTracker<R>() : null;
                                 while (rdr.Read())
                                 {
                                     if (found) throw new Exception("Only one record expected in the header result");
@@ -756,8 +822,8 @@ namespace MDDDataAccess
                                 //List<Tuple<PropertyInfo, String>> map = null;
                                 PropertyInfo key = null;
                                 List<PropertyMapEntry> map = null;
-                                Tracker<T> tt = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
-                                Tracker<R> tr = Tracking != ObjectTracking.None && Tracked<R>.IsTrackable ? GetTracker<R>() : null;
+                                Tracker<T> tt = Tracking != ObjectTracking.None ? GetTracker<T>() : null;
+                                Tracker<R> tr = Tracking != ObjectTracking.None ? GetTracker<R>() : null;
                                 while (rdr.Read())
                                 {
                                     if (found) throw new Exception("Only one record expected in the header result");
@@ -821,11 +887,11 @@ namespace MDDDataAccess
                             var l = new List<T>();
                             PropertyInfo tkey = null;
                             List<PropertyMapEntry> tmap = null;
-                            Tracker<T> ttrk = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
+                            Tracker<T> ttrk = Tracking != ObjectTracking.None ? GetTracker<T>() : null;
 
                             PropertyInfo rkey = null;
                             List<PropertyMapEntry> rmap = null;
-                            Tracker<R> rtrk = Tracking != ObjectTracking.None && Tracked<R>.IsTrackable ? GetTracker<R>() : null;
+                            Tracker<R> rtrk = Tracking != ObjectTracking.None ? GetTracker<R>() : null;
 
                             var subobj = typeof(T).GetPropertyOfType(typeof(R));
                             if (subobj == null)
@@ -861,7 +927,7 @@ namespace MDDDataAccess
         #region Generics Update
         bool runsqlupdateinternal<T>(T obj, string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, bool strict = true, params SqlParameter[] list) where T: class, new()
         {
-            Tracker<T> t = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
+            Tracker<T> t = Tracking != ObjectTracking.None ? GetTracker<T>() : null;
             if (t != null)
             {
                 if (!t.TryGet(Tracked<T>.GetKeyValue(obj), out var tracked) || tracked == null)
@@ -942,7 +1008,7 @@ namespace MDDDataAccess
                                 if (token.IsCancellationRequested) return false;
                                 PropertyInfo key = null;
                                 List<PropertyMapEntry> map = null;
-                                Tracker<T> t = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
+                                Tracker<T> t = Tracking != ObjectTracking.None ? GetTracker<T>() : null;
                                 while (rdr.Read())
                                 {
                                     if (token.IsCancellationRequested) return false;
@@ -987,8 +1053,8 @@ namespace MDDDataAccess
                             {
                                 PropertyInfo key = null;
                                 List<PropertyMapEntry> map = null;
-                                Tracker<T> tt = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
-                                Tracker<R> tr = Tracking != ObjectTracking.None && Tracked<R>.IsTrackable ? GetTracker<R>() : null;
+                                Tracker<T> tt = Tracking != ObjectTracking.None ? GetTracker<T>() : null;
+                                Tracker<R> tr = Tracking != ObjectTracking.None ? GetTracker<R>() : null;
                                 while (rdr.Read())
                                 {
                                     if (found) throw new Exception("Only one record expected in the update result");

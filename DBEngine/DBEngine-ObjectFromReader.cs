@@ -1,5 +1,6 @@
 ﻿using MDDFoundation;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data.SqlClient;
@@ -28,6 +29,27 @@ namespace MDDDataAccess
             if (r == null) r = new T();
             ExecutePropertyMap(rdr, map, r);
             if (tracker != null) tracker.GetOrAdd(ref r);
+        }
+        public void ObjectFromReaderWithMetrics<T>(SqlDataReader rdr, ref List<PropertyMapEntry> map, ref PropertyInfo key, ref T r, ref Tracker<T> tracker, bool strict = true, IQueryExecutionMetrics metrics = null) where T : class, new()
+        {
+            using (metrics?.MeasureMapBuildTime())
+            {             
+                if (map == null)
+                {
+                    PropertyInfo concurrencyproperty = null;
+                    if (!strict) concurrencyproperty = EnsureConcurrencyProperty(r, concurrencyproperty);
+                    BuildPropertyMap<T>(rdr, ref map, ref key, strict, concurrencyproperty);
+                }
+            }
+            using (metrics?.MeasureHydration())
+            {
+                if (r == null) r = new T();
+                ExecutePropertyMap(rdr, map, r);
+            }
+            using (metrics?.MeasureTrackerProcessingTime())
+            {
+                if (tracker != null) tracker.GetOrAdd(ref r);
+            }
         }
         private PropertyInfo EnsureConcurrencyProperty<T>(T target, PropertyInfo concurrencyproperty) where T : class
         {
@@ -118,12 +140,17 @@ namespace MDDDataAccess
                 }
                 else
                 {
-                    if (DebugLevel > 100) Log.Entry("ObjectFromReader", 50, $"Unhandled type in {typeof(T).Name}.{item.Name} type full name: {type.FullName}", "");
+                    if (DebugLevel > 100)
+                    {
+                        if (unhandledtypesreported.TryAdd($"{typeof(T).Name}.{item.Name}", true))
+                            Log.Entry("ObjectFromReader", 50, $"Unhandled type in {typeof(T).Name}.{item.Name} type full name: {type.FullName}", "");
+                    }
                     //what to do with this type?
                 }
             }
             map.Sort((x, y) => x.Ordinal.CompareTo(y.Ordinal));
         }
+        private readonly ConcurrentDictionary<string,bool> unhandledtypesreported = new ConcurrentDictionary<string,bool>();
         private void ExecutePropertyMap<T>(SqlDataReader rdr, List<PropertyMapEntry> map, T target) where T : class
         {
             foreach (var entry in map)

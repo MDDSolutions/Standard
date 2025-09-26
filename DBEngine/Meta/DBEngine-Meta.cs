@@ -154,6 +154,7 @@ namespace MDDDataAccess
                     if (precision == null) precision = 53;
                     return precision == 53 ? sqltypename : $"{sqltypename}({precision})";
                 case "real":
+                    return "real";
                 case "datetime2":
                 case "datetimeoffset":
                     if (precision == null) precision = 7;

@@ -108,3 +108,20 @@ after all refactorings and such - before diving into ensuring everything transla
 | DBEngine_POCOAsync | 715.2 ms | 17.44 ms | 51.43 ms | 702.5 ms | 28000.0000 | 27000.0000 | 2000.0000 | 217.88 MB |
 | Dapper_POCO        | 706.2 ms | 13.84 ms | 21.55 ms | 703.3 ms | 37000.0000 | 20000.0000 | 3000.0000 | 282.72 MB |
 | Dapper_POCOAsync   | 744.6 ms | 15.23 ms | 44.92 ms | 729.1 ms | 39000.0000 | 21000.0000 | 3000.0000 | 295.37 MB |
+
+SELECT TOP (20000) * FROM dbo.VideoScene_Images ORDER BY VideoSceneID, ImageIndex;
+| Method             | Mean    | Error    | StdDev   | Gen0        | Gen1       | Gen2      | Allocated |
+|------------------- |--------:|---------:|---------:|------------:|-----------:|----------:|----------:|
+| DBEngine_POCO      | 1.390 s | 0.0234 s | 0.0250 s |  96000.0000 | 49000.0000 | 2000.0000 | 757.23 MB |
+| DBEngine_POCOAsync | 1.405 s | 0.0277 s | 0.0285 s |  96000.0000 | 49000.0000 | 2000.0000 | 757.23 MB |
+| Dapper_POCO        | 1.352 s | 0.0085 s | 0.0075 s | 100000.0000 | 52000.0000 | 5000.0000 | 760.24 MB |
+| Dapper_POCOAsync   | 1.375 s | 0.0210 s | 0.0196 s | 100000.0000 | 52000.0000 | 5000.0000 | 761.03 MB |
+
+with GetFieldValue<byte[]>()
+| Method             | Mean    | Error    | StdDev   | Gen0        | Gen1       | Gen2      | Allocated |
+|------------------- |--------:|---------:|---------:|------------:|-----------:|----------:|----------:|
+| DBEngine_POCO      | 1.400 s | 0.0279 s | 0.0343 s |  96000.0000 | 49000.0000 | 2000.0000 | 757.24 MB |
+| DBEngine_POCOAsync | 1.369 s | 0.0200 s | 0.0177 s |  96000.0000 | 49000.0000 | 2000.0000 | 757.24 MB |
+| Dapper_POCO        | 1.387 s | 0.0193 s | 0.0171 s | 100000.0000 | 52000.0000 | 5000.0000 | 760.25 MB |
+| Dapper_POCOAsync   | 1.373 s | 0.0187 s | 0.0156 s | 100000.0000 | 52000.0000 | 5000.0000 | 761.03 MB |
+

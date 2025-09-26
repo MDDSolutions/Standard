@@ -1,6 +1,8 @@
-﻿using System;
+﻿using MDDFoundation;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Threading;
 
 namespace MDDDataAccess
 {
@@ -199,10 +201,34 @@ namespace MDDDataAccess
     public partial class DBEngine
     {
         private readonly ConcurrentDictionary<Type, object> trackers = new ConcurrentDictionary<Type, object>();
+        private readonly ConcurrentDictionary<Type,bool> untrackedobjects = new ConcurrentDictionary<Type, bool>();
         public Tracker<T> GetTracker<T>() where T : class, new()
         {
-            var tracker = (Tracker<T>)trackers.GetOrAdd(typeof(T), t => new Tracker<T>(this));
-            return tracker;
+            if (Tracked<T>.IsTrackable)
+            {
+                RichLogEntry logEntry = null;
+                var tracker = (Tracker<T>)trackers.GetOrAdd(
+                    typeof(T), t =>
+                    {
+                        logEntry = new RichLogEntry
+                        {
+                            Severity = 10,
+                            Source = "Tracking",
+                            Message = $"Tracking has been Initialized for {typeof(T).Name}"
+                        };
+                        return new Tracker<T>(this);
+                    });
+                if (DebugLevel >= 100 && logEntry != null) Log.Entry(logEntry);
+                return tracker;
+            }
+            else
+            {
+                if (untrackedobjects.TryAdd(typeof(T),true))
+                {
+                    Log.Entry("Tracking",110,$"Tracking not available for {typeof(T).Name}",null);
+                }
+                return null;
+            }
         }
         public bool TryGetTracker<T>(out Tracker<T> tracker) where T : class, new()
         {
