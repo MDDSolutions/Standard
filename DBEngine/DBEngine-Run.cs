@@ -401,7 +401,7 @@ namespace MDDDataAccess
 
         public IList<T> SqlRunQueryWithResultsWithMetrics<T>(string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T : class, new()
         {
-            IQueryExecutionMetrics metrics = new QueryExecutionMetrics();
+            var metrics = new QueryExecutionMetrics();
             List<T> l = null;
 
             if (!IsProcedure && !AllowAdHoc) throw new Exception("Ad Hoc Queries are not allowed by this DBEngine");
