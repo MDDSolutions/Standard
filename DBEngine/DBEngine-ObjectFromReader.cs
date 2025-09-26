@@ -30,7 +30,7 @@ namespace MDDDataAccess
             ExecutePropertyMap(rdr, map, r);
             if (tracker != null) tracker.GetOrAdd(ref r);
         }
-        public void ObjectFromReaderWithMetrics<T>(SqlDataReader rdr, ref List<PropertyMapEntry> map, ref PropertyInfo key, ref T r, ref Tracker<T> tracker, bool strict = true, IQueryExecutionMetrics metrics = null) where T : class, new()
+        public void ObjectFromReaderWithMetrics_TheWayItSortOfShouldBe<T>(SqlDataReader rdr, ref List<PropertyMapEntry> map, ref PropertyInfo key, ref T r, ref Tracker<T> tracker, bool strict = true, QueryExecutionMetrics metrics = null) where T : class, new()
         {
             using (metrics?.MeasureMapBuildTime())
             {             
@@ -51,6 +51,32 @@ namespace MDDDataAccess
                 if (tracker != null) tracker.GetOrAdd(ref r);
             }
         }
+
+
+        public void ObjectFromReaderWithMetrics<T>(SqlDataReader rdr, ref List<PropertyMapEntry> map, ref PropertyInfo key, ref T r, ref Tracker<T> tracker, bool strict = true, QueryExecutionMetrics metrics = null) where T : class, new()
+        {
+            if (map == null)
+            {
+                using (metrics.MeasureMapBuildTime())
+                {
+                    PropertyInfo concurrencyproperty = null;
+                    if (!strict) concurrencyproperty = EnsureConcurrencyProperty(r, concurrencyproperty);
+                    BuildPropertyMap<T>(rdr, ref map, ref key, strict, concurrencyproperty);
+                }
+            }
+            if (r == null) r = new T();
+            ExecutePropertyMap(rdr, map, r);
+            if (tracker != null)
+            {
+                using (metrics.MeasureTrackerProcessingTime())
+                {
+                    tracker.GetOrAdd(ref r);
+                }
+            }
+        }
+
+
+
         private PropertyInfo EnsureConcurrencyProperty<T>(T target, PropertyInfo concurrencyproperty) where T : class
         {
             var keyinfo = AttributeInfo(target, typeof(ListKeyAttribute));

@@ -401,7 +401,7 @@ namespace MDDDataAccess
 
         public IList<T> SqlRunQueryWithResultsWithMetrics<T>(string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T : class, new()
         {
-            IQueryExecutionMetrics metrics = new QueryExecutionMetrics();
+            QueryExecutionMetrics metrics = new QueryExecutionMetrics();
             List<T> l = null;
 
             if (!IsProcedure && !AllowAdHoc) throw new Exception("Ad Hoc Queries are not allowed by this DBEngine");
@@ -424,6 +424,7 @@ namespace MDDDataAccess
                             Tracker<T> t = Tracking != ObjectTracking.None ? GetTracker<T>() : null;
                             using (metrics.MeasureReaderOpen())
                             using (SqlDataReader rdr = ExecuteReader(cmd))
+                            using (metrics.MeasureHydration())
                             {
                                 while (rdr.Read())
                                 {
@@ -446,7 +447,9 @@ namespace MDDDataAccess
                 new CommandExecutionLog
                 {
                     ExecDateTime = DateTime.Now,
+                    ObjectType = typeof(T).Name,
                     ExecCommand = cmdtext,
+                    QueryRowCount = metrics.Rows,
                     ConnectionTime = Convert.ToSingle(metrics.ConnectionTime) / 10000f,
                     CommandTime = Convert.ToSingle(metrics.CommandPreparationTime) / 10000f,
                     ReaderTime = Convert.ToSingle(metrics.ReaderOpenTime) / 10000f,
