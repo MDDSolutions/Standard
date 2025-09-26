@@ -424,9 +424,10 @@ namespace MDDDataAccess
                             Tracker<T> t = Tracking != ObjectTracking.None ? GetTracker<T>() : null;
                             using (metrics.MeasureReaderOpen())
                             using (SqlDataReader rdr = ExecuteReader(cmd))
-                            using (metrics.MeasureHydration())
+                            using (metrics.MeasureReaderRead())
                             {
                                 while (rdr.Read())
+                                using(metrics.MeasureRowTime())
                                 {
                                     T r = null;
                                     ObjectFromReaderWithMetrics<T>(rdr, ref map, ref key, ref r, ref t, true, metrics);
@@ -452,9 +453,10 @@ namespace MDDDataAccess
                     QueryRowCount = metrics.Rows,
                     ConnectionTime = Convert.ToSingle(metrics.ConnectionTime) / 10000f,
                     CommandTime = Convert.ToSingle(metrics.CommandPreparationTime) / 10000f,
-                    ReaderTime = Convert.ToSingle(metrics.ReaderOpenTime) / 10000f,
+                    ReaderOpenTime = Convert.ToSingle(metrics.ReaderOpenTime) / 10000f,
+                    ReaderReadTime = Convert.ToSingle(metrics.ReaderReadTime) / 10000f,
+                    RowTime = Convert.ToSingle(metrics.RowTime) / 10000f,
                     MapBuildTime = Convert.ToSingle(metrics.MapBuildTime) / 10000f,
-                    HydrationTime = Convert.ToSingle(metrics.HydrationTime) / 10000f,
                     TrackerTime = Convert.ToSingle(metrics.TrackerProcessingTime) / 10000f
                 }.DBUpsert(this);
             }

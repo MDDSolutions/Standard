@@ -41,7 +41,7 @@ namespace MDDDataAccess
                     BuildPropertyMap<T>(rdr, ref map, ref key, strict, concurrencyproperty);
                 }
             }
-            using (metrics?.MeasureHydration())
+            using (metrics?.MeasureReaderRead())
             {
                 if (r == null) r = new T();
                 ExecutePropertyMap(rdr, map, r);
