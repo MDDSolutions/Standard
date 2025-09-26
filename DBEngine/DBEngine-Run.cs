@@ -456,7 +456,7 @@ namespace MDDDataAccess
                     MapBuildTime = Convert.ToSingle(metrics.MapBuildTime) / 10000f,
                     HydrationTime = Convert.ToSingle(metrics.HydrationTime) / 10000f,
                     TrackerTime = Convert.ToSingle(metrics.TrackerProcessingTime) / 10000f
-                }.DBUpsert();
+                }.DBUpsert(this);
             }
             return l;
         }
