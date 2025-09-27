@@ -112,7 +112,7 @@ namespace MDDDataAccess
 
             T loading = entity;
             var loadingconcurrency = Tracked<T>.GetConcurrencyValue?.Invoke(loading);
-
+            bool throwconcurrencyerror = false;
             var tracked = trackedObjects.AddOrUpdate(
                 key, 
                 k => new Tracked<T>(loading),
@@ -147,7 +147,11 @@ namespace MDDDataAccess
                                     //whoever is loading the object is going to get the dirty, unsaved one and not the version in the database - that might be a clue
                                     //if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 55, "OFR cache hit", r.ToString(), typeof(T).Name));
                                     if (Tracked<T>.HasConcurrency && !DBEngine.ValueEquals(loadingconcurrency, Tracked<T>.GetConcurrencyValue(existingentity)))
-                                        throw new Exception($"Concurrency Mismatch on an object of type {typeof(T).Name} with key value {key}");
+                                        throwconcurrencyerror = true;
+                                    if (DBEngine.DirtyAwareObjectCopy)
+                                        throwconcurrencyerror = !existingtracked.TryDirtyAwareCopy(loading);
+                                    else
+                                        existingtracked.CopyValues(loading, true);
                                     loading = existingentity;
                                     return existingtracked;
                                 case TrackedState.Initializing:
@@ -161,6 +165,7 @@ namespace MDDDataAccess
                     return new Tracked<T>(loading);
                 });
             entity = loading;
+            if (throwconcurrencyerror) throw new DBEngineConcurrencyMismatchException($"Concurrency Mismatch on an object of type {typeof(T).Name} with key value {key}", key, null);
             return tracked;
         }
 
@@ -202,6 +207,7 @@ namespace MDDDataAccess
     {
         private readonly ConcurrentDictionary<Type, object> trackers = new ConcurrentDictionary<Type, object>();
         private readonly ConcurrentDictionary<Type,bool> untrackedobjects = new ConcurrentDictionary<Type, bool>();
+        public bool DirtyAwareObjectCopy { get; set; } = true;
         public Tracker<T> GetTracker<T>() where T : class, new()
         {
             if (Tracked<T>.IsTrackable)

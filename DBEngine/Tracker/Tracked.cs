@@ -233,7 +233,7 @@ namespace MDDDataAccess
                         _isDirtyCached = null; // unknown
                     }
 
-                    foreach (var kw in AllPropertyDelegates)
+                    foreach (var kw in AllPropertyDelegates.Where(x => !x.Value.Concurrency))
                         _originalValues.Add(kw.Key, kw.Value.Getter.Invoke(entity));
                 }
 
@@ -246,9 +246,8 @@ namespace MDDDataAccess
         }
         private void OnEntityPropertyChanged(T entity, PropertyChangedEventArgs e)
         {
-
             // If property is trackable, compare to original and update cache.
-            if (_originalValues.TryGetValue(e.PropertyName, out var original))
+            if (!Initializing && _originalValues.TryGetValue(e.PropertyName, out var original))
             {
                 var current = AllPropertyDelegates[e.PropertyName].Getter.Invoke(entity);
                 if (!DBEngine.ValueEquals(current, original))
@@ -272,25 +271,28 @@ namespace MDDDataAccess
             // with Advanced DirtyCheckMode, we get old and new values so we don't have to
             // store all original values on initialization - we only have to store it if
             // the property changes.
-            if (_originalValues.TryGetValue(e.PropertyName, out var original))
+            if (!Initializing)
             {
-                //var current = AllPropertyDelegates[e.PropertyName].Invoke(entity);
-                if (!DBEngine.ValueEquals(e.NewValue, original))
+                if (_originalValues.TryGetValue(e.PropertyName, out var original))
                 {
-                    _dirtyProps.Add(e.PropertyName);
-                    _isDirtyCached = true;
+                    //var current = AllPropertyDelegates[e.PropertyName].Invoke(entity);
+                    if (!DBEngine.ValueEquals(e.NewValue, original))
+                    {
+                        _dirtyProps.Add(e.PropertyName);
+                        _isDirtyCached = true;
+                    }
+                    else
+                    {
+                        _dirtyProps.Remove(e.PropertyName);
+                        _isDirtyCached = _dirtyProps.Count > 0;
+                    }
                 }
                 else
                 {
-                    _dirtyProps.Remove(e.PropertyName);
-                    _isDirtyCached = _dirtyProps.Count > 0;
+                    _originalValues[e.PropertyName] = e.OldValue;
+                    _dirtyProps.Add(e.PropertyName);
+                    _isDirtyCached = true;
                 }
-            }
-            else
-            {
-                _originalValues[e.PropertyName] = e.OldValue;
-                _dirtyProps.Add(e.PropertyName);
-                _isDirtyCached = true;
             }
         }
         public bool Initializing { get; internal set; } = true;
@@ -370,7 +372,7 @@ namespace MDDDataAccess
                 foreach (var attr in prop.GetCustomAttributes())
                 {
                     if (attr is ListKeyAttribute) skip = true;
-                    if (attr is ListConcurrencyAttribute) skip = true;
+                    if (attr is ListConcurrencyAttribute) delegateinfo.Concurrency = true;
                     if (attr is DBOptionalAttribute) delegateinfo.Optional = true;
                     if (attr is DBIgnoreAttribute) delegateinfo.Ignore = true;
                 }
@@ -428,22 +430,113 @@ namespace MDDDataAccess
                 foreach (var delegateinfo in AllPropertyDelegates.Values)
                 {
                     var copy = true;
+                    var fromval = delegateinfo.Getter(from);
                     if (delegateinfo.Optional || delegateinfo.Ignore)
                     {
                         //for optional or Ignored properties, only copy the value
                         //if the one in the from object looks more interesting than the one in the to object
-                        var fromval = delegateinfo.Getter(from);
                         var toval = delegateinfo.Getter(to);
 
                         copy = !DBEngine.ValueEquals(fromval, toval) && (DBEngine.IsDefaultOrNull(toval) || !DBEngine.IsDefaultOrNull(fromval));
                     }
-                    if (copy) delegateinfo.Setter(to, delegateinfo.Getter(from));
+                    if (copy) delegateinfo.Setter(to, fromval);
                 }
                 if (withinitialization) EndInitialization();
             }
-            else
+            else  
             {
                 throw new Exception("Copy Values called on an tracker with no valid entity");
+            }  
+        }
+        public bool TryDirtyAwareCopy(T from)
+        {
+            if (TryGetEntity(out T to))
+            {
+                Initializing = true;
+
+                ////we will be managing the dirty list manually so shut off
+                ////notifications / updates on NotifierObjects for now
+                //var no = to as NotifierObject ?? new NotifierObject();
+                //no.Initializing = true;
+
+                //the object should be dirty right now (hence the name of this method) but it might be clean
+                //by the time we're done - base state for the set will be false and we'll set if we find a dirty property
+                var dirtyset = false;
+
+                //method will be considered successful if it does not have to overwrite a dirty value - it will overwrite a 
+                //dirty value, after all, what is in the database is now true, so the app will lose any changes it made
+                //but if a value is dirty and the original value is what is being loaded
+                bool success = true;
+
+                var fromkey = GetKeyValue(from);
+                var tokey = GetKeyValue(to);
+                if (!DBEngine.ValueEquals(fromkey, tokey)) throw new Exception($"Cannot copy values on {typeof(T).Name} with key {fromkey} to an object with key {tokey}");
+
+                var mismatchrecords = new List<ConcurrencyMismatchRecord>();
+
+                foreach (var delegateinfo in AllPropertyDelegates)
+                {
+                    var fromval = delegateinfo.Value.Getter(from);
+                    var toval = delegateinfo.Value.Getter(to);
+                    var currentorigpresent = _originalValues.TryGetValue(delegateinfo.Key, out var currentorigval);
+                    var dirtypresent = DirtyProperties.TryGetValue(delegateinfo.Key, out var dirty);
+
+                    if (delegateinfo.Value.Optional || delegateinfo.Value.Ignore)
+                    {
+                        //for optional or Ignored properties, only copy the value
+                        //if the one in the from object looks more interesting than the one in the to object
+
+                        if (!DBEngine.ValueEquals(fromval, toval) && (DBEngine.IsDefaultOrNull(toval) || !DBEngine.IsDefaultOrNull(fromval)))
+                            delegateinfo.Value.Setter(to, fromval);
+                    }
+                    else
+                    {
+
+                        if (DBEngine.ValueEquals(fromval, toval))
+                        {
+                            // just clean
+                            if (currentorigpresent && !DBEngine.ValueEquals(currentorigval, fromval))
+                                _originalValues[delegateinfo.Key] = fromval;
+                            _dirtyProps.Remove(delegateinfo.Key);
+                        }
+                        else if (ConcurrencyProperty.Name == delegateinfo.Key || !currentorigpresent || !dirtypresent)
+                        {
+                            //clean and overwrite
+                            //notifications should go out, but the property should stay clean
+                            if (currentorigpresent && !DBEngine.ValueEquals(currentorigval, fromval))
+                                _originalValues[delegateinfo.Key] = fromval;
+                            _dirtyProps.Remove(delegateinfo.Key);                            
+                            delegateinfo.Value.Setter(to, fromval);
+
+                        }
+                        // at this point the property is dirty - if the incoming value is the same as
+                        // the original value, then let the property stay dirty / preserve the user's pending update
+                        else if (DBEngine.ValueEquals(currentorigval, fromval))
+                        {
+                            dirtyset = true;
+                        }
+                        // at this point there is a true, column level concurrency conflict - the user has dirtied the property with a new
+                        // value but there is also a different new value coming in from the database - the database must win and the user
+                        // must be warned
+                        else
+                        {
+                            success = false;
+                            mismatchrecords.Add(new ConcurrencyMismatchRecord { PropertyName = delegateinfo.Key, AppValue = toval, DBValue = fromval });
+                            if (currentorigpresent && !DBEngine.ValueEquals(currentorigval, fromval))
+                                _originalValues[delegateinfo.Key] = fromval;
+                            _dirtyProps.Remove(delegateinfo.Key);
+                            delegateinfo.Value.Setter(to, fromval);
+                        }
+                    }
+                }
+                if (_isDirtyCached.HasValue) _isDirtyCached = dirtyset;
+                Initializing = false;
+                if (!success) throw new DBEngineConcurrencyMismatchException($"Concurrency Mismatch on an object of type {typeof(T).Name} with key value {tokey}", tokey, mismatchrecords);
+                return success;
+            }
+            else
+            {
+                throw new Exception("TryDirtyAwareCopy called on an tracker with no valid entity");
             }
         }
         public override string ToString()
@@ -457,9 +550,38 @@ namespace MDDDataAccess
     {
         public bool Optional { get; set; } = false;
         public bool Ignore { get; set; } = false;
+        public bool Concurrency { get; set; } = false;
         public Func<T, object> Getter { get; set; }
         public Action<T, object> Setter { get; set; }
     }
-
-
+    [Serializable]
+    public class DBEngineConcurrencyMismatchException : Exception
+    {
+        public object KeyValue { get; set; }
+        public List<ConcurrencyMismatchRecord> MismatchRecords { get; set; }
+        public DBEngineConcurrencyMismatchException(string message, object keyvalue, List<ConcurrencyMismatchRecord> records) : base(message)
+        {
+            KeyValue = keyvalue;
+            MismatchRecords = records;  
+        }
+        public override string ToString()
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine(base.ToString());
+            if (MismatchRecords != null)
+            foreach (var item in MismatchRecords)
+                sb.AppendLine(item.ToString());
+            return sb.ToString();
+        }
+    }
+    public class ConcurrencyMismatchRecord
+    {
+        public string PropertyName { get; set; }
+        public object AppValue { get; set; }
+        public object DBValue { get; set; }
+        public override string ToString()
+        {
+            return $"Property: {PropertyName} AppValue: {AppValue} DBValue: {DBValue}";
+        }
+    }
 }

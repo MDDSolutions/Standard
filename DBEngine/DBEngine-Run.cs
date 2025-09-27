@@ -933,7 +933,7 @@ namespace MDDDataAccess
         bool runsqlupdateinternal<T>(T obj, string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, bool strict = true, params SqlParameter[] list) where T: class, new()
         {
             Tracker<T> t = Tracking != ObjectTracking.None ? GetTracker<T>() : null;
-            if (t != null)
+            if (t != null && obj != null)
             {
                 if (!t.TryGet(Tracked<T>.GetKeyValue(obj), out var tracked) || tracked == null)
                     throw new Exception("The object provided for update is trackable but is not currently being tracked - the object was somehow loaded outside the tracking system and so cannot be updated");
