@@ -831,8 +831,11 @@ FROM (SELECT TOP (2) object_id AS n FROM sys.objects WHERE OBJECT_ID > 0) n
         [TestMethod]
         public void ObjectWithOptionalAndIgnoreProperties()
         {
+            var start = DateTime.Now;
             var items = _db.SqlRunQueryWithResults<TestOrderWithAttributes>("SELECT * FROM dbo.TestOrders", false);
             Assert.AreEqual(2, items.Count);
+            Assert.IsTrue(DateTime.Now >= items[0].DBLoaded);
+            Assert.IsTrue(items[0].DBLoaded >= start);
         }
         [TestMethod]
         public void EnumMapping()

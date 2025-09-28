@@ -233,7 +233,8 @@ namespace DBEngineUnitTests
         public void GetOrAdd_WhenRemoteConcurrencyChanges_MarksForReload()
         {
             var tracker = new Tracker<InpcTrackable>(dbEngine);
-            var tracked = tracker.GetOrAdd(ref CreateEntity(1, 1));
+            var testentity = CreateEntity(1, 1);
+            var tracked = tracker.GetOrAdd(ref testentity);
             Assert.IsFalse(tracked.Initializing, "Newly loaded entities should have completed initialization.");
 
             var refreshed = tracker.GetOrAdd(1, new byte[] { 2 }, out var entity);
