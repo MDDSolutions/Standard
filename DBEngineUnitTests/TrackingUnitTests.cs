@@ -6,6 +6,7 @@ using System.Data.SqlClient;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Threading.Tasks;
 
 namespace DBEngineUnitTests
 {
@@ -242,17 +243,96 @@ namespace DBEngineUnitTests
         }
 
         [TestMethod]
-        public void GetOrAdd_WhenEntityModifiedAndConcurrencyDiffers_Throws()
+        public void GetOrAdd_WithModifiedEntityAndConcurrencyMismatch_WhenDirtyAwareDisabled_ThrowsConcurrencyMismatch()
         {
+            dbEngine.DirtyAwareObjectCopy = false;
             var tracker = new Tracker<InpcTrackable>(dbEngine);
             var entity = CreateEntity(2, 1);
-            var tracked = tracker.GetOrAdd(ref entity);
+            tracker.GetOrAdd(ref entity);
 
-            entity.Name = "Updated"; // mark dirty
+            entity.Name = "Updated";
 
             var replacement = CreateEntity(2, 2);
 
-            Assert.ThrowsException<DBEngineConcurrencyMismatchException>(() => tracker.GetOrAdd(ref replacement));
+            try
+            {
+                tracker.GetOrAdd(ref replacement);
+                Assert.Fail("Expected GetOrAdd to throw when DirtyAwareObjectCopy is disabled.");
+            }
+            catch (Exception ex)
+            {
+                if (ex is DBEngineConcurrencyMismatchException mismatch)
+                {
+                    Assert.AreEqual(2, mismatch.KeyValue);
+                    Assert.IsNull(mismatch.MismatchRecords, "Copy-based concurrency detection should not provide column detail.");
+                }
+                else
+                {
+                    Assert.Fail(ex.Message);
+                    throw;
+                }
+            }
+        }
+
+        [TestMethod]
+        public void GetOrAdd_WithModifiedEntityAndConcurrencyMismatch_WhenDirtyAwareMergeSucceeds_KeepsDirtyChanges()
+        {
+            var tracker = new Tracker<InpcTrackable>(dbEngine);
+            var entity = CreateEntity(5, 1);
+            var tracked = tracker.GetOrAdd(ref entity);
+            var originalName = entity.Name;
+
+            entity.Name = "Updated";
+
+            var replacement = CreateEntity(5, 2);
+            replacement.Name = originalName;
+
+            var merged = tracker.GetOrAdd(ref replacement);
+
+            Assert.AreSame(tracked, merged, "Tracker should reuse the existing tracked entry.");
+            Assert.AreSame(entity, replacement, "The supplied reference should be replaced with the tracked entity.");
+            Assert.AreEqual("Updated", entity.Name, "Dirty-aware merge should preserve compatible local edits.");
+            Assert.AreEqual(TrackedState.Modified, tracked.State, "Entity should remain dirty after preserving local edits.");
+            Assert.IsTrue(tracked.DirtyProperties.ContainsKey(nameof(InpcTrackable.Name)), "Name change should stay marked dirty.");
+        }
+
+        [TestMethod]
+        public void GetOrAdd_WithModifiedEntityAndConcurrencyMismatch_WhenDirtyAwareDetectsConflict_ThrowsWithDetails()
+        {
+            var tracker = new Tracker<InpcTrackable>(dbEngine);
+            var entity = CreateEntity(6, 1);
+            var tracked = tracker.GetOrAdd(ref entity);
+
+            entity.Name = "Updated";
+
+            var replacement = CreateEntity(6, 2);
+            replacement.Name = "Server";
+
+            try
+            {
+                tracker.GetOrAdd(ref replacement);
+                Assert.Fail("Expected dirty-aware merge to throw when conflicting changes exist.");
+            }
+            catch (Exception ex)
+            {
+                if (ex is DBEngineConcurrencyMismatchException mismatch)
+                {
+                    Assert.AreEqual(6, mismatch.KeyValue);
+                    Assert.IsNotNull(mismatch.MismatchRecords, "Dirty-aware merge should report conflicting columns.");
+                    var record = mismatch.MismatchRecords.Single();
+                    Assert.AreEqual(nameof(InpcTrackable.Name), record.PropertyName);
+                    Assert.AreEqual("Updated", record.AppValue);
+                    Assert.AreEqual("Server", record.DBValue);
+                }
+                else
+                {
+                    Assert.Fail(ex.Message);
+                    throw;
+                }
+            }
+
+            Assert.AreEqual("Server", entity.Name, "Conflicting database value should overwrite local value.");
+            Assert.AreEqual(TrackedState.Unchanged, tracked.State, "Entity should be reset after conflict handling.");
         }
 
         [TestMethod]
@@ -272,19 +352,25 @@ namespace DBEngineUnitTests
         }
 
         [TestMethod]
-        public void PruneInvalid_RemovesEntriesWhoseEntitiesWereCollected()
+        public async Task PruneInvalid_RemovesEntriesWhoseEntitiesWereCollected()
         {
             var tracker = new Tracker<InpcTrackable>(dbEngine);
             var entity = CreateEntity(4, 1);
-            var tracked = tracker.GetOrAdd(ref entity);
+            tracker.GetOrAdd(ref entity);
 
             var key = entity.Id;
             var weak = new WeakReference(entity);
             entity = null;
 
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
-            GC.Collect();
+            var tries = 0;
+            do
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+                await Task.Delay(100);
+                tries++;
+            } while (weak.IsAlive && tries < 5);
 
             Assert.IsFalse(weak.IsAlive, "Test setup failed to release the entity instance.");
 
