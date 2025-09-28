@@ -70,14 +70,14 @@ namespace DBEngineUnitTests
             };
 
             var tracked = new Tracked<OptionalTrackable>(target);
-            tracked.CopyValues(source, attemptDirtyAwareCopy: false);
+            tracked.CopyValues(source, dirtyaware: false);
 
             Assert.AreEqual(5, target.Required);
             Assert.AreEqual("interesting", target.Optional);
 
             source.Optional = null;
             target.Optional = "keep";
-            tracked.CopyValues(source, attemptDirtyAwareCopy: false);
+            tracked.CopyValues(source, dirtyaware: false);
 
             Assert.AreEqual("keep", target.Optional, "Optional properties should not be overwritten by default values.");
         }
@@ -274,7 +274,7 @@ namespace DBEngineUnitTests
                     var record = mismatch.MismatchRecords.Single();
                     Assert.AreEqual(nameof(InpcTrackable.Name), record.PropertyName);
                     Assert.AreEqual("Updated", record.AppValue);
-                    Assert.AreEqual("Entity2", record.DBValue);
+                    Assert.AreEqual("Server", record.DBValue);
                 }
                 else
                 {
