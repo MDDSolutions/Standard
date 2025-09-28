@@ -68,10 +68,10 @@ namespace MDDDataAccess
     [AttributeUsage(AttributeTargets.Property, AllowMultiple = false, Inherited = true)]
     public class ListConcurrencyAttribute : Attribute { }
 
-    [AttributeUsage(AttributeTargets.Class, AllowMultiple = false, Inherited = true)]
-    public class DirtyAwareCopyAttribute : Attribute { }
+    [AttributeUsage(AttributeTargets.Class, Inherited = true, AllowMultiple = false)]
+    public sealed class DirtyAwareCopyAttribute : Attribute { }
 
-    [AttributeUsage(AttributeTargets.Property, AllowMultiple = false, Inherited = true)]
-    public class DisableDirtyAwareCopyAttribute : Attribute { }
+    [AttributeUsage(AttributeTargets.Property, Inherited = true, AllowMultiple = false)]
+    public sealed class DisableDirtyAwareCopyAttribute : Attribute { }
 
 }
