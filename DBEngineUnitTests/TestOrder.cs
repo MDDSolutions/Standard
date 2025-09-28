@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 
 namespace DBEngineUnitTests
 {
+    [DirtyAwareCopy]
     public class TestOrderPOCO
     {
         [ListKey]
@@ -52,6 +53,7 @@ namespace DBEngineUnitTests
         [DBLoadedTime]
         public DateTime DBLoaded { get; set; }
     }
+    [DirtyAwareCopy]
     public class TestOrderNO : NotifierObject
     {
         [ListKey]
@@ -69,6 +71,7 @@ namespace DBEngineUnitTests
         private string customername;
         private decimal amount;
     }
+    [DirtyAwareCopy]
     public class TestOrderINPC : INotifyPropertyChanged
     {
         private int _id;

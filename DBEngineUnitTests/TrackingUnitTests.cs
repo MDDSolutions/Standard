@@ -87,6 +87,7 @@ namespace DBEngineUnitTests
             Assert.IsFalse(Tracked<Untrackable>.IsTrackable, "Types without a ListKey should not be considered trackable.");
         }
 
+        [DirtyAwareCopy]
         private class InpcTrackable : INotifyPropertyChanged
         {
             private int _id;
@@ -265,7 +266,9 @@ namespace DBEngineUnitTests
                 if (ex is DBEngineConcurrencyMismatchException mismatch)
                 {
                     Assert.AreEqual(2, mismatch.KeyValue);
-                    Assert.IsNull(mismatch.MismatchRecords, "Copy-based concurrency detection should not provide column detail.");
+                    Assert.IsNotNull(mismatch.MismatchRecords, "Copy-based concurrency detection should include column details.");
+                    Assert.IsTrue(mismatch.MismatchRecords.Any(r => r.PropertyName == nameof(InpcTrackable.Name)));
+                    Assert.IsTrue(mismatch.MismatchRecords.Any(r => r.PropertyName == nameof(InpcTrackable.RowVersion)));
                 }
                 else
                 {
@@ -320,10 +323,10 @@ namespace DBEngineUnitTests
                 {
                     Assert.AreEqual(6, mismatch.KeyValue);
                     Assert.IsNotNull(mismatch.MismatchRecords, "Dirty-aware merge should report conflicting columns.");
-                    var record = mismatch.MismatchRecords.Single();
-                    Assert.AreEqual(nameof(InpcTrackable.Name), record.PropertyName);
-                    Assert.AreEqual("Updated", record.AppValue);
-                    Assert.AreEqual("Server", record.DBValue);
+                    var nameRecord = mismatch.MismatchRecords.Single(r => r.PropertyName == nameof(InpcTrackable.Name));
+                    Assert.AreEqual("Updated", nameRecord.AppValue);
+                    Assert.AreEqual("Server", nameRecord.DBValue);
+                    Assert.IsTrue(mismatch.MismatchRecords.Any(r => r.PropertyName == nameof(InpcTrackable.RowVersion)), "Concurrency token should be included in mismatch details.");
                 }
                 else
                 {
@@ -334,6 +337,38 @@ namespace DBEngineUnitTests
 
             Assert.AreEqual("Server", entity.Name, "Conflicting database value should overwrite local value.");
             Assert.AreEqual(TrackedState.Unchanged, tracked.State, "Entity should be reset after conflict handling.");
+        }
+
+        [TestMethod]
+        public void GetOrAdd_WithDirtyAwareDisabledProperty_ReportsPropertySpecificConflict()
+        {
+            var tracker = new Tracker<PartiallyDirtyAwareTrackable>(dbEngine);
+            var entity = new PartiallyDirtyAwareTrackable { Id = 7, RowVersion = new byte[] { 1 }, Name = "Original", Amount = 10m };
+            var tracked = tracker.GetOrAdd(ref entity);
+
+            entity.Name = "Local";
+            entity.Amount = 11m;
+
+            var replacement = new PartiallyDirtyAwareTrackable { Id = 7, RowVersion = new byte[] { 2 }, Name = "Server", Amount = 10m };
+
+            try
+            {
+                tracker.GetOrAdd(ref replacement);
+                Assert.Fail("Expected dirty-aware copy to report conflicts for disabled properties.");
+            }
+            catch (DBEngineConcurrencyMismatchException mismatch)
+            {
+                Assert.AreEqual(7, mismatch.KeyValue);
+                Assert.IsTrue(mismatch.MismatchRecords.Any(r => r.PropertyName == nameof(PartiallyDirtyAwareTrackable.Name)));
+                Assert.IsFalse(mismatch.MismatchRecords.Any(r => r.PropertyName == nameof(PartiallyDirtyAwareTrackable.Amount)), "Amount should merge cleanly.");
+                Assert.IsTrue(mismatch.MismatchRecords.Any(r => r.PropertyName == nameof(PartiallyDirtyAwareTrackable.RowVersion)));
+            }
+
+            Assert.AreEqual("Server", entity.Name, "Disabled property should be overwritten by database value.");
+            Assert.AreEqual(11m, entity.Amount, "Dirty-aware copy should preserve other property changes.");
+            Assert.AreEqual(TrackedState.Modified, tracked.State, "Entity should remain dirty because Amount was preserved.");
+            Assert.IsTrue(tracked.DirtyProperties.ContainsKey(nameof(PartiallyDirtyAwareTrackable.Amount)));
+            Assert.IsFalse(tracked.DirtyProperties.ContainsKey(nameof(PartiallyDirtyAwareTrackable.Name)));
         }
 
         [TestMethod]
@@ -397,6 +432,7 @@ namespace DBEngineUnitTests
             return entity;
         }
 
+        [DirtyAwareCopy]
         private class InpcTrackable : INotifyPropertyChanged
         {
             private int _id;
@@ -432,6 +468,75 @@ namespace DBEngineUnitTests
                 }
             }
 
+            public string Name
+            {
+                get => _name;
+                set
+                {
+                    if (_name != value)
+                    {
+                        _name = value;
+                        OnPropertyChanged();
+                    }
+                }
+            }
+
+            public decimal Amount
+            {
+                get => _amount;
+                set
+                {
+                    if (_amount != value)
+                    {
+                        _amount = value;
+                        OnPropertyChanged();
+                    }
+                }
+            }
+
+            public event PropertyChangedEventHandler PropertyChanged;
+
+            private void OnPropertyChanged([CallerMemberName] string name = null)
+                => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        }
+
+        [DirtyAwareCopy]
+        private class PartiallyDirtyAwareTrackable : INotifyPropertyChanged
+        {
+            private int _id;
+            private byte[] _rowVersion;
+            private string _name;
+            private decimal _amount;
+
+            [ListKey]
+            public int Id
+            {
+                get => _id;
+                set
+                {
+                    if (_id != value)
+                    {
+                        _id = value;
+                        OnPropertyChanged();
+                    }
+                }
+            }
+
+            [ListConcurrency]
+            public byte[] RowVersion
+            {
+                get => _rowVersion;
+                set
+                {
+                    if (_rowVersion != value)
+                    {
+                        _rowVersion = value;
+                        OnPropertyChanged();
+                    }
+                }
+            }
+
+            [DisableDirtyAwareCopy]
             public string Name
             {
                 get => _name;
