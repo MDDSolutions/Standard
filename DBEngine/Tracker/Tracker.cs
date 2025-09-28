@@ -136,20 +136,20 @@ namespace MDDDataAccess
                                     //if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 55, "OFR cache hit", r.ToString(), typeof(T).Name));
 
                                     if (!Tracked<T>.HasConcurrency || !DBEngine.ValueEquals(loadingconcurrency, Tracked<T>.GetConcurrencyValue(existingentity)))
-                                        existingtracked.CopyValues(loading, true);
+                                    {
+                                        var allowDirtyAware = DBEngine.DirtyAwareObjectCopy && Tracked<T>.SupportsDirtyAwareCopy;
+                                        existingtracked.CopyValues(loading, allowDirtyAware);
+                                    }
                                     loading = existingentity;
                                     return existingtracked;
                                 case TrackedState.Modified:
-                                    if (!Tracked<T>.HasConcurrency)
-                                        throw new InvalidOperationException("Entity is modified in memory but the type has no concurrency token to validate reloading.");
-
-                                    //if the concurrency value matches, then the existing entity is based on the loading entity so we can safely discard the incoming entity and keep the user's
-                                    //pending changes
-                                    if (!DBEngine.ValueEquals(loadingconcurrency, existingtracked.ConcurrencyValue))
-                                    {
-                                        var attemptDirtyAware = DBEngine.DirtyAwareObjectCopy && Tracked<T>.SupportsDirtyAwareCopy;
-                                        existingtracked.CopyValues(loading, attemptDirtyAware);
-                                    }
+                                    //if the object exists and is modified, then we don't want any values from the new object whether it's concurrency value matches or not
+                                    //if the concurrency value does not match, then we are probably previewing a future concurrency conflict but not sure what to do about it
+                                    //now - whoever has the object and hasn't saved it yet is going to get an error, but there is no mechanism here to tell them
+                                    //whoever is loading the object is going to get the dirty, unsaved one and not the version in the database - that might be a clue
+                                    //if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 55, "OFR cache hit", r.ToString(), typeof(T).Name));
+                                    var attemptDirtyAware = DBEngine.DirtyAwareObjectCopy && Tracked<T>.SupportsDirtyAwareCopy;
+                                    existingtracked.CopyValues(loading, attemptDirtyAware);
                                     loading = existingentity;
                                     return existingtracked;
                                 case TrackedState.Initializing:
@@ -204,7 +204,7 @@ namespace MDDDataAccess
     {
         private readonly ConcurrentDictionary<Type, object> trackers = new ConcurrentDictionary<Type, object>();
         private readonly ConcurrentDictionary<Type,bool> untrackedobjects = new ConcurrentDictionary<Type, bool>();
-        public bool DirtyAwareObjectCopy { get; set; } = true;
+        public bool DirtyAwareObjectCopy { get; set; } = false;
         public Tracker<T> GetTracker<T>() where T : class, new()
         {
             if (Tracked<T>.IsTrackable)
