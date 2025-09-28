@@ -683,112 +683,16 @@ namespace MDDDataAccess
             // Final lambda
             return Expression.Lambda<Action<SqlDataReader, object>>(setExpr, readerParam, targetParam).Compile();
         }
-        public class PropertyMapEntry
-        {
-            public int Ordinal { get; set; } = -100000; //default(int) is a valid value - the first column in the reader - this value must be set to a valid value intentionally if the entry is to be used
-            public Action<SqlDataReader, object> MapAction; // alternative to Setter + ReaderFunc
-            public Type ReaderType { get; set; }
-            public PropertyInfo Property { get; set; }
-            public string ColumnName { get; set; }
-            public bool Optional { get; set; }
-            public override string ToString() => $"rdr({Ordinal}): rdr({ColumnName}) -> {Property.Name} - {Property.PropertyType.Name}";
-        }
-        [Serializable]
-        public class DBEnginePostMappingException<T> : Exception
-        {
-            public T TargetObject { get; }
-            public string PropertyName { get; }
-            public string PropertyType { get; }
-            public string ReaderType { get; }
-            public string ObjectValues { get; }
 
-            public DBEnginePostMappingException(
-                T targetObject,
-                string propertyName,
-                string propertyType,
-                string readerType,
-                string objectValues,
-                string message,
-                Exception innerException)
-                : base(message, innerException)
-            {
-                TargetObject = targetObject;
-                PropertyName = propertyName;
-                PropertyType = propertyType;
-                ReaderType = readerType;
-                ObjectValues = objectValues;
-            }
-            public override string ToString()
-            {
-                var sb = new StringBuilder();
-                sb.AppendLine(base.ToString());
-                sb.AppendLine($"Property: {PropertyName}");
-                sb.AppendLine($"PropertyType: {PropertyType}");
-                sb.AppendLine($"ReaderType: {ReaderType}");
-                sb.AppendLine($"ObjectValues: {ObjectValues}");
-                return sb.ToString();
-            }
-        }
-        [Serializable]
-        public class DBEngineColumnRequiredException : Exception
-        {
-            public string PropertyName { get; }
-            public string PropertyType { get; }
-            public string ColumnName { get; }
-            public string ObjectType { get; }
-            public bool IsOptional { get; }
-
-            public DBEngineColumnRequiredException(
-                string propertyName,
-                string propertyType,
-                string columnName,
-                string objectType,
-                bool isOptional,
-                string message)
-                : base(message)
-            {
-                PropertyName = propertyName;
-                PropertyType = propertyType;
-                ColumnName = columnName;
-                ObjectType = objectType;
-                IsOptional = isOptional;
-            }
-
-            public override string ToString()
-            {
-                var sb = new StringBuilder();
-                sb.AppendLine(base.ToString());
-                sb.AppendLine($"Property: {PropertyName}");
-                sb.AppendLine($"PropertyType: {PropertyType}");
-                sb.AppendLine($"ColumnName: {ColumnName}");
-                sb.AppendLine($"ObjectType: {ObjectType}");
-                sb.AppendLine($"IsOptional: {IsOptional}");
-                return sb.ToString();
-            }
-        }
-        [Serializable]
-        public class DBEngineMappingException : Exception
-        {
-            public PropertyMapEntry PropertyMapEntry { get; set; }
-            public DBEngineMappingException(
-                PropertyMapEntry propertyMapEntry,
-                string message,
-                Exception innerException)
-                : base(message, innerException)
-            {
-                PropertyMapEntry = propertyMapEntry;
-            }
-            public override string ToString()
-            {
-                var sb = new StringBuilder();
-                sb.AppendLine(base.ToString());
-                sb.AppendLine($"Property: {PropertyMapEntry.Property.Name}");
-                sb.AppendLine($"PropertyType: {PropertyMapEntry.Property.PropertyType.FullName}");
-                sb.AppendLine($"ColumnName: {PropertyMapEntry.ColumnName}");
-                sb.AppendLine($"ObjectType: {PropertyMapEntry.Property.DeclaringType.Name}");
-                sb.AppendLine($"ReaderType: {PropertyMapEntry.ReaderType.Name}");
-                return sb.ToString();
-            }
-        }
+    }
+    public class PropertyMapEntry
+    {
+        public int Ordinal { get; set; } = -100000; //default(int) is a valid value - the first column in the reader - this value must be set to a valid value intentionally if the entry is to be used
+        public Action<SqlDataReader, object> MapAction; // alternative to Setter + ReaderFunc
+        public Type ReaderType { get; set; }
+        public PropertyInfo Property { get; set; }
+        public string ColumnName { get; set; }
+        public bool Optional { get; set; }
+        public override string ToString() => $"rdr({Ordinal}): rdr({ColumnName}) -> {Property.Name} - {Property.PropertyType.Name}";
     }
 }

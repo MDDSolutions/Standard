@@ -554,34 +554,5 @@ namespace MDDDataAccess
         public Func<T, object> Getter { get; set; }
         public Action<T, object> Setter { get; set; }
     }
-    [Serializable]
-    public class DBEngineConcurrencyMismatchException : Exception
-    {
-        public object KeyValue { get; set; }
-        public List<ConcurrencyMismatchRecord> MismatchRecords { get; set; }
-        public DBEngineConcurrencyMismatchException(string message, object keyvalue, List<ConcurrencyMismatchRecord> records) : base(message)
-        {
-            KeyValue = keyvalue;
-            MismatchRecords = records;  
-        }
-        public override string ToString()
-        {
-            var sb = new StringBuilder();
-            sb.AppendLine(base.ToString());
-            if (MismatchRecords != null)
-            foreach (var item in MismatchRecords)
-                sb.AppendLine(item.ToString());
-            return sb.ToString();
-        }
-    }
-    public class ConcurrencyMismatchRecord
-    {
-        public string PropertyName { get; set; }
-        public object AppValue { get; set; }
-        public object DBValue { get; set; }
-        public override string ToString()
-        {
-            return $"Property: {PropertyName} AppValue: {AppValue} DBValue: {DBValue}";
-        }
-    }
+
 }

@@ -125,3 +125,20 @@ with GetFieldValue<byte[]>()
 | Dapper_POCO        | 1.387 s | 0.0193 s | 0.0171 s | 100000.0000 | 52000.0000 | 5000.0000 | 760.25 MB |
 | Dapper_POCOAsync   | 1.373 s | 0.0187 s | 0.0156 s | 100000.0000 | 52000.0000 | 5000.0000 | 761.03 MB |
 
+CustomerOrders
+comparing original method with the metrics one
+| Method                | Mean     | Error    | StdDev   | Gen0       | Gen1       | Gen2      | Allocated |
+|---------------------- |---------:|---------:|---------:|-----------:|-----------:|----------:|----------:|
+| DBEngine_POCO         | 695.6 ms | 13.76 ms | 23.74 ms | 28000.0000 | 27000.0000 | 2000.0000 | 217.89 MB |
+| DBEngine_POCO_metrics | 700.8 ms | 13.99 ms | 33.52 ms | 28000.0000 | 27000.0000 | 2000.0000 | 217.96 MB |
+| Dapper_POCO           | 727.9 ms | 14.41 ms | 31.02 ms | 37000.0000 | 20000.0000 | 3000.0000 | 282.72 MB |
+
+both images and orders - original vs metrics
+| Method                       | Mean       | Error    | StdDev   | Gen0        | Gen1       | Gen2      | Allocated |
+|----------------------------- |-----------:|---------:|---------:|------------:|-----------:|----------:|----------:|
+| DBEngine_Orders_POCO         |   699.5 ms | 13.87 ms | 28.02 ms |  28000.0000 | 27000.0000 | 2000.0000 | 217.88 MB |
+| DBEngine_Orders_POCO_metrics |   698.8 ms | 13.77 ms | 32.19 ms |  30000.0000 | 29000.0000 | 4000.0000 | 217.98 MB |
+| DBEngine_Images_POCO         | 1,379.0 ms | 20.09 ms | 17.81 ms |  96000.0000 | 49000.0000 | 2000.0000 | 757.23 MB |
+| DBEngine_Images_POCO_metrics | 1,379.4 ms | 26.15 ms | 23.18 ms |  96000.0000 | 49000.0000 | 2000.0000 | 757.32 MB |
+| Dapper_Orders_POCO           |   706.6 ms | 13.86 ms | 15.41 ms |  37000.0000 | 20000.0000 | 3000.0000 | 282.72 MB |
+| Dapper_Images_POCO           | 1,365.1 ms | 18.13 ms | 16.96 ms | 100000.0000 | 52000.0000 | 5000.0000 | 760.25 MB |
