@@ -1,6 +1,7 @@
 using MDDDataAccess;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System;
+using System.Collections;
 using System.ComponentModel;
 using System.Data.SqlClient;
 using System.Linq;
@@ -69,14 +70,14 @@ namespace DBEngineUnitTests
             };
 
             var tracked = new Tracked<OptionalTrackable>(target);
-            tracked.CopyValues(source, withinitialization: false);
+            tracked.CopyValues(source);
 
             Assert.AreEqual(5, target.Required);
             Assert.AreEqual("interesting", target.Optional);
 
             source.Optional = null;
             target.Optional = "keep";
-            tracked.CopyValues(source, withinitialization: false);
+            tracked.CopyValues(source);
 
             Assert.AreEqual("keep", target.Optional, "Optional properties should not be overwritten by default values.");
         }
@@ -255,6 +256,9 @@ namespace DBEngineUnitTests
             entity.Name = "Updated";
 
             var replacement = CreateEntity(2, 2);
+            //even with DirtyAwareObjectCopy disabled, GetOrAdd will succeed if the loading values all equal either the old or new values of the dirty object
+            //it's not really "merging" until something is afoot in terms of the objects being out of sync
+            replacement.Name = "Server";
 
             try
             {
@@ -268,7 +272,8 @@ namespace DBEngineUnitTests
                     Assert.AreEqual(2, mismatch.KeyValue);
                     Assert.IsNotNull(mismatch.MismatchRecords, "Copy-based concurrency detection should include column details.");
                     Assert.IsTrue(mismatch.MismatchRecords.Any(r => r.PropertyName == nameof(InpcTrackable.Name)));
-                    Assert.IsTrue(mismatch.MismatchRecords.Any(r => r.PropertyName == nameof(InpcTrackable.RowVersion)));
+                    // no - concurrency token is not included in mismatch
+                    //Assert.IsTrue(mismatch.MismatchRecords.Any(r => r.PropertyName == nameof(InpcTrackable.RowVersion)));
                 }
                 else
                 {
@@ -326,7 +331,8 @@ namespace DBEngineUnitTests
                     var nameRecord = mismatch.MismatchRecords.Single(r => r.PropertyName == nameof(InpcTrackable.Name));
                     Assert.AreEqual("Updated", nameRecord.AppValue);
                     Assert.AreEqual("Server", nameRecord.DBValue);
-                    Assert.IsTrue(mismatch.MismatchRecords.Any(r => r.PropertyName == nameof(InpcTrackable.RowVersion)), "Concurrency token should be included in mismatch details.");
+                    // no - concurrency token is not included in mismatch
+                    //Assert.IsTrue(mismatch.MismatchRecords.Any(r => r.PropertyName == nameof(InpcTrackable.RowVersion)), "Concurrency token should be included in mismatch details.");
                 }
                 else
                 {
@@ -361,7 +367,8 @@ namespace DBEngineUnitTests
                 Assert.AreEqual(7, mismatch.KeyValue);
                 Assert.IsTrue(mismatch.MismatchRecords.Any(r => r.PropertyName == nameof(PartiallyDirtyAwareTrackable.Name)));
                 Assert.IsFalse(mismatch.MismatchRecords.Any(r => r.PropertyName == nameof(PartiallyDirtyAwareTrackable.Amount)), "Amount should merge cleanly.");
-                Assert.IsTrue(mismatch.MismatchRecords.Any(r => r.PropertyName == nameof(PartiallyDirtyAwareTrackable.RowVersion)));
+                // no - RowVersion does not mismatch as far as the user is concerned
+                //Assert.IsTrue(mismatch.MismatchRecords.Any(r => r.PropertyName == nameof(PartiallyDirtyAwareTrackable.RowVersion)));
             }
 
             Assert.AreEqual("Server", entity.Name, "Disabled property should be overwritten by database value.");
@@ -498,6 +505,10 @@ namespace DBEngineUnitTests
 
             private void OnPropertyChanged([CallerMemberName] string name = null)
                 => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+            public override string ToString()
+            {
+                return $"Id: {Id} RowVersion: 0x{BitConverter.ToString(RowVersion).Replace("-", "")} Name: {Name} Amount: {Amount}";
+            }
         }
 
         [DirtyAwareCopy]
@@ -567,6 +578,10 @@ namespace DBEngineUnitTests
 
             private void OnPropertyChanged([CallerMemberName] string name = null)
                 => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+            public override string ToString()
+            {
+                return $"Id: {Id} RowVersion: 0x{BitConverter.ToString(RowVersion).Replace("-", "")} Name: {Name} Amount: {Amount}";
+            }
         }
     }
 

@@ -143,8 +143,13 @@ namespace MDDDataAccess
                                     if (!Tracked<T>.HasConcurrency)
                                         throw new InvalidOperationException("Entity is modified in memory but the type has no concurrency token to validate reloading.");
 
-                                    var attemptDirtyAware = DBEngine.DirtyAwareObjectCopy && Tracked<T>.SupportsDirtyAwareCopy;
-                                    existingtracked.CopyValues(loading, true, attemptDirtyAware);
+                                    //if the concurrency value matches, then the existing entity is based on the loading entity so we can safely discard the incoming entity and keep the user's
+                                    //pending changes
+                                    if (!DBEngine.ValueEquals(loadingconcurrency, existingtracked.ConcurrencyValue))
+                                    {
+                                        var attemptDirtyAware = DBEngine.DirtyAwareObjectCopy && Tracked<T>.SupportsDirtyAwareCopy;
+                                        existingtracked.CopyValues(loading, attemptDirtyAware);
+                                    }
                                     loading = existingentity;
                                     return existingtracked;
                                 case TrackedState.Initializing:
