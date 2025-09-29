@@ -132,7 +132,7 @@ namespace MDDDataAccess
                 // For this, you can use a ConditionalWeakTable<T, Tracked<T>>.
                 if (_entityToTracked.TryGetValue(entity, out var tracked))
                 {
-                    tracked.OnEntityPropertyChanged(entity, e);
+                    tracked.OnINotyifyPropertyChanged(entity, e);
                 }
             }
         }
@@ -143,7 +143,7 @@ namespace MDDDataAccess
             {
                 if (_entityToTracked.TryGetValue(entity, out var tracked))
                 {
-                    tracked.OnPropertyUpdated(entity, e);
+                    tracked.OnNotifierObjectPropertyUpdated(entity, e);
                 }
             }
         }
@@ -235,7 +235,9 @@ namespace MDDDataAccess
                         _isDirtyCached = null; // unknown
                     }
 
-                    foreach (var kw in AllPropertyDelegates.Where(x => !x.Value.Concurrency))
+                    // save original values for actual entity data columns - key is already not in AllPropertyDelegates so this should
+                    // basically be anything that doesn't have an attribute which should be an actual data column
+                    foreach (var kw in AllPropertyDelegates.Where(x => !x.Value.Concurrency && !x.Value.Ignore && !x.Value.Optional))
                         _originalValues.Add(kw.Key, kw.Value.Getter.Invoke(entity));
                 }
 
@@ -246,7 +248,7 @@ namespace MDDDataAccess
                 throw new InvalidOperationException("The entity reference is no longer valid.");
             }
         }
-        private void OnEntityPropertyChanged(T entity, PropertyChangedEventArgs e)
+        private void OnINotyifyPropertyChanged(T entity, PropertyChangedEventArgs e)
         {
             // If property is trackable, compare to original and update cache.
             if (!Initializing && _originalValues.TryGetValue(e.PropertyName, out var original))
@@ -268,7 +270,7 @@ namespace MDDDataAccess
             //    throw new InvalidOperationException($"Property '{e.PropertyName}' has not been tracked");
             //}
         }
-        private void OnPropertyUpdated(T entity, PropertyChangedWithValuesEventArgs e)
+        private void OnNotifierObjectPropertyUpdated(T entity, PropertyChangedWithValuesEventArgs e)
         {
             // with Advanced DirtyCheckMode, we get old and new values so we don't have to
             // store all original values on initialization - we only have to store it if
@@ -289,7 +291,7 @@ namespace MDDDataAccess
                         _isDirtyCached = _dirtyProps.Count > 0;
                     }
                 }
-                else
+                else if (AllPropertyDelegates.TryGetValue(e.PropertyName, out var pd) && !pd.Optional && !pd.Ignore && !pd.Concurrency)
                 {
                     _originalValues[e.PropertyName] = e.OldValue;
                     _dirtyProps.Add(e.PropertyName);
@@ -420,7 +422,7 @@ namespace MDDDataAccess
             e = null;
             return false;
         }
-        public bool CopyValues(T from, bool dirtyaware = false)
+        public bool CopyValues(T from, bool dirtyaware = false, bool optionalonly = false)
         {
             if (TryGetEntity(out T to))
             {
@@ -440,7 +442,17 @@ namespace MDDDataAccess
 
                 var mismatchrecords = new List<ConcurrencyMismatchRecord>();
 
-                foreach (var delegateinfo in AllPropertyDelegates)
+                List<KeyValuePair<string, PropertyDelegateInfo<T>>> list = null;
+                if (optionalonly)
+                    list = AllPropertyDelegates.Where(x => x.Value.Optional).ToList(); // || x.Value.Ignore).ToList();
+                else
+                    list = AllPropertyDelegates.Where(x => !x.Value.Ignore).ToList(); 
+                
+                // right now I'm thinking tracker method should ignore DBIgnore properties - incoming loading objects will never have values in them anyway because OFR ignores them
+                // if the app has done something with them, then the existing object should have whatever values they should have and that's always what we're copying into, so right
+                // now I can't even think of a scenario where we would want to copy ignored stuff in - quite probably, they shouldn't even be in AllPropertyDelegates at all
+
+                foreach (var delegateinfo in list)
                 {
                     var fromval = delegateinfo.Value.Getter(from);
                     var toval = delegateinfo.Value.Getter(to);
@@ -448,7 +460,7 @@ namespace MDDDataAccess
                     var currentorigpresent = _originalValues.TryGetValue(delegateinfo.Key, out var currentorigval);
                     var dirtypresent = DirtyProperties.TryGetValue(delegateinfo.Key, out var dirty);
 
-                    if (delegateinfo.Value.Optional || delegateinfo.Value.Ignore)
+                    if (delegateinfo.Value.Optional) // || delegateinfo.Value.Ignore)
                     {
                         //for optional or Ignored properties, only copy the value
                         //if the one in the from object looks more interesting than the one in the to object

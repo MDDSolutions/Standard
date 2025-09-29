@@ -81,7 +81,6 @@ namespace DBEngineUnitTests
 
             Assert.AreEqual("keep", target.Optional, "Optional properties should not be overwritten by default values.");
         }
-
         [TestMethod]
         public void IsTrackable_ReturnsFalseWhenKeyAttributeMissing()
         {
@@ -156,54 +155,51 @@ namespace DBEngineUnitTests
             private void OnPropertyChanged([CallerMemberName] string name = null)
                 => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
         }
-
-        private class OptionalTrackable : INotifyPropertyChanged
-        {
-            private int _required;
-            private string _optional;
-
-            [ListKey]
-            public int Id { get; set; }
-
-            [ListConcurrency]
-            public byte[] RowVersion { get; set; }
-
-            public int Required
-            {
-                get => _required;
-                set
-                {
-                    if (_required != value)
-                    {
-                        _required = value;
-                        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Required)));
-                    }
-                }
-            }
-
-            [DBOptional]
-            public string Optional
-            {
-                get => _optional;
-                set
-                {
-                    if (_optional != value)
-                    {
-                        _optional = value;
-                        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Optional)));
-                    }
-                }
-            }
-
-            public event PropertyChangedEventHandler PropertyChanged;
-        }
-
         private class Untrackable
         {
             public int Id { get; set; }
         }
     }
+    public class OptionalTrackable : INotifyPropertyChanged
+    {
+        private int _required;
+        private string _optional;
 
+        [ListKey]
+        public int Id { get; set; }
+
+        [ListConcurrency]
+        public byte[] RowVersion { get; set; }
+
+        public int Required
+        {
+            get => _required;
+            set
+            {
+                if (_required != value)
+                {
+                    _required = value;
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Required)));
+                }
+            }
+        }
+
+        [DBOptional]
+        public string Optional
+        {
+            get => _optional;
+            set
+            {
+                if (_optional != value)
+                {
+                    _optional = value;
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Optional)));
+                }
+            }
+        }
+
+        public event PropertyChangedEventHandler PropertyChanged;
+    }
     [TestClass]
     public class TrackerTests
     {
@@ -215,6 +211,62 @@ namespace DBEngineUnitTests
             dbEngine = new DBEngine("Server=.\\SQLEXPRESS;Database=master;Trusted_Connection=True;", "UnitTests");
         }
 
+        [TestMethod]
+        public void ReloadedObjectRespectsOptionalPropertySemantics()
+        {
+            var source = new OptionalTrackable
+            {
+                Id = 1,
+                RowVersion = new byte[] { 3 },
+                Required = 5,
+                Optional = "interesting"
+            };
+
+            var tracker = dbEngine.GetTracker<OptionalTrackable>();
+            tracker.GetOrAdd(ref source);
+
+
+            var target = new OptionalTrackable
+            {
+                Id = 1,
+                RowVersion = new byte[] { 3 },
+                Required = 1,
+                Optional = null
+            };
+            //GetOrAdd decides whether to run CopyValues
+            tracker.GetOrAdd(ref target);
+           
+            Assert.AreEqual(5, target.Required, "Required hasn't changed - this would be invalid anyway - since the concurrency value is the same, required properties should be assumed to be the same");
+
+            Assert.AreEqual("interesting", target.Optional, "tracker keeps interesting value because the incoming value is null/default");
+
+            Assert.IsTrue(ReferenceEquals(source, target), "tracker has eliminated the duplicate");
+
+
+            source.Optional = null;
+            target = new OptionalTrackable
+            {
+                Id = 1,
+                RowVersion = new byte[] { 3 },
+                Required = 1,
+                Optional = "keep"
+            };
+            tracker.GetOrAdd(ref target);
+            Assert.AreEqual("keep", target.Optional, "Optional properties should not be overwritten by default values.");
+            Assert.IsTrue(ReferenceEquals(source, target), "tracker has eliminated the duplicate");
+
+            target = new OptionalTrackable
+            {
+                Id = 1,
+                RowVersion = new byte[] { 3 },
+                Required = 1,
+                Optional = "more interesting"
+            };
+            tracker.GetOrAdd(ref target);
+            Assert.AreEqual("more interesting", target.Optional, "Optional properties should be overwritten by 'newer' values.");
+            Assert.IsTrue(ReferenceEquals(source, target), "tracker has eliminated the duplicate");
+
+        }
         [TestMethod]
         public void GetOrAdd_WithExistingEntity_ReusesTrackedInstance()
         {

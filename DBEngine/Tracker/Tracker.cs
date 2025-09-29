@@ -146,6 +146,10 @@ namespace MDDDataAccess
                                         var allowDirtyAware = DBEngine.DirtyAwareObjectCopy && Tracked<T>.SupportsDirtyAwareCopy;
                                         existingtracked.CopyValues(loading, allowDirtyAware);
                                     }
+                                    else
+                                    {
+                                        existingtracked.CopyValues(loading, true, true);
+                                    }
                                     loading = existingentity;
                                     return existingtracked;
                                 case TrackedState.Modified:
