@@ -105,6 +105,7 @@ namespace MDDDataAccess
         private List<PropertyMapEntry> BuildPropertyMapInternal(Type targetType, SqlDataReader rdr, Dictionary<string, Queue<int>> columnOrdinals, bool strict, PropertyInfo concurrencyProperty, HashSet<Type> recursionStack, bool isRoot, ref PropertyInfo key)
         {
             var result = new List<PropertyMapEntry>();
+            var navigationproperties = new List<PropertyInfo>();
 
             if (!recursionStack.Add(targetType))
                 return result;
@@ -199,9 +200,21 @@ namespace MDDDataAccess
                         continue;
                     }
 
-                    var clonedOrdinals = CloneColumnOrdinals(columnOrdinals);
-                    PropertyInfo childKey = null;
-                    var childMap = BuildPropertyMapInternal(type, rdr, clonedOrdinals, false, null, recursionStack, false, ref childKey);
+                    navigationproperties.Add(item);
+
+                }
+            }
+
+
+            foreach (var item in navigationproperties)
+            {
+                var type = item.PropertyType;
+                var clonedOrdinals = CloneColumnOrdinals(columnOrdinals);
+                PropertyInfo childKey = null;
+
+                try
+                {
+                    var childMap = BuildPropertyMapInternal(type, rdr, clonedOrdinals, true, null, recursionStack, false, ref childKey);
 
                     if (childMap.Count == 0)
                         continue;
@@ -237,6 +250,10 @@ namespace MDDDataAccess
                     };
 
                     result.Add(navigationEntry);
+                }
+                catch (Exception ex)
+                {
+                    //if we are not able to build a map for a child object, that's fine - it's just not that kind of query
                 }
             }
 
