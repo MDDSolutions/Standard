@@ -902,7 +902,7 @@ namespace MDDDataAccess
                             if (subobj == null)
                                 throw new Exception($"The type {typeof(T).FullName} does not have a property that is a {typeof(R).FullName} to hold the sub object");
 
-                            using (SqlDataReader rdr = ExecuteReader(cmd))
+                            using (SqlDataReader rdr = ExecuteReader(cmd, CommandBehavior.SingleResult))
                             {
                                 while (rdr.Read())
                                 {
