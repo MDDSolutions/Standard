@@ -94,20 +94,33 @@ namespace MDDDataAccess
         }
         private void BuildPropertyMap<T>(SqlDataReader rdr, ref List<PropertyMapEntry> map, ref PropertyInfo key, bool strict, PropertyInfo concurrencyproperty)
         {
-            map = new List<PropertyMapEntry>();
+            var columnOrdinals = GetColumnOrdinals(rdr);
+            var visited = new HashSet<Type>();
 
-            var ColumOrdinals = GetColumnOrdinals(rdr);
+            map = BuildPropertyMapInternal(typeof(T), rdr, columnOrdinals, strict, concurrencyproperty, visited, true, ref key);
 
+            map.Sort((x, y) => x.Ordinal.CompareTo(y.Ordinal));
+        }
 
-            foreach (var item in typeof(T).GetProperties(BindingFlags.Public | BindingFlags.Instance).Where(x => x.CanWrite))
+        private List<PropertyMapEntry> BuildPropertyMapInternal(Type targetType, SqlDataReader rdr, Dictionary<string, Queue<int>> columnOrdinals, bool strict, PropertyInfo concurrencyProperty, HashSet<Type> recursionStack, bool isRoot, ref PropertyInfo key)
+        {
+            var result = new List<PropertyMapEntry>();
+            var navigationproperties = new List<PropertyInfo>();
+
+            if (!recursionStack.Add(targetType))
+                return result;
+
+            foreach (var item in targetType.GetProperties(BindingFlags.Public | BindingFlags.Instance).Where(x => x.CanWrite))
             {
                 var type = item.PropertyType;
                 if (type.IsValueType || type == typeof(string) || type.IsArray)
                 {
-                    var entry = new PropertyMapEntry();
-                    entry.Optional = !item.GetSetMethod(true).IsPublic;
-                    entry.ColumnName = item.Name;
-                    entry.Property = item;
+                    var entry = new PropertyMapEntry
+                    {
+                        Optional = !item.GetSetMethod(true).IsPublic,
+                        ColumnName = item.Name,
+                        Property = item
+                    };
                     bool include = true;
                     bool special = false;
                     foreach (var attr in item.GetCustomAttributes(true))
@@ -118,14 +131,10 @@ namespace MDDDataAccess
                             entry.ColumnName = dbna.DBName;
                         if (attr is DBOptionalAttribute)
                             entry.Optional = true;
-                        if (attr is ListKeyAttribute)
+                        if (attr is ListKeyAttribute && isRoot)
                             key = item;
                         if (attr is DBLoadedTimeAttribute)
                         {
-                            //include = false;
-                            //nomap = true;
-                            //map = null;
-                            //item.SetValue(r, DateTime.Now);
                             special = true;
                             entry.Ordinal = -100;
                             entry.MapAction = BuildStaticDateTimeFunc(item);
@@ -133,13 +142,18 @@ namespace MDDDataAccess
                     }
                     if (include && !special)
                     {
-                        if (!strict) entry.Optional = item != concurrencyproperty;
-                        if (ColumOrdinals.TryGetValue(entry.ColumnName, out var ordinals))
+                        if (!strict)
                         {
-                            entry.Ordinal = ordinals[0];
-                            //when building a map for a single object, any given column should only appear once but I don't necessarily
-                            //want to throw if it has more than one - I may have a version of BuildPropertyMap that handles 2 types - then things get a little
-                            //more interesting with columns like created_date / modified_date - for now, I'll just end up using the first one I find
+                            if (concurrencyProperty != null)
+                                entry.Optional = item != concurrencyProperty;
+                            else
+                                entry.Optional = true;
+                        }
+                        if (columnOrdinals.TryGetValue(entry.ColumnName, out var ordinals) && ordinals.Count > 0)
+                        {
+                            entry.Ordinal = ordinals.Dequeue();
+                            if (ordinals.Count == 0)
+                                columnOrdinals.Remove(entry.ColumnName);
                         }
                         else
                         {
@@ -148,9 +162,9 @@ namespace MDDDataAccess
                                     item.Name,
                                     item.PropertyType.FullName,
                                     entry.ColumnName,
-                                    typeof(T).Name,
+                                    targetType.Name,
                                     entry.Optional,
-                                    $"DBEngine internal error: The column '{entry.ColumnName}' was specified as a property (or DBName attribute) in the '{typeof(T).Name}' object but was not found in a query meant to populate objects of that type. " +
+                                    $"DBEngine internal error: The column '{entry.ColumnName}' was specified as a property (or DBName attribute) in the '{targetType.Name}' object but was not found in a query meant to populate objects of that type. " +
                                     "You must either decorate this property with a DBIgnore attribute if you want ObjectFromReader to always ignore it, or a DBOptional attribute if you want ObjectFromReader to use it if it is there, but ignore it if it is not."
                                 );
                             else
@@ -162,19 +176,92 @@ namespace MDDDataAccess
                             BuildCompiledMap(entry);
                         }
                     }
-                    if (include) map.Add(entry);
+                    if (include) result.Add(entry);
                 }
                 else
                 {
-                    if (DebugLevel > 100)
+                    if (!type.IsClass || type == typeof(string) || type.IsAbstract)
                     {
-                        if (unhandledtypesreported.TryAdd($"{typeof(T).Name}.{item.Name}", true))
-                            Log.Entry("ObjectFromReader", 50, $"Unhandled type in {typeof(T).Name}.{item.Name} type full name: {type.FullName}", "");
+                        if (DebugLevel > 100)
+                        {
+                            if (unhandledtypesreported.TryAdd($"{targetType.Name}.{item.Name}", true))
+                                Log.Entry("ObjectFromReader", 50, $"Unhandled type in {targetType.Name}.{item.Name} type full name: {type.FullName}", "");
+                        }
+                        continue;
                     }
-                    //what to do with this type?
+
+                    if (type.GetConstructor(Type.EmptyTypes) == null)
+                    {
+                        if (DebugLevel > 100)
+                        {
+                            if (unhandledtypesreported.TryAdd($"{targetType.Name}.{item.Name}", true))
+                                Log.Entry("ObjectFromReader", 50, $"Unhandled type in {targetType.Name}.{item.Name} type full name: {type.FullName}", "");
+                        }
+                        continue;
+                    }
+
+                    navigationproperties.Add(item);
+
                 }
             }
-            map.Sort((x, y) => x.Ordinal.CompareTo(y.Ordinal));
+
+
+            foreach (var item in navigationproperties)
+            {
+                var type = item.PropertyType;
+                var clonedOrdinals = CloneColumnOrdinals(columnOrdinals);
+                PropertyInfo childKey = null;
+
+                try
+                {
+                    var childMap = BuildPropertyMapInternal(type, rdr, clonedOrdinals, true, null, recursionStack, false, ref childKey);
+
+                    if (childMap.Count == 0)
+                        continue;
+
+                    ReplaceColumnOrdinals(columnOrdinals, clonedOrdinals);
+
+                    var navigationEntry = new PropertyMapEntry
+                    {
+                        Property = item,
+                        Optional = true,
+                        ColumnName = item.Name,
+                        ChildMap = childMap
+                    };
+
+                    var ord = childMap.Where(m => m.Ordinal >= 0).Select(m => m.Ordinal);
+                    navigationEntry.Ordinal = ord.Any() ? ord.Min() : int.MaxValue;
+
+                    navigationEntry.MapAction = (reader, target) =>
+                    {
+                        bool hasValue = childMap.Any(cm => cm.Ordinal >= 0 && !reader.IsDBNull(cm.Ordinal));
+                        if (!hasValue)
+                            return;
+
+                        var current = item.GetValue(target);
+                        if (current == null)
+                        {
+                            current = Activator.CreateInstance(type);
+                            item.SetValue(target, current);
+                        }
+
+                        ExecutePropertyMap(reader, childMap, current, type);
+                        TrackerAddObject(current);
+                    };
+
+                    result.Add(navigationEntry);
+                }
+                catch (Exception ex)
+                {
+                    //if we are not able to build a map for a child object, that's fine - it's just not that kind of query
+                }
+            }
+
+            recursionStack.Remove(targetType);
+
+            result.Sort((x, y) => x.Ordinal.CompareTo(y.Ordinal));
+
+            return result;
         }
         private readonly ConcurrentDictionary<string,bool> unhandledtypesreported = new ConcurrentDictionary<string,bool>();
         private void ExecutePropertyMap<T>(SqlDataReader rdr, List<PropertyMapEntry> map, T target) where T : class
@@ -201,9 +288,42 @@ namespace MDDDataAccess
                         target,
                         entry.Property.Name,
                         entry.Property.PropertyType.FullName,
-                        entry.ReaderType.Name,
+                        entry.ReaderType?.Name ?? "<unknown>",
                         objectvalues,
-                        $"DBEngine internal error: Post-mapping error occurred trying to set {target.GetType().Name}.{entry.Property.Name} - {entry.ReaderType.Name} -> {entry.Property.PropertyType.FullName}",
+                        $"DBEngine internal error: Post-mapping error occurred trying to set {target.GetType().Name}.{entry.Property.Name} - {(entry.ReaderType == null ? "<unknown>" : entry.ReaderType.Name)} -> {entry.Property.PropertyType.FullName}",
+                        ex
+                    );
+                }
+            }
+        }
+
+        private void ExecutePropertyMap(SqlDataReader rdr, List<PropertyMapEntry> map, object target, Type targetType)
+        {
+            foreach (var entry in map)
+            {
+                try
+                {
+                    entry.MapAction(rdr, target);
+                }
+                catch (Exception ex)
+                {
+                    string objectvalues = null;
+                    try
+                    {
+                        objectvalues = string.Join("\r", targetType.GetProperties(BindingFlags.Public | BindingFlags.Instance).Select(pi => $"{pi.Name}={(pi.GetValue(target) == null ? "<null>" : pi.GetValue(target).ToString())}"));
+                    }
+                    catch (Exception ex2)
+                    {
+                        objectvalues = $"Error getting object values: {ex2.Message}";
+                    }
+
+                    throw new DBEnginePostMappingException<object>(
+                        target,
+                        entry.Property.Name,
+                        entry.Property.PropertyType.FullName,
+                        entry.ReaderType?.Name ?? "<unknown>",
+                        objectvalues,
+                        $"DBEngine internal error: Post-mapping error occurred trying to set {targetType.Name}.{entry.Property.Name} - {(entry.ReaderType == null ? "<unknown>" : entry.ReaderType.Name)} -> {entry.Property.PropertyType.FullName}",
                         ex
                     );
                 }
@@ -418,6 +538,21 @@ namespace MDDDataAccess
             }
         }
 
+        private static Dictionary<string, Queue<int>> CloneColumnOrdinals(Dictionary<string, Queue<int>> source)
+        {
+            var clone = new Dictionary<string, Queue<int>>(source.Comparer);
+            foreach (var kvp in source)
+                clone[kvp.Key] = new Queue<int>(kvp.Value);
+            return clone;
+        }
+
+        private static void ReplaceColumnOrdinals(Dictionary<string, Queue<int>> target, Dictionary<string, Queue<int>> source)
+        {
+            target.Clear();
+            foreach (var kvp in source)
+                target[kvp.Key] = new Queue<int>(kvp.Value);
+        }
+
         private static void BuildCompiledMap_old(PropertyMapEntry entry)
         {
             var targetType = entry.Property.DeclaringType;
@@ -567,18 +702,18 @@ namespace MDDDataAccess
             var lambda = Expression.Lambda<Action<SqlDataReader, object>>(setExp, readerParam, targetParam);
             entry.MapAction = lambda.Compile();
         }
-        private static Dictionary<string, List<int>> GetColumnOrdinals(SqlDataReader rdr)
+        private static Dictionary<string, Queue<int>> GetColumnOrdinals(SqlDataReader rdr)
         {
-            var dict = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
+            var dict = new Dictionary<string, Queue<int>>(StringComparer.OrdinalIgnoreCase);
             for (int i = 0; i < rdr.FieldCount; i++)
             {
                 var name = rdr.GetName(i);
                 if (!dict.TryGetValue(name, out var list))
                 {
-                    list = new List<int>();
+                    list = new Queue<int>();
                     dict[name] = list;
                 }
-                list.Add(i);
+                list.Enqueue(i);
             }
             return dict;
         }
@@ -693,6 +828,7 @@ namespace MDDDataAccess
         public PropertyInfo Property { get; set; }
         public string ColumnName { get; set; }
         public bool Optional { get; set; }
+        public List<PropertyMapEntry> ChildMap { get; set; }
         public override string ToString() => $"rdr({Ordinal}): rdr({ColumnName}) -> {Property.Name} - {Property.PropertyType.Name}";
     }
 }
