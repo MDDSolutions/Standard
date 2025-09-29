@@ -64,8 +64,17 @@ SELECT 501, 2, ItemId FROM dbo.Item;";
             var od = _db.SqlRunQueryWithResults<OrderDetails>(query, false);
             Assert.IsNotNull(od);
             Assert.AreEqual(od.Count, 2);
+
+            var odtracker = _db.GetTracker<OrderDetails>();
+            Assert.IsNotNull(odtracker);
+            Assert.AreEqual(odtracker.Count, 2);
+
             Assert.IsNotNull(od[0].OrderItem);
+            var ittracker = _db.GetTracker<Item>();
+            Assert.IsNotNull(ittracker);
+            Assert.AreEqual(ittracker.Count, 2);
         }
+
         private class OrderDetails
         {
             [ListKey]

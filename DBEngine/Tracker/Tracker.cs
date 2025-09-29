@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Threading;
 
 namespace MDDDataAccess
@@ -257,6 +258,17 @@ namespace MDDDataAccess
                 tracker = null;
                 return false;
             }
+        }
+        public object TrackerAddObject(object entity)
+        {
+            var getTrackerMethod = typeof(DBEngine).GetMethod("GetTracker", BindingFlags.Public | BindingFlags.Instance);
+            var genericMethod = getTrackerMethod.MakeGenericMethod(entity.GetType());
+            var ctracker = genericMethod.Invoke(this, null);
+
+            var getOrAddMethod = ctracker.GetType().GetMethod("GetOrAdd", new[] { entity.GetType().MakeByRefType() });
+            var parameters = new object[] { entity };
+            var tracked = getOrAddMethod.Invoke(ctracker, parameters);
+            return tracked;
         }
     }
 }

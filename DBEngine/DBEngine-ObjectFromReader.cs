@@ -233,6 +233,7 @@ namespace MDDDataAccess
                         }
 
                         ExecutePropertyMap(reader, childMap, current, type);
+                        TrackerAddObject(current);
                     };
 
                     result.Add(navigationEntry);
