@@ -7,7 +7,7 @@ using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
 
-namespace MDDDataAccess
+namespace MDDDataAccess.OldObjectTracking
 {
     public enum ObjectTracking
     {

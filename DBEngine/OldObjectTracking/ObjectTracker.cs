@@ -7,7 +7,7 @@ using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
 
-namespace MDDDataAccess
+namespace MDDDataAccess.OldObjectTracking
 {
     public class ObjectTracker<T, TKey> : IObjectTracker where T : class, ITrackedEntity
     {
@@ -42,13 +42,13 @@ namespace MDDDataAccess
                     {
                         if (trackedObjects.TryRemove(key, out _))
                         {
-                            CurrentDBEngine.Log.Entry(new ObjectTrackerLogEntry(
-                            "ObjectTracker",
-                            50,
-                            $"Removed stale ObjectTracker entry for key {key}",
-                            new System.Diagnostics.StackTrace(true).ToString(),
-                            typeof(T).Name
-                            ));
+                            //CurrentDBEngine.Log.Entry(new ObjectTrackerLogEntry(
+                            //"ObjectTracker",
+                            //50,
+                            //$"Removed stale ObjectTracker entry for key {key}",
+                            //new System.Diagnostics.StackTrace(true).ToString(),
+                            //typeof(T).Name
+                            //));
                         }
                     }
                 }
@@ -135,12 +135,12 @@ namespace MDDDataAccess
                             var target = existingObj;
                             var type = typeof(T);
                             target.BeginInit();
-                            if (CurrentDBEngine.DebugLevel >= 200)
-                                CurrentDBEngine.Log.Entry(new ObjectTrackerLogEntry("ObjectTracker",
-                                    150,
-                                    "Merge",
-                                    $"source: {source} target: {target}",
-                                    type.Name));
+                            //if (CurrentDBEngine.DebugLevel >= 200)
+                            //    CurrentDBEngine.Log.Entry(new ObjectTrackerLogEntry("ObjectTracker",
+                            //        150,
+                            //        "Merge",
+                            //        $"source: {source} target: {target}",
+                            //        type.Name));
 
                             foreach (var prop in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
                             {
@@ -227,13 +227,13 @@ namespace MDDDataAccess
                     // Attempt to remove the item and get the removed value.
                     if (trackedObjects.TryRemove(key, out var removedref))
                     {
-                        CurrentDBEngine.Log.Entry(new ObjectTrackerLogEntry(
-                            "ObjectTracker",
-                            50,
-                            $"Removed stale ObjectTracker entry for key {key}",
-                            new System.Diagnostics.StackTrace(true).ToString(),
-                            typeof(T).Name
-                            ));
+                        //CurrentDBEngine.Log.Entry(new ObjectTrackerLogEntry(
+                        //    "ObjectTracker",
+                        //    50,
+                        //    $"Removed stale ObjectTracker entry for key {key}",
+                        //    new System.Diagnostics.StackTrace(true).ToString(),
+                        //    typeof(T).Name
+                        //    ));
                         if (removedref.TryGetTarget(out var removedobj)) // It means the entry was replaced between our operations.
                         {
                             throw new AccessViolationException($"The impossible has happened - an ObjectTracker entry for key {key} on type {typeof(T).Name} was re-inserted between the time CleanupStaleEntries identified it as stale and was able to remove it - it could not be re-inserted for some reason - the ToString on the object is {removedobj}");

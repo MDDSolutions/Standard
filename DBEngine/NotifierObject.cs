@@ -48,4 +48,17 @@ namespace MDDDataAccess
         public event PropertyChangedEventHandler PropertyChanged;
         public static event EventHandler<PropertyChangedWithValuesEventArgs> PropertyUpdated;
     }
+    public class PropertyChangedWithValuesEventArgs : EventArgs
+    {
+        public string PropertyName { get; }
+        public object OldValue { get; }
+        public object NewValue { get; }
+
+        public PropertyChangedWithValuesEventArgs(string propertyName, object oldValue, object newValue)
+        {
+            PropertyName = propertyName;
+            OldValue = oldValue;
+            NewValue = newValue;
+        }
+    }
 }

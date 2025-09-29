@@ -507,7 +507,7 @@ namespace MDDDataAccess
             }
         }
         public delegate Task RowCallback<T>(T entity, int rowIndex, CancellationToken cancellationToken, int workerId);
-        public async Task SqlRunQueryRowByRowAsync_old<T>(string cmdtext, RowCallback<T> rowcallback, bool IsProcedure, CancellationToken cancellationToken, int parallelcallbacks = 5, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T: class, new()
+        public async Task SqlRunQueryRowByRowAsync_old<T>(string cmdtext, RowCallback<T> rowcallback, bool IsProcedure, CancellationToken cancellationToken, int parallelcallbacks = 1, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T: class, new()
         {
             if (!IsProcedure && !AllowAdHoc) throw new Exception("Ad Hoc Queries are not allowed by this DBEngine");
             using (var cn = await getconnectionasync(cancellationToken, ConnectionTimeout, ApplicationName).ConfigureAwait(false))
@@ -988,13 +988,6 @@ namespace MDDDataAccess
         }
         public async Task<bool> RunSqlUpdateAsync<T>(T obj, string cmdtext, bool IsProcedure, CancellationToken token, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T: class, new()
         {
-
-            if (Tracking != ObjectTracking.None && obj is ITrackedEntity ite)
-            {
-                if (!ite.IsTracked(this))
-                    throw new Exception("The object provided for update is an ITrackedEntity and ObjectTracking is enabled - the object was somehow loaded outside the tracking system and so cannot be updated");
-            }
-
             bool found = false;
             if (!IsProcedure && !AllowAdHoc) throw new Exception("Ad Hoc Queries are not allowed by this DBEngine");
             using (var cn = getconnection(ConnectionTimeout, ApplicationName))

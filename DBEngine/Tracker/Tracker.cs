@@ -6,6 +6,12 @@ using System.Threading;
 
 namespace MDDDataAccess
 {
+    public enum ObjectTracking
+    {
+        None,
+        IfAvailable,
+        Full
+    }
     public class Tracker<T> where T : class, new()
     {
         public Tracker(DBEngine dbengine)
@@ -202,6 +208,8 @@ namespace MDDDataAccess
     }
     public partial class DBEngine
     {
+        public ObjectTracking Tracking { get; set; } = ObjectTracking.None;
+
         private readonly ConcurrentDictionary<Type, object> trackers = new ConcurrentDictionary<Type, object>();
         private readonly ConcurrentDictionary<Type,bool> untrackedobjects = new ConcurrentDictionary<Type, bool>();
         public bool DirtyAwareObjectCopy { get; set; } = false;

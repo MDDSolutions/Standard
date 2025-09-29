@@ -5,7 +5,7 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 
-namespace MDDDataAccess
+namespace MDDDataAccess.OldObjectTracking
 {
     public abstract class TrackedEntity<TObj> : ITrackedEntity, INotifyPropertyChanged where TObj : TrackedEntity<TObj>
     {
