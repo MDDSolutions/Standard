@@ -10,18 +10,13 @@ namespace MDDDataAccess
     /// <summary>
     /// View model that coordinates a collection of <see cref="TrackedEntity{T}"/> instances.
     /// The class mirrors the navigation surface of <see cref="TableViewModel"/> but operates on
-    /// tracked objects instead of <see cref="System.Data.DataRow"/> instances.  It keeps the
-    /// underlying entities in a <see cref="SortableBindingList{T}"/> so WinForms, WPF, or other
-    /// UI frameworks can bind without being aware of the tracker infrastructure.
+    /// tracked objects instead of <see cref="System.Data.DataRow"/> instances.
     /// </summary>
     /// <typeparam name="T">Entity type being tracked.</typeparam>
     public class TrackedList<T> : INotifyPropertyChanged where T : class, new()
     {
         private readonly Tracker<T> tracker;
         private readonly SortableBindingList<T> bindingList;
-        private readonly List<TrackedEntity<T>> items;
-        private readonly Dictionary<object, int> indexByKey;
-        private readonly HashSet<object> dirtyKeys;
 
         private int currentIndex = -1;
         private TrackedEntity<T> current;
@@ -45,18 +40,19 @@ namespace MDDDataAccess
                 throw new InvalidOperationException($"Type {typeof(T).FullName} is not trackable.");
 
             bindingList = new SortableBindingList<T>();
-            bindingList.ListChanged += (_, __) => OnPropertyChanged(nameof(Count));
-            items = new List<TrackedEntity<T>>();
-            indexByKey = new Dictionary<object, int>();
-            dirtyKeys = new HashSet<object>();
+            bindingList.ListChanged += BindingListOnListChanged;
+
             this.browserModeEnabled = browserModeEnabled;
 
             if (initialItems != null)
             {
                 Load(initialItems);
             }
-
-            OnDataSourceChanged();
+            else
+            {
+                OnDataSourceChanged();
+                RaiseNavigationCanExecute();
+            }
 
             InitializeCommands();
         }
@@ -78,7 +74,7 @@ namespace MDDDataAccess
             }
         }
 
-        public int Count => items.Count;
+        public int Count => bindingList.Count;
 
         public int CurrentIndex
         {
@@ -87,9 +83,9 @@ namespace MDDDataAccess
             {
                 if (value <= 0)
                 {
-                    SetCurrentIndexInternal(items.Count > 0 ? 0 : -1);
+                    SetCurrentIndexInternal(bindingList.Count > 0 ? 0 : -1);
                 }
-                else if (value - 1 < items.Count)
+                else if (value - 1 < bindingList.Count)
                 {
                     SetCurrentIndexInternal(value - 1);
                 }
@@ -110,7 +106,16 @@ namespace MDDDataAccess
             }
         }
 
-        public bool HasDirtyItems => dirtyKeys.Count > 0;
+        /// <summary>
+        /// Delegate invoked when the current item is dirty and navigation is requested.
+        /// Return <c>true</c> to save, <c>false</c> to discard without saving, or <c>null</c> to cancel navigation.
+        /// </summary>
+        public Func<TrackedEntity<T>, bool?> SaveChanges { get; set; } = _ => true;
+
+        /// <summary>
+        /// Forwarded persistence command from the current tracked entity.
+        /// </summary>
+        public ICommand SaveCommand => current?.SaveCommand;
 
         public ICommand NextCommand { get; private set; }
         public ICommand PreviousCommand { get; private set; }
@@ -124,122 +129,139 @@ namespace MDDDataAccess
 
             ClearInternal();
 
-            foreach (var entity in entities)
+            foreach (var item in entities)
             {
-                AddInternal(entity, makeCurrent: false, browserAppend: false);
-            }
-
-            if (items.Count > 0)
-            {
-                SetCurrentIndexInternal(0);
-            }
-            else
-            {
-                SetCurrentIndexInternal(-1);
+                var entity = item;
+                EnsureTracked(ref entity);
+                bindingList.Add(entity);
             }
 
             OnDataSourceChanged();
+
+            if (bindingList.Count > 0)
+            {
+                SetCurrentIndexInternal(0, suppressPrompt: true);
+            }
+            else
+            {
+                SetCurrentIndexInternal(-1, suppressPrompt: true);
+            }
         }
 
         public void Add(T entity, bool makeCurrent = true)
         {
-            AddInternal(entity, makeCurrent, browserAppend: true);
+            if (entity == null) throw new ArgumentNullException(nameof(entity));
+
+            if (makeCurrent && !PrepareForNavigation())
+                return;
+
+            var local = entity;
+            var tracked = EnsureTracked(ref local);
+
+            var existingIndex = FindIndexByKey(tracked.KeyValue);
+            if (existingIndex >= 0)
+            {
+                if (!ReferenceEquals(bindingList[existingIndex], local))
+                    bindingList[existingIndex] = local;
+
+                if (makeCurrent)
+                    SetCurrentIndexInternal(existingIndex, suppressPrompt: true);
+
+                return;
+            }
+
+            bindingList.Add(local);
+
+            if (makeCurrent)
+            {
+                SetCurrentIndexInternal(bindingList.Count - 1, suppressPrompt: true);
+            }
+            else
+            {
+                RaiseNavigationCanExecute();
+            }
         }
 
         public bool RemoveCurrent()
         {
-            if (currentIndex < 0 || currentIndex >= items.Count)
+            if (currentIndex < 0 || currentIndex >= bindingList.Count)
                 return false;
 
             RemoveAt(currentIndex);
-            if (items.Count == 0)
-            {
-                SetCurrentIndexInternal(-1);
-            }
-            else if (currentIndex >= items.Count)
-            {
-                SetCurrentIndexInternal(items.Count - 1);
-            }
-            else
-            {
-                SetCurrentIndexInternal(currentIndex);
-            }
             return true;
         }
 
         public void RemoveAt(int index)
         {
-            if (index < 0 || index >= items.Count)
+            if (index < 0 || index >= bindingList.Count)
                 throw new ArgumentOutOfRangeException(nameof(index));
 
-            var tracked = items[index];
-            DetachTracked(tracked);
-            items.RemoveAt(index);
-            bindingList.RemoveAt(index);
-            indexByKey.Remove(tracked.KeyValue);
+            var previousIndex = currentIndex;
 
-            RebuildIndexMapFrom(index);
-            OnPropertyChanged(nameof(Count));
+            bindingList.RemoveAt(index);
+
+            if (bindingList.Count == 0)
+            {
+                UpdateCurrent(-1);
+                OnDataSourceChanged();
+                return;
+            }
+
+            int targetIndex;
+            if (index < previousIndex)
+                targetIndex = previousIndex - 1;
+            else if (index == previousIndex)
+                targetIndex = Math.Min(previousIndex, bindingList.Count - 1);
+            else
+                targetIndex = previousIndex;
+
+            SetCurrentIndexInternal(targetIndex, suppressPrompt: true);
         }
 
         public void Clear()
         {
+            if (!PrepareForNavigation())
+                return;
+
             ClearInternal();
-            SetCurrentIndexInternal(-1);
             OnDataSourceChanged();
         }
 
         public void SetCurrent(T entity)
         {
             if (entity == null) throw new ArgumentNullException(nameof(entity));
+            if (!PrepareForNavigation())
+                return;
 
-            var tracked = EnsureTracked(entity);
-
-            if (indexByKey.TryGetValue(tracked.KeyValue, out var idx))
-            {
-                ReplaceTrackedAt(idx, tracked);
-                SetCurrentIndexInternal(idx);
-            }
-            else
-            {
-                if (!browserModeEnabled)
-                    throw new InvalidOperationException("Cannot navigate to an entity outside the list when browser mode is disabled.");
-
-                if (currentIndex >= 0 && currentIndex < items.Count - 1)
-                {
-                    RemoveRange(currentIndex + 1, items.Count - currentIndex - 1);
-                }
-
-                var entityToAdd = tracked.TryGetEntity(out var canonical) ? canonical : throw new InvalidOperationException("Tracked entity has no live reference.");
-                AttachTracked(tracked);
-                items.Add(tracked);
-                bindingList.Add(entityToAdd);
-                indexByKey[tracked.KeyValue] = items.Count - 1;
-                SetCurrentIndexInternal(items.Count - 1);
-                OnPropertyChanged(nameof(Count));
-            }
+            var local = entity;
+            var tracked = EnsureTracked(ref local);
+            SetCurrentInternal(ref local, tracked, allowAdd: true, suppressPrompt: true);
         }
 
         public void SetCurrentByKey(object key)
         {
             if (key == null) throw new ArgumentNullException(nameof(key));
+            if (!PrepareForNavigation())
+                return;
 
-            if (!indexByKey.TryGetValue(key, out var index))
+            var index = FindIndexByKey(key);
+            if (index >= 0)
             {
-                if (!browserModeEnabled)
-                    throw new InvalidOperationException($"Key '{key}' is not part of the list.");
-
-                if (!tracker.TryGet(key, out var tracked))
-                    throw new InvalidOperationException($"No tracked instance exists for key '{key}'.");
-
-                if (!tracked.TryGetEntity(out var entity))
-                    throw new InvalidOperationException("Tracked entity has been released.  Reload the entity before setting it as current.");
-
-                SetCurrent(entity);
+                SetCurrentIndexInternal(index, suppressPrompt: true);
                 return;
             }
 
-            SetCurrentIndexInternal(index);
+            if (!browserModeEnabled)
+                throw new InvalidOperationException($"Key '{key}' is not part of the list.");
+
+            if (!tracker.TryGet(key, out var tracked))
+                throw new InvalidOperationException($"No tracked instance exists for key '{key}'.");
+
+            if (!tracked.TryGetEntity(out var entity))
+                throw new InvalidOperationException("Tracked entity has been released. Reload the entity before setting it as current.");
+
+            var local = entity;
+            SetCurrentInternal(ref local, tracked, allowAdd: true, suppressPrompt: true);
         }
 
         #endregion
@@ -252,7 +274,7 @@ namespace MDDDataAccess
             PreviousCommand = new RelayCommand(Previous, CanMovePrevious);
             FirstCommand = new RelayCommand(First, CanMoveFirst);
             LastCommand = new RelayCommand(Last, CanMoveLast);
-            RemoveCurrentCommand = new RelayCommand(() => RemoveCurrent(), () => items.Count > 0);
+            RemoveCurrentCommand = new RelayCommand(() => RemoveCurrent(), () => bindingList.Count > 0);
         }
 
         private void Next()
@@ -261,7 +283,7 @@ namespace MDDDataAccess
                 SetCurrentIndexInternal(currentIndex + 1);
         }
 
-        private bool CanMoveNext() => currentIndex >= 0 && currentIndex < items.Count - 1;
+        private bool CanMoveNext() => currentIndex >= 0 && currentIndex < bindingList.Count - 1;
 
         private void Previous()
         {
@@ -277,152 +299,118 @@ namespace MDDDataAccess
                 SetCurrentIndexInternal(0);
         }
 
-        private bool CanMoveFirst() => items.Count > 0 && currentIndex != 0;
+        private bool CanMoveFirst() => bindingList.Count > 0 && currentIndex != 0;
 
         private void Last()
         {
             if (CanMoveLast())
-                SetCurrentIndexInternal(items.Count - 1);
+                SetCurrentIndexInternal(bindingList.Count - 1);
         }
 
-        private bool CanMoveLast() => items.Count > 0 && currentIndex != items.Count - 1;
+        private bool CanMoveLast() => bindingList.Count > 0 && currentIndex != bindingList.Count - 1;
 
-        private void AddInternal(T entity, bool makeCurrent, bool browserAppend)
+        private void BindingListOnListChanged(object sender, ListChangedEventArgs e)
         {
-            if (entity == null) throw new ArgumentNullException(nameof(entity));
+            OnPropertyChanged(nameof(Count));
+            RaiseNavigationCanExecute();
+        }
 
-            var tracked = EnsureTracked(entity);
+        private bool PrepareForNavigation()
+        {
+            if (current == null)
+                return true;
 
-            if (indexByKey.TryGetValue(tracked.KeyValue, out var existingIndex))
+            if (current.State != TrackedState.Modified)
+                return true;
+
+            var decision = SaveChanges?.Invoke(current);
+
+            if (decision == true)
             {
-                ReplaceTrackedAt(existingIndex, tracked);
-                if (makeCurrent)
-                    SetCurrentIndexInternal(existingIndex);
+                var command = current.SaveCommand;
+                if (command?.CanExecute(null) == true)
+                    command.Execute(null);
+                return true;
+            }
+
+            if (decision == false)
+                return true;
+
+            return false;
+        }
+
+        private void SetCurrentInternal(ref T entity, TrackedEntity<T> tracked, bool allowAdd, bool suppressPrompt)
+        {
+            var existingIndex = FindIndexByKey(tracked.KeyValue);
+            if (existingIndex >= 0)
+            {
+                if (!ReferenceEquals(bindingList[existingIndex], entity))
+                    bindingList[existingIndex] = entity;
+
+                SetCurrentIndexInternal(existingIndex, suppressPrompt: suppressPrompt);
                 return;
             }
 
-            if (browserAppend && browserModeEnabled && currentIndex >= 0 && currentIndex < items.Count - 1)
-            {
-                RemoveRange(currentIndex + 1, items.Count - currentIndex - 1);
-            }
+            if (!allowAdd)
+                throw new InvalidOperationException("The entity is not part of the list.");
 
-            var canonical = tracked.TryGetEntity(out var entityRef)
-                ? entityRef
-                : throw new InvalidOperationException("Tracked entity has no live reference.");
+            if (!browserModeEnabled)
+                throw new InvalidOperationException("Cannot navigate to an entity outside the list when browser mode is disabled.");
 
-            AttachTracked(tracked);
+            if (currentIndex >= 0 && currentIndex < bindingList.Count - 1)
+                TrimBrowserHistory(currentIndex + 1);
 
-            items.Add(tracked);
-            bindingList.Add(canonical);
-            indexByKey[tracked.KeyValue] = items.Count - 1;
-
-            OnPropertyChanged(nameof(Count));
-
-            if (makeCurrent)
-            {
-                SetCurrentIndexInternal(items.Count - 1);
-            }
+            bindingList.Add(entity);
+            OnDataSourceChanged();
+            SetCurrentIndexInternal(bindingList.Count - 1, suppressPrompt: true);
         }
 
-        private TrackedEntity<T> EnsureTracked(T entity)
-        {
-            if (entity == null) throw new ArgumentNullException(nameof(entity));
-
-            var local = entity;
-            var tracked = tracker.GetOrAdd(ref local);
-            if (!tracked.TryGetEntity(out _))
-                throw new InvalidOperationException("Tracked entity has no live reference.");
-            return tracked;
-        }
-
-        private void AttachTracked(TrackedEntity<T> tracked)
-        {
-            tracked.TrackedStateChanged -= TrackedEntityStateChanged;
-            tracked.TrackedStateChanged += TrackedEntityStateChanged;
-
-            if (tracked.State == TrackedState.Modified)
-                dirtyKeys.Add(tracked.KeyValue);
-            else
-                dirtyKeys.Remove(tracked.KeyValue);
-
-            OnPropertyChanged(nameof(HasDirtyItems));
-        }
-
-        private void DetachTracked(TrackedEntity<T> tracked)
-        {
-            tracked.TrackedStateChanged -= TrackedEntityStateChanged;
-            dirtyKeys.Remove(tracked.KeyValue);
-            OnPropertyChanged(nameof(HasDirtyItems));
-        }
-
-        private void ReplaceTrackedAt(int index, TrackedEntity<T> newTracked)
-        {
-            var existing = items[index];
-            if (ReferenceEquals(existing, newTracked))
-                return;
-
-            DetachTracked(existing);
-            AttachTracked(newTracked);
-            items[index] = newTracked;
-            if (newTracked.TryGetEntity(out var entity))
-            {
-                bindingList[index] = entity;
-            }
-            indexByKey[newTracked.KeyValue] = index;
-        }
-
-        private void RemoveRange(int index, int count)
-        {
-            for (var i = 0; i < count; i++)
-            {
-                var tracked = items[index];
-                DetachTracked(tracked);
-                indexByKey.Remove(tracked.KeyValue);
-                items.RemoveAt(index);
-                bindingList.RemoveAt(index);
-            }
-            RebuildIndexMapFrom(index);
-            OnPropertyChanged(nameof(Count));
-        }
-
-        private void RebuildIndexMapFrom(int startIndex)
-        {
-            for (var i = startIndex; i < items.Count; i++)
-            {
-                var tracked = items[i];
-                indexByKey[tracked.KeyValue] = i;
-            }
-        }
-
-        private void ClearInternal()
-        {
-            foreach (var tracked in items)
-            {
-                DetachTracked(tracked);
-            }
-
-            items.Clear();
-            bindingList.Clear();
-            indexByKey.Clear();
-            dirtyKeys.Clear();
-            OnPropertyChanged(nameof(HasDirtyItems));
-            OnPropertyChanged(nameof(Count));
-        }
-
-        private void SetCurrentIndexInternal(int index)
+        private bool SetCurrentIndexInternal(int index, bool suppressPrompt = false)
         {
             if (currentIndex == index)
-                return;
+                return true;
 
-            currentIndex = index;
+            if (!suppressPrompt && !PrepareForNavigation())
+                return false;
 
+            UpdateCurrent(index);
+            return true;
+        }
+
+        private void UpdateCurrent(int index)
+        {
             var previous = current;
-            current = index >= 0 && index < items.Count ? items[index] : null;
+
+            if (previous != null)
+            {
+                previous.TrackedStateChanged -= CurrentTrackedStateChanged;
+            }
+
+            if (bindingList.Count == 0 || index < 0)
+            {
+                currentIndex = -1;
+                current = null;
+            }
+            else
+            {
+                if (index >= bindingList.Count)
+                    index = bindingList.Count - 1;
+
+                currentIndex = index;
+                var entity = bindingList[currentIndex];
+                var tracked = EnsureTracked(ref entity);
+                if (!ReferenceEquals(entity, bindingList[currentIndex]))
+                    bindingList[currentIndex] = entity;
+
+                current = tracked;
+                current.TrackedStateChanged += CurrentTrackedStateChanged;
+            }
 
             OnPropertyChanged(nameof(CurrentIndex));
             OnPropertyChanged(nameof(Current));
             OnPropertyChanged(nameof(CurrentEntity));
             OnPropertyChanged(nameof(CurrentState));
+            OnPropertyChanged(nameof(SaveCommand));
 
             if (!ReferenceEquals(previous, current))
             {
@@ -432,6 +420,72 @@ namespace MDDDataAccess
             RaiseNavigationCanExecute();
         }
 
+        private void CurrentTrackedStateChanged(object sender, TrackedState e)
+        {
+            if (ReferenceEquals(sender, current))
+            {
+                OnPropertyChanged(nameof(CurrentState));
+            }
+        }
+
+        private void ClearInternal()
+        {
+            if (current != null)
+                current.TrackedStateChanged -= CurrentTrackedStateChanged;
+
+            current = null;
+            currentIndex = -1;
+            bindingList.Clear();
+
+            OnPropertyChanged(nameof(CurrentIndex));
+            OnPropertyChanged(nameof(Current));
+            OnPropertyChanged(nameof(CurrentEntity));
+            OnPropertyChanged(nameof(CurrentState));
+            OnPropertyChanged(nameof(SaveCommand));
+        }
+
+        private void TrimBrowserHistory(int startIndex)
+        {
+            for (var i = bindingList.Count - 1; i >= startIndex; i--)
+            {
+                bindingList.RemoveAt(i);
+            }
+        }
+
+        private TrackedEntity<T> EnsureTracked(ref T entity)
+        {
+            if (entity == null) throw new ArgumentNullException(nameof(entity));
+
+            var local = entity;
+            var tracked = tracker.GetOrAdd(ref local);
+            if (!ReferenceEquals(local, entity))
+                entity = local;
+
+            if (!tracked.TryGetEntity(out _))
+                throw new InvalidOperationException("Tracked entity has no live reference.");
+
+            return tracked;
+        }
+
+        private int FindIndexByKey(object key)
+        {
+            if (key == null)
+                return -1;
+
+            for (var i = 0; i < bindingList.Count; i++)
+            {
+                var candidate = bindingList[i];
+                if (candidate == null)
+                    continue;
+
+                var candidateKey = TrackedEntity<T>.GetKeyValue(candidate);
+                if (Equals(candidateKey, key))
+                    return i;
+            }
+
+            return -1;
+        }
+
         private void RaiseNavigationCanExecute()
         {
             (NextCommand as RelayCommand)?.RaiseCanExecuteChanged();
@@ -439,30 +493,6 @@ namespace MDDDataAccess
             (FirstCommand as RelayCommand)?.RaiseCanExecuteChanged();
             (LastCommand as RelayCommand)?.RaiseCanExecuteChanged();
             (RemoveCurrentCommand as RelayCommand)?.RaiseCanExecuteChanged();
-        }
-
-        private void TrackedEntityStateChanged(object sender, TrackedState e)
-        {
-            if (sender is TrackedEntity<T> tracked)
-            {
-                switch (e)
-                {
-                    case TrackedState.Modified:
-                        dirtyKeys.Add(tracked.KeyValue);
-                        break;
-                    case TrackedState.Unchanged:
-                    case TrackedState.Invalid:
-                        dirtyKeys.Remove(tracked.KeyValue);
-                        break;
-                }
-
-                if (ReferenceEquals(tracked, current))
-                {
-                    OnPropertyChanged(nameof(CurrentState));
-                }
-
-                OnPropertyChanged(nameof(HasDirtyItems));
-            }
         }
 
         private void OnDataSourceChanged()

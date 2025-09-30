@@ -63,6 +63,7 @@
     <Compile Include="TestTable.cs" />
     <Compile Include="NavigationPropertyTests.cs" />
     <Compile Include="SimpleTests.cs" />
+    <Compile Include="TrackedListTests.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
@@ -71,6 +72,10 @@
     <ProjectReference Include="..\DBEngine\DBEngine.csproj">
       <Project>{D4E02B39-C5F0-4FED-B621-3A296083CC1A}</Project>
       <Name>DBEngine</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\MDDFoundation\MDDFoundation.csproj">
+      <Project>{AEAEDD4C-D9DD-48B0-9303-139813FCD32E}</Project>
+      <Name>MDDFoundation</Name>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VSToolsPath)\TeamTest\Microsoft.TestTools.targets" Condition="Exists('$(VSToolsPath)\TeamTest\Microsoft.TestTools.targets')" />
