@@ -237,6 +237,16 @@ namespace MDDDataAccess
                         return new Tracker<T>(this);
                     });
                 if (DebugLevel >= 100 && logEntry != null) Log.Entry(logEntry);
+
+                if (string.IsNullOrWhiteSpace(TrackedEntity<T>.UpdateCommand))
+                {
+                    string procname = $"{typeof(T).Name}_Upsert";
+                    var testforparams = ProcedureParameterList(procname);
+                    if (testforparams.Count > 0)
+                        TrackedEntity<T>.UpdateCommand = procname;
+                }
+
+
                 return tracker;
             }
             else

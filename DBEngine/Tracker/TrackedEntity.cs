@@ -59,6 +59,9 @@ namespace MDDDataAccess
                 var type = typeof(T);
                 SupportsDirtyAwareCopy = type.GetCustomAttributes(typeof(DirtyAwareCopyAttribute), true).Any();
 
+                var updcmd = type.GetCustomAttribute<DBUpsertAttribute>();
+                if (updcmd != null) UpdateCommand = updcmd.UpsertProcName;
+
                 // find key property
                 KeyProperty = type.GetProperties().FirstOrDefault(p => p.GetCustomAttributes(keyAttributeType, true).Any());
                 if (KeyProperty == null)
