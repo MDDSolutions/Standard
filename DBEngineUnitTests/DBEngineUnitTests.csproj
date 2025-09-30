@@ -62,6 +62,7 @@
     <Compile Include="TestOrder.cs" />
     <Compile Include="TestTable.cs" />
     <Compile Include="NavigationPropertyTests.cs" />
+    <Compile Include="TrackedListTests.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
