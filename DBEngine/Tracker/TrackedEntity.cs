@@ -7,6 +7,9 @@ using System.Linq.Expressions;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows.Input;
 
 
 namespace MDDDataAccess
@@ -144,8 +147,14 @@ namespace MDDDataAccess
             }
         }
 
+        public static string UpdateCommand { get; set; }
+
         // ---------- Instance-level ----------
-        public TrackedEntity(T entity)
+        private TrackedEntity()
+        {
+            SaveCommand = new AsyncDbCommand(Save, CanSave);
+        }
+        public TrackedEntity(T entity) : this()
         {
             if (!IsTrackable)
                 throw new InvalidOperationException($"Type {typeof(T).FullName} is not trackable. Ensure Initialize() has been called and that the type has both a Key and Concurrency property defined.");
@@ -167,7 +176,7 @@ namespace MDDDataAccess
         /// <param name="concurrency"></param>
         /// <param name="entity"></param>
         /// <exception cref="InvalidOperationException"></exception>
-        public TrackedEntity(object key, object concurrency, T entity)
+        public TrackedEntity(object key, object concurrency, T entity) : this()
         {
             if (!IsTrackable)
                 throw new InvalidOperationException($"Type {typeof(T).FullName} is not trackable. Ensure Initialize() has been called and that the type has at least a Key property and ideally, a Concurrency property defined.");
@@ -244,6 +253,7 @@ namespace MDDDataAccess
             {
                 referencevalid = false;
                 TrackedStateChanged?.Invoke(this, TrackedState.Invalid);
+                (SaveCommand as AsyncDbCommand)?.RaiseCanExecuteChanged();
                 throw new InvalidOperationException("The entity reference is no longer valid.");
             }
         }
@@ -265,7 +275,10 @@ namespace MDDDataAccess
                     _isDirtyCached = _dirtyProps.Count > 0;
                 }
                 if (dirtypre != _isDirtyCached.Value)
-                    TrackedStateChanged?.Invoke(this, _isDirtyCached.Value ? TrackedState.Modified  : TrackedState.Unchanged);
+                {
+                    TrackedStateChanged?.Invoke(this, _isDirtyCached.Value ? TrackedState.Modified : TrackedState.Unchanged);
+                    (SaveCommand as AsyncDbCommand)?.RaiseCanExecuteChanged();
+                }
             }
             //else
             //{
@@ -301,7 +314,10 @@ namespace MDDDataAccess
                     _isDirtyCached = true;
                 }
                 if (dirtypre != _isDirtyCached.Value)
+                { 
                     TrackedStateChanged?.Invoke(this, _isDirtyCached.Value ? TrackedState.Modified : TrackedState.Unchanged);
+                    (SaveCommand as AsyncDbCommand)?.RaiseCanExecuteChanged();
+                }
 
             }
         }
@@ -315,6 +331,7 @@ namespace MDDDataAccess
                 {
                     initializing = value;
                     TrackedStateChanged?.Invoke(this, State);
+                    (SaveCommand as AsyncDbCommand)?.RaiseCanExecuteChanged();
                 }
             }
         }
@@ -352,6 +369,7 @@ namespace MDDDataAccess
                 {
                     referencevalid = false;
                     TrackedStateChanged?.Invoke(this, TrackedState.Invalid);
+                    (SaveCommand as AsyncDbCommand)?.RaiseCanExecuteChanged();
                 }
                 return TrackedState.Invalid;
             }
@@ -391,6 +409,7 @@ namespace MDDDataAccess
             {
                 referencevalid = false;
                 TrackedStateChanged?.Invoke(this, TrackedState.Invalid);
+                (SaveCommand as AsyncDbCommand)?.RaiseCanExecuteChanged();
             }
             return result;
         }
@@ -452,6 +471,7 @@ namespace MDDDataAccess
             {
                 referencevalid = false;
                 TrackedStateChanged?.Invoke(this, TrackedState.Invalid);
+                (SaveCommand as AsyncDbCommand)?.RaiseCanExecuteChanged();
             }
             e = null;
             return false;
@@ -546,6 +566,7 @@ namespace MDDDataAccess
                 {
                     _isDirtyCached = dirtyset;
                     TrackedStateChanged?.Invoke(this, _isDirtyCached.Value ? TrackedState.Modified : TrackedState.Unchanged);
+                    (SaveCommand as AsyncDbCommand)?.RaiseCanExecuteChanged();
                 }
                 Initializing = false;
                 if (!success) throw new DBEngineConcurrencyMismatchException($"Concurrency Mismatch on an object of type {typeof(T).Name} with key value {tokey}", tokey, mismatchrecords);
@@ -560,6 +581,16 @@ namespace MDDDataAccess
 
         public bool CanNotify => _isDirtyCached != null;
         public event EventHandler<TrackedState> TrackedStateChanged;
+
+        public ICommand SaveCommand { get; private set; }
+        private async Task Save(DBEngine db)
+        {
+            if (TryGetEntity(out var entity))
+            {
+                await db.RunSqlUpdateAsync(entity,UpdateCommand,DBEngine.IsProcedure(UpdateCommand),CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+        private bool CanSave() => !string.IsNullOrWhiteSpace(UpdateCommand) && State == TrackedState.Modified;
 
         public override string ToString()
         {

@@ -359,41 +359,6 @@ namespace MDDDataAccess
         private bool CanDelete() => Updatable && currentRow != null;
         public override string ToString() => $"CurrentRow: {CurrentRowIndex} - {currentRow?.Row.RowState}";
     }
-
-    public class RelayCommand : ICommand
-    {
-        private readonly Action execute;
-        private readonly Func<bool> canExecute;
-        private event EventHandler canExecuteChanged;
-        public RelayCommand(Action execute, Func<bool> canExecute = null)
-        {
-            this.execute = execute ?? throw new ArgumentNullException(nameof(execute));
-            this.canExecute = canExecute;
-        }
-        public bool CanExecute(object parameter) => canExecute == null || canExecute();
-        public void Execute(object parameter) => execute();
-        public event EventHandler CanExecuteChanged
-        {
-            add
-            {
-                if (canExecute != null)
-                {
-                    canExecuteChanged += value;
-                }
-            }
-            remove
-            {
-                if (canExecute != null)
-                {
-                    canExecuteChanged -= value;
-                }
-            }
-        }
-        public void RaiseCanExecuteChanged()
-        {
-            canExecuteChanged?.Invoke(this, EventArgs.Empty);
-        }
-    }
     public enum ViewModelQueryType
     {
         All, FullText, Indexed

@@ -1,19 +1,20 @@
-﻿using System;
+﻿using Microsoft.SqlServer.Server;
+using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Text;
-using System.Data.SqlClient;
-using System.Linq;
-using System.Reflection;
-using System.Data;
-using System.Linq.Expressions;
-using Microsoft.SqlServer.Server;
 using System.ComponentModel;
+using System.Data;
+using System.Data.SqlClient;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Linq.Expressions;
+using System.Reflection;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Formatters.Binary;
-using System.IO;
-using System.Diagnostics;
-using System.Collections.Concurrent;
+using System.Text;
+using System.Text.RegularExpressions;
 
 namespace MDDDataAccess
 {
@@ -499,6 +500,12 @@ namespace MDDDataAccess
             return false;
         }
         public static int TrackerHitCount { get; private set;} = 0;
+        public static bool IsProcedure(string cmdtext)
+        {
+            return !string.IsNullOrWhiteSpace(cmdtext) && !WhitespaceOrReserved.IsMatch(cmdtext);
+        }
+        const string WhitespaceOrReservedPattern = @"[\s;/\-+*]|^vacuum$|^commit$|^rollback$|^revert$";
+        static Regex WhitespaceOrReserved = new Regex(WhitespaceOrReservedPattern, RegexOptions.Compiled | RegexOptions.IgnoreCase);
     }
 }
 
