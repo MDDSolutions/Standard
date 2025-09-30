@@ -17,14 +17,14 @@ namespace MDDDataAccess
     {
         public Tracker(DBEngine dbengine)
         {
-            if (!Tracked<T>.IsTrackable)
+            if (!TrackedEntity<T>.IsTrackable)
                 throw new InvalidOperationException(
                     $"Type {typeof(T).FullName} is not trackable. A key is required; a concurrency token is optional but recommended."
                 );
             DBEngine = dbengine;
         }
         private DBEngine DBEngine { get; }
-        private readonly ConcurrentDictionary<object, Tracked<T>> trackedObjects = new ConcurrentDictionary<object, Tracked<T>>();
+        private readonly ConcurrentDictionary<object, TrackedEntity<T>> trackedObjects = new ConcurrentDictionary<object, TrackedEntity<T>>();
         /// <summary>
         /// This is the one that will now never be used - the problem was if you put an unbaked T in the tracker and then you puke when trying to finish baking it, you're
         /// left with a mess... so we now fully load the object and then pass it to the other GetOrAdd - there is now a CopyValues function in Tracker<typeparamref name="T"/>
@@ -37,7 +37,7 @@ namespace MDDDataAccess
         /// <param name="concurrency"></param>
         /// <returns></returns>
         /// <exception cref="InvalidOperationException"></exception>
-        public Tracked<T> GetOrAdd(object key, object concurrency, out T entity)
+        public TrackedEntity<T> GetOrAdd(object key, object concurrency, out T entity)
         {
             if (key == null)
                 throw new InvalidOperationException($"The key value provided for {typeof(T).FullName} was null");
@@ -49,7 +49,7 @@ namespace MDDDataAccess
                 k => 
                 {
                     lentity = new T();
-                    return new Tracked<T>(key, concurrency, lentity);
+                    return new TrackedEntity<T>(key, concurrency, lentity);
                 },
                 (k, existing) =>
                 {
@@ -62,7 +62,7 @@ namespace MDDDataAccess
                             throw new InvalidOperationException("The entity is already Initializing - this should not happen");
                         case TrackedState.Unchanged:
                             //if the existing state is unchanged, but the concurrency value is different, mark it as initializing so it gets reloaded
-                            if (Tracked<T>.HasConcurrency)
+                            if (TrackedEntity<T>.HasConcurrency)
                             {
                                 if (!DBEngine.ValueEquals(concurrency, existing.ConcurrencyValue))
                                 {
@@ -79,7 +79,7 @@ namespace MDDDataAccess
                             return existing;
                         case TrackedState.Modified:
                             //if the existing state is modified, the concurrency value must match
-                            if (Tracked<T>.HasConcurrency)
+                            if (TrackedEntity<T>.HasConcurrency)
                             {
                                 if (!DBEngine.ValueEquals(concurrency, existing.ConcurrencyValue))
                                     throw new InvalidOperationException("The entity has been modified and the concurrency value does not match.");
@@ -93,7 +93,7 @@ namespace MDDDataAccess
                             }
                         case TrackedState.Invalid:
                             lentity = new T();
-                            return new Tracked<T>(key, concurrency, lentity);
+                            return new TrackedEntity<T>(key, concurrency, lentity);
                         default:
                             throw new InvalidOperationException("The entity is in an invalid state.");
                     }
@@ -111,30 +111,32 @@ namespace MDDDataAccess
         /// <returns></returns>
         /// <exception cref="InvalidOperationException"></exception>
         /// <exception cref="NotImplementedException"></exception>
-        public Tracked<T> GetOrAdd(ref T entity)
+        public TrackedEntity<T> GetOrAdd(ref T entity, bool initializing = false)
         {
-            var key = Tracked<T>.GetKeyValue(entity);
+            var key = TrackedEntity<T>.GetKeyValue(entity);
             if (key == null)
                 throw new InvalidOperationException($"The entity provided for {typeof(T).FullName} has a null key value");
 
             T loading = entity;
-            var loadingconcurrency = Tracked<T>.GetConcurrencyValue?.Invoke(loading);
             var tracked = trackedObjects.AddOrUpdate(
                 key, 
-                k => new Tracked<T>(loading),
+                k => new TrackedEntity<T>(loading),
                 (k, existingtracked) =>
                 {
                     if (existingtracked.TryGetEntity(out T existingentity))
                     {
                         if (ReferenceEquals(existingentity, loading))
                         {
-                            //entity may have been updated, but now that it has been reloaded, it should be reinitialized
-                            existingtracked.Initializing = true;
-                            existingtracked.EndInitialization();
+                            if (initializing)
+                            {
+                                existingtracked.Initializing = true;
+                                existingtracked.EndInitialization();
+                            }
                             return existingtracked;
                         }
                         else
                         {
+                            var loadingconcurrency = TrackedEntity<T>.GetConcurrencyValue?.Invoke(loading);
                             switch (existingtracked.State)
                             {
                                 case TrackedState.Unchanged:
@@ -142,9 +144,9 @@ namespace MDDDataAccess
                                     //if the object does not have concurrency, I guess we just blindly merge the values from the loaded object - they could be new, but who knows?
                                     //if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 55, "OFR cache hit", r.ToString(), typeof(T).Name));
 
-                                    if (!Tracked<T>.HasConcurrency || !DBEngine.ValueEquals(loadingconcurrency, Tracked<T>.GetConcurrencyValue(existingentity)))
+                                    if (!TrackedEntity<T>.HasConcurrency || !DBEngine.ValueEquals(loadingconcurrency, TrackedEntity<T>.GetConcurrencyValue(existingentity)))
                                     {
-                                        var allowDirtyAware = DBEngine.DirtyAwareObjectCopy && Tracked<T>.SupportsDirtyAwareCopy;
+                                        var allowDirtyAware = DBEngine.DirtyAwareObjectCopy && TrackedEntity<T>.SupportsDirtyAwareCopy;
                                         existingtracked.CopyValues(loading, allowDirtyAware);
                                     }
                                     else
@@ -159,7 +161,7 @@ namespace MDDDataAccess
                                     //now - whoever has the object and hasn't saved it yet is going to get an error, but there is no mechanism here to tell them
                                     //whoever is loading the object is going to get the dirty, unsaved one and not the version in the database - that might be a clue
                                     //if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 55, "OFR cache hit", r.ToString(), typeof(T).Name));
-                                    var attemptDirtyAware = DBEngine.DirtyAwareObjectCopy && Tracked<T>.SupportsDirtyAwareCopy;
+                                    var attemptDirtyAware = DBEngine.DirtyAwareObjectCopy && TrackedEntity<T>.SupportsDirtyAwareCopy;
                                     existingtracked.CopyValues(loading, attemptDirtyAware);
                                     loading = existingentity;
                                     return existingtracked;
@@ -167,17 +169,17 @@ namespace MDDDataAccess
                                     throw new InvalidOperationException($"There is an object in the {typeof(T).Name} tracker with key {key} in an initializing state - this really shouldn't happen");
                                 case TrackedState.Invalid:
                                 default:
-                                    return new Tracked<T>(loading);
+                                    return new TrackedEntity<T>(loading);
                             }
                         }
                     }
-                    return new Tracked<T>(loading);
+                    return new TrackedEntity<T>(loading);
                 });
             entity = loading;
             return tracked;
         }
 
-        public bool TryGet(object key, out Tracked<T> tracked) => trackedObjects.TryGetValue(key, out tracked);
+        public bool TryGet(object key, out TrackedEntity<T> tracked) => trackedObjects.TryGetValue(key, out tracked);
         public int Count => trackedObjects.Count;
 
         //public IEnumerable<Tracked<T>> Entries => trackedObjects.Values;
@@ -220,7 +222,7 @@ namespace MDDDataAccess
         public bool DirtyAwareObjectCopy { get; set; } = false;
         public Tracker<T> GetTracker<T>() where T : class, new()
         {
-            if (Tracked<T>.IsTrackable)
+            if (TrackedEntity<T>.IsTrackable)
             {
                 RichLogEntry logEntry = null;
                 var tracker = (Tracker<T>)trackers.GetOrAdd(
@@ -259,15 +261,16 @@ namespace MDDDataAccess
                 return false;
             }
         }
-        public object TrackerAddObject(object entity)
+        public object TrackerAddObject(object entity, bool initializing)
         {
             var getTrackerMethod = typeof(DBEngine).GetMethod("GetTracker", BindingFlags.Public | BindingFlags.Instance);
             var genericMethod = getTrackerMethod.MakeGenericMethod(entity.GetType());
             var ctracker = genericMethod.Invoke(this, null);
 
-            var getOrAddMethod = ctracker.GetType().GetMethod("GetOrAdd", new[] { entity.GetType().MakeByRefType() });
-            var parameters = new object[] { entity };
+            var getOrAddMethod = ctracker.GetType().GetMethod("GetOrAdd", new[] { entity.GetType().MakeByRefType(), typeof(bool) });
+            var parameters = new object[] { entity, initializing };
             var tracked = getOrAddMethod.Invoke(ctracker, parameters);
+            entity = parameters[0]; // update ref parameter if needed
             return tracked;
         }
     }

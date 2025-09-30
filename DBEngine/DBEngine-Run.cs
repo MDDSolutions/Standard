@@ -374,7 +374,7 @@ namespace MDDDataAccess
                             var l = new List<T>();
                             PropertyInfo key = null;
                             List<PropertyMapEntry> map = null;
-                            Tracker<T> t = Tracking != ObjectTracking.None && Tracked<T>.IsTrackable ? GetTracker<T>() : null;
+                            Tracker<T> t = Tracking != ObjectTracking.None && TrackedEntity<T>.IsTrackable ? GetTracker<T>() : null;
 
                             using (SqlDataReader rdr = ExecuteReader(cmd))
                             {
@@ -935,7 +935,7 @@ namespace MDDDataAccess
             Tracker<T> t = Tracking != ObjectTracking.None ? GetTracker<T>() : null;
             if (t != null && obj != null)
             {
-                if (!t.TryGet(Tracked<T>.GetKeyValue(obj), out var tracked) || tracked == null)
+                if (!t.TryGet(TrackedEntity<T>.GetKeyValue(obj), out var tracked) || tracked == null)
                     throw new Exception("The object provided for update is trackable but is not currently being tracked - the object was somehow loaded outside the tracking system and so cannot be updated");
             }
             bool found = false;

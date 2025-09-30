@@ -311,7 +311,7 @@ FROM (SELECT TOP (2) object_id AS n FROM sys.objects WHERE OBJECT_ID > 0) n
             order = null;
 
             int tries = 0;
-            Tracked<TestOrderINPC> tracked2 = null;
+            TrackedEntity<TestOrderINPC> tracked2 = null;
             while (tracker.Count > 0 && tries < 10)
             {
                 GC.Collect();
@@ -344,7 +344,7 @@ FROM (SELECT TOP (2) object_id AS n FROM sys.objects WHERE OBJECT_ID > 0) n
             order = null;
 
             int tries = 0;
-            Tracked<TestOrderNO> tracked2 = null;
+            TrackedEntity<TestOrderNO> tracked2 = null;
             while (tracker.Count > 0 && tries < 10)
             {
                 GC.Collect();
@@ -377,7 +377,7 @@ FROM (SELECT TOP (2) object_id AS n FROM sys.objects WHERE OBJECT_ID > 0) n
             order = null;
 
             int tries = 0;
-            Tracked<TestOrderPOCO> tracked2 = null;
+            TrackedEntity<TestOrderPOCO> tracked2 = null;
             while (tracker.Count > 0 && tries < 10)
             {
                 GC.Collect();
@@ -577,6 +577,12 @@ FROM (SELECT TOP (2) object_id AS n FROM sys.objects WHERE OBJECT_ID > 0) n
             var oldnameval = order1.CustomerName;
             var newnameval = order1.CustomerName = order1.CustomerName + "_Changed!";
             Assert.AreEqual(TrackedState.Modified, tracked.State);
+
+            //at this point, the name is "Alice_Changed!" in memory, but the original value is "Alice" and the object is dirty
+            //the Amount is still 10 in memory (unchanged) but 15 in the DB
+            //so when Alice / 15 comes in from the DB, DirtyAwareCopy should detect that the name has been changed in memory, so keep the changed name
+            //but the amount has been updated in the DB so bring in the new amount
+            //result should be Alice_Changed! / 15 and the state should still be modified
 
             _db.SqlRunQueryWithResults<TestOrderPOCO>("SELECT * FROM dbo.TestOrders WHERE OrderId=@Id", false, -1, null,
                 new SqlParameter("@Id", order1.Id));

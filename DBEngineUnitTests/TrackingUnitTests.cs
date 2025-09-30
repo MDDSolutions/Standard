@@ -25,7 +25,7 @@ namespace DBEngineUnitTests
                 Amount = 10m
             };
 
-            var tracked = new Tracked<InpcTrackable>(entity);
+            var tracked = new TrackedEntity<InpcTrackable>(entity);
 
             Assert.AreEqual(DirtyCheckMode.Cached, tracked.DirtyCheckMode, "INotifyPropertyChanged entities should use cached dirty checking.");
             Assert.AreEqual(TrackedState.Unchanged, tracked.State, "Entity should start unchanged after initialization.");
@@ -42,7 +42,7 @@ namespace DBEngineUnitTests
         [TestMethod]
         public void EndInitialization_WhenCalledTwice_ThrowsInvalidOperation()
         {
-            var tracked = new Tracked<InpcTrackable>(key: 7, concurrency: new byte[] { 9 }, entity: new InpcTrackable());
+            var tracked = new TrackedEntity<InpcTrackable>(key: 7, concurrency: new byte[] { 9 }, entity: new InpcTrackable());
             tracked.BeginInitialization(7, new byte[] { 9 }, out var entity);
             entity.Name = "Loaded";
             tracked.EndInitialization();
@@ -69,7 +69,7 @@ namespace DBEngineUnitTests
                 Optional = null
             };
 
-            var tracked = new Tracked<OptionalTrackable>(target);
+            var tracked = new TrackedEntity<OptionalTrackable>(target);
             tracked.CopyValues(source, dirtyaware: false);
 
             Assert.AreEqual(5, target.Required);
@@ -84,7 +84,7 @@ namespace DBEngineUnitTests
         [TestMethod]
         public void IsTrackable_ReturnsFalseWhenKeyAttributeMissing()
         {
-            Assert.IsFalse(Tracked<Untrackable>.IsTrackable, "Types without a ListKey should not be considered trackable.");
+            Assert.IsFalse(TrackedEntity<Untrackable>.IsTrackable, "Types without a ListKey should not be considered trackable.");
         }
 
         [DirtyAwareCopy]
@@ -489,7 +489,7 @@ namespace DBEngineUnitTests
             };
         }
 
-        private static InpcTrackable GetTrackedEntity(Tracked<InpcTrackable> tracked)
+        private static InpcTrackable GetTrackedEntity(TrackedEntity<InpcTrackable> tracked)
         {
             tracked.TryGetEntity(out var entity);
             return entity;

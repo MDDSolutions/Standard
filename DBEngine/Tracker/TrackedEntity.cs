@@ -11,7 +11,7 @@ using System.Text;
 
 namespace MDDDataAccess
 {
-    public class Tracked<T> where T : class, new()
+    public class TrackedEntity<T> where T : class, new()
     {
         // ---------- Static metadata ----------
         private static bool? istrackable = null;
@@ -36,7 +36,7 @@ namespace MDDDataAccess
         public static Func<T, object> GetConcurrencyValue;
         public static Action<T, object> SetConcurrencyValue;
         private static Dictionary<string,PropertyDelegateInfo<T>> AllPropertyDelegates;
-        private static readonly ConditionalWeakTable<T, Tracked<T>> _entityToTracked = new ConditionalWeakTable<T, Tracked<T>>();
+        private static readonly ConditionalWeakTable<T, TrackedEntity<T>> _entityToTracked = new ConditionalWeakTable<T, TrackedEntity<T>>();
         private static readonly object initLock = new object();
         public static void Initialize(Type keyAttributeType = null, Type concurrencyAttributeType = null)
         {
@@ -120,9 +120,6 @@ namespace MDDDataAccess
                 istrackable = true;
             }
         }
-
-
-
         private static void WeakPropertyChangedHandler(object sender, PropertyChangedEventArgs e)
         {
             // Try to get the Tracked<T> instance from the sender
@@ -136,7 +133,6 @@ namespace MDDDataAccess
                 }
             }
         }
-
         private static void NObjPropertyUpdated(object sender, PropertyChangedWithValuesEventArgs e)
         {
             if (sender is T entity)
@@ -149,7 +145,7 @@ namespace MDDDataAccess
         }
 
         // ---------- Instance-level ----------
-        public Tracked(T entity)
+        public TrackedEntity(T entity)
         {
             if (!IsTrackable)
                 throw new InvalidOperationException($"Type {typeof(T).FullName} is not trackable. Ensure Initialize() has been called and that the type has both a Key and Concurrency property defined.");
@@ -159,6 +155,7 @@ namespace MDDDataAccess
 
             Initializing = true;
             _entityRef = new WeakReference<T>(entity);
+            referencevalid = true;
             ConcurrencyValue = GetConcurrencyValue?.Invoke(entity);
             EndInitialization();
 
@@ -170,7 +167,7 @@ namespace MDDDataAccess
         /// <param name="concurrency"></param>
         /// <param name="entity"></param>
         /// <exception cref="InvalidOperationException"></exception>
-        public Tracked(object key, object concurrency, T entity)
+        public TrackedEntity(object key, object concurrency, T entity)
         {
             if (!IsTrackable)
                 throw new InvalidOperationException($"Type {typeof(T).FullName} is not trackable. Ensure Initialize() has been called and that the type has at least a Key property and ideally, a Concurrency property defined.");
@@ -178,7 +175,7 @@ namespace MDDDataAccess
                 throw new InvalidOperationException($"The entity of type {typeof(T).FullName} has a null key value.");
 
             _entityRef = new WeakReference<T>(entity);
-
+            referencevalid = true;
             Initializing = true;
             KeyValue = key;
             ConcurrencyValue = concurrency;
@@ -191,7 +188,7 @@ namespace MDDDataAccess
             entity = new T();
 
             _entityRef = new WeakReference<T>(entity);
-
+            referencevalid = true;
             Initializing = true;
             SetKeyValue(entity, key);
             SetConcurrencyValue?.Invoke(entity, concurrency);
@@ -245,6 +242,8 @@ namespace MDDDataAccess
             }
             else
             {
+                referencevalid = false;
+                TrackedStateChanged?.Invoke(this, TrackedState.Invalid);
                 throw new InvalidOperationException("The entity reference is no longer valid.");
             }
         }
@@ -253,6 +252,7 @@ namespace MDDDataAccess
             // If property is trackable, compare to original and update cache.
             if (!Initializing && _originalValues.TryGetValue(e.PropertyName, out var original))
             {
+                bool dirtypre = _isDirtyCached.Value;
                 var current = AllPropertyDelegates[e.PropertyName].Getter.Invoke(entity);
                 if (!DBEngine.ValueEquals(current, original))
                 {
@@ -264,6 +264,8 @@ namespace MDDDataAccess
                     _dirtyProps.Remove(e.PropertyName);
                     _isDirtyCached = _dirtyProps.Count > 0;
                 }
+                if (dirtypre != _isDirtyCached.Value)
+                    TrackedStateChanged?.Invoke(this, _isDirtyCached.Value ? TrackedState.Modified  : TrackedState.Unchanged);
             }
             //else
             //{
@@ -277,6 +279,7 @@ namespace MDDDataAccess
             // the property changes.
             if (!Initializing)
             {
+                bool dirtypre = _isDirtyCached.Value;
                 if (_originalValues.TryGetValue(e.PropertyName, out var original))
                 {
                     //var current = AllPropertyDelegates[e.PropertyName].Invoke(entity);
@@ -297,10 +300,26 @@ namespace MDDDataAccess
                     _dirtyProps.Add(e.PropertyName);
                     _isDirtyCached = true;
                 }
+                if (dirtypre != _isDirtyCached.Value)
+                    TrackedStateChanged?.Invoke(this, _isDirtyCached.Value ? TrackedState.Modified : TrackedState.Unchanged);
+
             }
         }
-        public bool Initializing { get; internal set; } = true;
+        private bool initializing = true;
+        public bool Initializing 
+        {
+            get => initializing;
+            internal set 
+            {
+                if (initializing != value)
+                {
+                    initializing = value;
+                    TrackedStateChanged?.Invoke(this, State);
+                }
+            }
+        }
         private WeakReference<T> _entityRef;
+        private bool referencevalid = false;
         private readonly Dictionary<string, object> _originalValues = new Dictionary<string, object>();
         private readonly HashSet<string> _dirtyProps = new HashSet<string>();
         private bool? _isDirtyCached = null;
@@ -328,6 +347,11 @@ namespace MDDDataAccess
                         }
                     }
                     return TrackedState.Unchanged;
+                }
+                if (referencevalid)
+                {
+                    referencevalid = false;
+                    TrackedStateChanged?.Invoke(this, TrackedState.Invalid);
                 }
                 return TrackedState.Invalid;
             }
@@ -362,6 +386,11 @@ namespace MDDDataAccess
                         }
                     }
                 }
+            }
+            else if (referencevalid)
+            {
+                referencevalid = false;
+                TrackedStateChanged?.Invoke(this, TrackedState.Invalid);
             }
             return result;
         }
@@ -418,6 +447,11 @@ namespace MDDDataAccess
             {
                 e = entity;
                 return true;
+            }
+            if (referencevalid)
+            {
+                referencevalid = false;
+                TrackedStateChanged?.Invoke(this, TrackedState.Invalid);
             }
             e = null;
             return false;
@@ -508,7 +542,11 @@ namespace MDDDataAccess
                         }
                     }
                 }
-                if (_isDirtyCached.HasValue) _isDirtyCached = dirtyset;
+                if (_isDirtyCached.HasValue && _isDirtyCached != dirtyset)
+                {
+                    _isDirtyCached = dirtyset;
+                    TrackedStateChanged?.Invoke(this, _isDirtyCached.Value ? TrackedState.Modified : TrackedState.Unchanged);
+                }
                 Initializing = false;
                 if (!success) throw new DBEngineConcurrencyMismatchException($"Concurrency Mismatch on an object of type {typeof(T).Name} with key value {tokey}", tokey, mismatchrecords);
                 return success;
@@ -518,6 +556,11 @@ namespace MDDDataAccess
                 throw new Exception("TryDirtyAwareCopy called on an tracker with no valid entity");
             }
         }
+
+
+        public bool CanNotify => _isDirtyCached != null;
+        public event EventHandler<TrackedState> TrackedStateChanged;
+
         public override string ToString()
         {
             return $"{typeof(T).Name} [Key={KeyValue?.ToString() ?? "null"}, State={State}]";

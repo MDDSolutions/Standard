@@ -28,7 +28,7 @@ namespace MDDDataAccess
             }
             if (r == null) r = new T();
             ExecutePropertyMap(rdr, map, r);
-            if (tracker != null) tracker.GetOrAdd(ref r);
+            if (tracker != null) tracker.GetOrAdd(ref r, true);
         }
         public void ObjectFromReaderWithMetrics_TheWayItSortOfShouldBe<T>(SqlDataReader rdr, ref List<PropertyMapEntry> map, ref PropertyInfo key, ref T r, ref Tracker<T> tracker, bool strict = true, QueryExecutionMetrics metrics = null) where T : class, new()
         {
@@ -48,7 +48,7 @@ namespace MDDDataAccess
             }
             using (metrics?.MeasureTrackerProcessingTime())
             {
-                if (tracker != null) tracker.GetOrAdd(ref r);
+                if (tracker != null) tracker.GetOrAdd(ref r, true);
             }
         }
 
@@ -70,7 +70,7 @@ namespace MDDDataAccess
             {
                 using (metrics.MeasureTrackerProcessingTime())
                 {
-                    tracker.GetOrAdd(ref r);
+                    tracker.GetOrAdd(ref r, true);
                 }
             }
         }
@@ -246,7 +246,7 @@ namespace MDDDataAccess
                         }
 
                         ExecutePropertyMap(reader, childMap, current, type);
-                        TrackerAddObject(current);
+                        TrackerAddObject(current, true);
                     };
 
                     result.Add(navigationEntry);
