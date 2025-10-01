@@ -155,7 +155,7 @@ namespace MDDDataAccess
         // ---------- Instance-level ----------
         private TrackedEntity()
         {
-            SaveCommand = new AsyncDbCommand(Save, CanSave);
+            SaveCommand = new AsyncDbCommand(Save, CanSave,(ex) => TrackedEntityError?.Invoke(this, ex));
         }
         public TrackedEntity(T entity) : this()
         {
@@ -584,14 +584,16 @@ namespace MDDDataAccess
 
         public bool CanNotify => _isDirtyCached != null;
         public event EventHandler<TrackedState> TrackedStateChanged;
+        public event EventHandler<Exception> TrackedEntityError;
 
         public ICommand SaveCommand { get; private set; }
-        private async Task Save(DBEngine db)
+        private async Task<bool> Save(DBEngine db)
         {
             if (TryGetEntity(out var entity))
             {
-                await db.RunSqlUpdateAsync(entity,UpdateCommand,DBEngine.IsProcedure(UpdateCommand),CancellationToken.None).ConfigureAwait(false);
+                return await db.RunSqlUpdateAsync(entity,UpdateCommand,DBEngine.IsProcedure(UpdateCommand),CancellationToken.None,-1, null, DBEngine.Default.AutoParam(entity,UpdateCommand)).ConfigureAwait(false);
             }
+            return false;
         }
         private bool CanSave() => !string.IsNullOrWhiteSpace(UpdateCommand) && State == TrackedState.Modified;
 

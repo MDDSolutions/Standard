@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Threading.Tasks;
 using System.Windows.Input;
 
 namespace MDDDataAccess
@@ -19,19 +20,13 @@ namespace MDDDataAccess
         private readonly SortableBindingList<T> bindingList;
 
         private int currentIndex = -1;
-        private TrackedEntity<T> current;
+        private TrackedEntity<T> currenttracked;
         private bool browserModeEnabled;
+        private bool suppressNavigationPrompt = false;
 
-        /// <summary>
-        /// Raised whenever a consumer should refresh the data source of their binding component.
-        /// The payload is the <see cref="SortableBindingList{T}"/> maintained by this view model.
-        /// </summary>
         public event EventHandler<DataSourceChangedEventArgs> DataSourceChanged;
-
-        /// <summary>
-        /// Raised when the current tracked entity changes.
-        /// </summary>
         public event EventHandler<TrackedEntityChangedEventArgs<T>> CurrentChanged;
+        public event EventHandler<Exception> TrackedListError;
 
         public TrackedList(Tracker<T> tracker, IEnumerable<T> initialItems = null, bool browserModeEnabled = false)
         {
@@ -44,6 +39,7 @@ namespace MDDDataAccess
 
             this.browserModeEnabled = browserModeEnabled;
 
+            suppressNavigationPrompt = true;
             if (initialItems != null)
             {
                 Load(initialItems);
@@ -53,6 +49,7 @@ namespace MDDDataAccess
                 OnDataSourceChanged();
                 RaiseNavigationCanExecute();
             }
+            suppressNavigationPrompt = false;
 
             InitializeCommands();
         }
@@ -76,46 +73,18 @@ namespace MDDDataAccess
 
         public int Count => bindingList.Count;
 
-        public int CurrentIndex
-        {
-            get => currentIndex >= 0 ? currentIndex + 1 : 0;
-            set
-            {
-                if (value <= 0)
-                {
-                    SetCurrentIndexInternal(bindingList.Count > 0 ? 0 : -1);
-                }
-                else if (value - 1 < bindingList.Count)
-                {
-                    SetCurrentIndexInternal(value - 1);
-                }
-            }
-        }
+        public int CurrentIndex => currentIndex >= 0 ? currentIndex + 1 : 0;
 
-        public TrackedEntity<T> Current => current;
+        public TrackedEntity<T> Current => currenttracked;
 
-        public TrackedState CurrentState => current?.State ?? TrackedState.Invalid;
+        public TrackedState CurrentState => currenttracked?.State ?? TrackedState.Invalid;
 
-        public T CurrentEntity
-        {
-            get
-            {
-                if (current != null && current.TryGetEntity(out var entity))
-                    return entity;
-                return null;
-            }
-        }
+        public T CurrentEntity => currenttracked != null && currenttracked.TryGetEntity(out var entity) ? entity : null;
 
-        /// <summary>
-        /// Delegate invoked when the current item is dirty and navigation is requested.
-        /// Return <c>true</c> to save, <c>false</c> to discard without saving, or <c>null</c> to cancel navigation.
-        /// </summary>
         public Func<TrackedEntity<T>, bool?> SaveChanges { get; set; } = _ => true;
 
-        /// <summary>
-        /// Forwarded persistence command from the current tracked entity.
-        /// </summary>
-        public ICommand SaveCommand => current?.SaveCommand;
+        private AsyncDbCommand saveCommand;
+        public AsyncDbCommand SaveCommand => saveCommand;
 
         public ICommand NextCommand { get; private set; }
         public ICommand PreviousCommand { get; private set; }
@@ -123,6 +92,7 @@ namespace MDDDataAccess
         public ICommand LastCommand { get; private set; }
         public ICommand RemoveCurrentCommand { get; private set; }
 
+        // Synchronous load for initial population only (no async save possible)
         public void Load(IEnumerable<T> entities)
         {
             if (entities == null) throw new ArgumentNullException(nameof(entities));
@@ -148,120 +118,115 @@ namespace MDDDataAccess
             }
         }
 
-        public void Add(T entity, bool makeCurrent = true)
+        // Async load for scenarios where async navigation/save may be triggered
+        public async Task LoadAsync(IEnumerable<T> entities)
+        {
+            if (entities == null) throw new ArgumentNullException(nameof(entities));
+            ClearInternal();
+            foreach (var item in entities)
+            {
+                var entity = item;
+                EnsureTracked(ref entity);
+                bindingList.Add(entity);
+            }
+            OnDataSourceChanged();
+            if (bindingList.Count > 0)
+                await SetCurrentIndexInternalAsync(0, suppressPrompt: true);
+            else
+                await SetCurrentIndexInternalAsync(-1, suppressPrompt: true);
+        }
+
+        public async Task AddAsync(T entity, bool makeCurrent = true)
         {
             if (entity == null) throw new ArgumentNullException(nameof(entity));
-
-            if (makeCurrent && !PrepareForNavigation())
-                return;
-
+            if (makeCurrent && !await PrepareForNavigationAsync()) return;
             var local = entity;
             var tracked = EnsureTracked(ref local);
-
             var existingIndex = FindIndexByKey(tracked.KeyValue);
             if (existingIndex >= 0)
             {
                 if (!ReferenceEquals(bindingList[existingIndex], local))
                     bindingList[existingIndex] = local;
-
                 if (makeCurrent)
-                    SetCurrentIndexInternal(existingIndex, suppressPrompt: true);
-
+                    await SetCurrentIndexInternalAsync(existingIndex, suppressPrompt: true);
                 return;
             }
-
             bindingList.Add(local);
-
             if (makeCurrent)
-            {
-                SetCurrentIndexInternal(bindingList.Count - 1, suppressPrompt: true);
-            }
+                await SetCurrentIndexInternalAsync(bindingList.Count - 1, suppressPrompt: true);
             else
-            {
                 RaiseNavigationCanExecute();
-            }
         }
 
-        public bool RemoveCurrent()
+        public async Task<bool> RemoveCurrentAsync()
         {
             if (currentIndex < 0 || currentIndex >= bindingList.Count)
                 return false;
-
-            RemoveAt(currentIndex);
+            await RemoveAtAsync(currentIndex);
             return true;
         }
 
-        public void RemoveAt(int index)
+        public async Task RemoveAtAsync(int index)
         {
             if (index < 0 || index >= bindingList.Count)
                 throw new ArgumentOutOfRangeException(nameof(index));
-
             var previousIndex = currentIndex;
-
             bindingList.RemoveAt(index);
-
             if (bindingList.Count == 0)
             {
                 UpdateCurrent(-1);
                 OnDataSourceChanged();
                 return;
             }
-
-            int targetIndex;
-            if (index < previousIndex)
-                targetIndex = previousIndex - 1;
-            else if (index == previousIndex)
-                targetIndex = Math.Min(previousIndex, bindingList.Count - 1);
-            else
-                targetIndex = previousIndex;
-
-            SetCurrentIndexInternal(targetIndex, suppressPrompt: true);
+            int targetIndex = index < previousIndex ? previousIndex - 1
+                : index == previousIndex ? Math.Min(previousIndex, bindingList.Count - 1)
+                : previousIndex;
+            await SetCurrentIndexInternalAsync(targetIndex, suppressPrompt: true);
         }
 
-        public void Clear()
+        public async Task ClearAsync()
         {
-            if (!PrepareForNavigation())
-                return;
-
+            if (!await PrepareForNavigationAsync()) return;
             ClearInternal();
             OnDataSourceChanged();
         }
 
-        public void SetCurrent(T entity)
+        public async Task SetCurrentAsync(T entity)
         {
             if (entity == null) throw new ArgumentNullException(nameof(entity));
-            if (!PrepareForNavigation())
-                return;
-
+            if (!await PrepareForNavigationAsync()) return;
             var local = entity;
             var tracked = EnsureTracked(ref local);
             SetCurrentInternal(ref local, tracked, allowAdd: true, suppressPrompt: true);
         }
 
-        public void SetCurrentByKey(object key)
+        public async Task SetCurrentByKeyAsync(object key)
         {
             if (key == null) throw new ArgumentNullException(nameof(key));
-            if (!PrepareForNavigation())
-                return;
-
+            if (!await PrepareForNavigationAsync()) return;
             var index = FindIndexByKey(key);
             if (index >= 0)
             {
-                SetCurrentIndexInternal(index, suppressPrompt: true);
+                await SetCurrentIndexInternalAsync(index, suppressPrompt: true);
                 return;
             }
-
             if (!browserModeEnabled)
                 throw new InvalidOperationException($"Key '{key}' is not part of the list.");
-
             if (!tracker.TryGet(key, out var tracked))
                 throw new InvalidOperationException($"No tracked instance exists for key '{key}'.");
-
             if (!tracked.TryGetEntity(out var entity))
                 throw new InvalidOperationException("Tracked entity has been released. Reload the entity before setting it as current.");
-
             var local = entity;
             SetCurrentInternal(ref local, tracked, allowAdd: true, suppressPrompt: true);
+        }
+
+        public async Task<bool> SetCurrentIndexAsync(int value)
+        {
+            if (value <= 0)
+                return await SetCurrentIndexInternalAsync(bindingList.Count > 0 ? 0 : -1);
+            else if (value - 1 < bindingList.Count)
+                return await SetCurrentIndexInternalAsync(value - 1);
+            return currentIndex == value;
         }
 
         #endregion
@@ -270,41 +235,65 @@ namespace MDDDataAccess
 
         private void InitializeCommands()
         {
-            NextCommand = new RelayCommand(Next, CanMoveNext);
-            PreviousCommand = new RelayCommand(Previous, CanMovePrevious);
-            FirstCommand = new RelayCommand(First, CanMoveFirst);
-            LastCommand = new RelayCommand(Last, CanMoveLast);
-            RemoveCurrentCommand = new RelayCommand(() => RemoveCurrent(), () => bindingList.Count > 0);
+            saveCommand = new AsyncDbCommand(
+                async (dbe) =>
+                {
+                    bool success = false;
+                    var cmd = currenttracked?.SaveCommand as AsyncDbCommand;
+                    if (cmd != null && cmd.CanExecute(tracker.DBEngine))
+                    {
+                        try
+                        {
+                            success = await cmd.ExecuteAsync(tracker.DBEngine); 
+                        }
+                        catch (Exception ex)
+                        {
+                            if (TrackedListError != null)
+                                TrackedListError.Invoke(this, ex);
+                            else
+                                throw;
+                            return false;
+                        }
+                    }
+                    return success;
+                },
+                () => currenttracked?.SaveCommand?.CanExecute(tracker.DBEngine) == true
+            );
+            NextCommand = new RelayCommand(() => _ = NextAsync(), CanMoveNext);
+            PreviousCommand = new RelayCommand(() => _ = PreviousAsync(), CanMovePrevious);
+            FirstCommand = new RelayCommand(() => _ = FirstAsync(), CanMoveFirst);
+            LastCommand = new RelayCommand(() => _ = LastAsync(), CanMoveLast);
+            RemoveCurrentCommand = new RelayCommand(() => _ = RemoveCurrentAsync(), () => bindingList.Count > 0);
         }
 
-        private void Next()
+        public async Task NextAsync()
         {
             if (CanMoveNext())
-                SetCurrentIndexInternal(currentIndex + 1);
+                await SetCurrentIndexInternalAsync(currentIndex + 1);
         }
 
         private bool CanMoveNext() => currentIndex >= 0 && currentIndex < bindingList.Count - 1;
 
-        private void Previous()
+        public async Task PreviousAsync()
         {
             if (CanMovePrevious())
-                SetCurrentIndexInternal(currentIndex - 1);
+                await SetCurrentIndexInternalAsync(currentIndex - 1);
         }
 
         private bool CanMovePrevious() => currentIndex > 0;
 
-        private void First()
+        public async Task FirstAsync()
         {
             if (CanMoveFirst())
-                SetCurrentIndexInternal(0);
+                await SetCurrentIndexInternalAsync(0);
         }
 
         private bool CanMoveFirst() => bindingList.Count > 0 && currentIndex != 0;
 
-        private void Last()
+        public async Task LastAsync()
         {
             if (CanMoveLast())
-                SetCurrentIndexInternal(bindingList.Count - 1);
+                await SetCurrentIndexInternalAsync(bindingList.Count - 1);
         }
 
         private bool CanMoveLast() => bindingList.Count > 0 && currentIndex != bindingList.Count - 1;
@@ -315,27 +304,36 @@ namespace MDDDataAccess
             RaiseNavigationCanExecute();
         }
 
-        private bool PrepareForNavigation()
+        public async Task<bool> PrepareForNavigationAsync()
         {
-            if (current == null)
+            if (suppressNavigationPrompt)
                 return true;
-
-            if (current.State != TrackedState.Modified)
+            if (currenttracked == null)
                 return true;
-
-            var decision = SaveChanges?.Invoke(current);
-
+            if (currenttracked.State != TrackedState.Modified)
+                return true;
+            var decision = SaveChanges?.Invoke(currenttracked);
             if (decision == true)
             {
-                var command = current.SaveCommand;
+                var command = currenttracked.SaveCommand as AsyncDbCommand;
                 if (command?.CanExecute(null) == true)
-                    command.Execute(null);
+                {
+                    try
+                    {
+                        return await command.ExecuteAsync(tracker.DBEngine);
+                    }
+                    catch (Exception ex)
+                    {
+                        if (TrackedListError != null)
+                            TrackedListError.Invoke(this, ex);
+                        else 
+                            throw;
+                        return false;
+                    }
+                }
                 return true;
             }
-
-            if (decision == false)
-                return true;
-
+            if (decision == false) return true;
             return false;
         }
 
@@ -346,50 +344,64 @@ namespace MDDDataAccess
             {
                 if (!ReferenceEquals(bindingList[existingIndex], entity))
                     bindingList[existingIndex] = entity;
-
                 SetCurrentIndexInternal(existingIndex, suppressPrompt: suppressPrompt);
                 return;
             }
-
             if (!allowAdd)
                 throw new InvalidOperationException("The entity is not part of the list.");
-
             if (!browserModeEnabled)
                 throw new InvalidOperationException("Cannot navigate to an entity outside the list when browser mode is disabled.");
-
             if (currentIndex >= 0 && currentIndex < bindingList.Count - 1)
                 TrimBrowserHistory(currentIndex + 1);
-
             bindingList.Add(entity);
             OnDataSourceChanged();
             SetCurrentIndexInternal(bindingList.Count - 1, suppressPrompt: true);
         }
 
+        // Synchronous internal navigation for initial load only
         private bool SetCurrentIndexInternal(int index, bool suppressPrompt = false)
         {
             if (currentIndex == index)
                 return true;
-
-            if (!suppressPrompt && !PrepareForNavigation())
+            if (!suppressPrompt && !PrepareForNavigationAsync().GetAwaiter().GetResult())
                 return false;
+            UpdateCurrent(index);
+            return true;
+        }
 
+        // Async internal navigation for all other cases
+        private async Task<bool> SetCurrentIndexInternalAsync(int index, bool suppressPrompt = false)
+        {
+            if (currentIndex == index)
+                return true;
+            if (!suppressPrompt && !await PrepareForNavigationAsync())
+                return false;
             UpdateCurrent(index);
             return true;
         }
 
         private void UpdateCurrent(int index)
         {
-            var previous = current;
+            var previoustracked = currenttracked;
 
-            if (previous != null)
+            if (previoustracked != null)
             {
-                previous.TrackedStateChanged -= CurrentTrackedStateChanged;
+                previoustracked.TrackedStateChanged -= CurrentTrackedStateChanged;
+                previoustracked.TrackedEntityError -= Currenttracked_TrackedEntityError;
+                if (previoustracked.SaveCommand != null)
+                    previoustracked.SaveCommand.CanExecuteChanged -= SaveCommand_CanExecuteChanged;
             }
+
+            T previousentity = null;
+            if (currentIndex != -1)
+                previousentity = bindingList[currentIndex];
+
+            T currententity = null;
 
             if (bindingList.Count == 0 || index < 0)
             {
                 currentIndex = -1;
-                current = null;
+                currenttracked = null;
             }
             else
             {
@@ -397,13 +409,16 @@ namespace MDDDataAccess
                     index = bindingList.Count - 1;
 
                 currentIndex = index;
-                var entity = bindingList[currentIndex];
-                var tracked = EnsureTracked(ref entity);
-                if (!ReferenceEquals(entity, bindingList[currentIndex]))
-                    bindingList[currentIndex] = entity;
+                currententity = bindingList[currentIndex];
+                var tracked = EnsureTracked(ref currententity);
+                if (!ReferenceEquals(currententity, bindingList[currentIndex]))
+                    bindingList[currentIndex] = currententity;
 
-                current = tracked;
-                current.TrackedStateChanged += CurrentTrackedStateChanged;
+                currenttracked = tracked;
+                currenttracked.TrackedStateChanged += CurrentTrackedStateChanged;
+                currenttracked.TrackedEntityError += Currenttracked_TrackedEntityError;
+                if (currenttracked.SaveCommand != null)
+                    currenttracked.SaveCommand.CanExecuteChanged += SaveCommand_CanExecuteChanged;            
             }
 
             OnPropertyChanged(nameof(CurrentIndex));
@@ -412,28 +427,41 @@ namespace MDDDataAccess
             OnPropertyChanged(nameof(CurrentState));
             OnPropertyChanged(nameof(SaveCommand));
 
-            if (!ReferenceEquals(previous, current))
+            if (!ReferenceEquals(previoustracked, currenttracked))
             {
-                CurrentChanged?.Invoke(this, new TrackedEntityChangedEventArgs<T>(previous, current));
+                CurrentChanged?.Invoke(this, new TrackedEntityChangedEventArgs<T>(previoustracked, previousentity, currenttracked, currententity));
             }
 
             RaiseNavigationCanExecute();
         }
 
+
+
+        private void SaveCommand_CanExecuteChanged(object sender, EventArgs e)
+        {
+            saveCommand.RaiseCanExecuteChanged();
+        }
         private void CurrentTrackedStateChanged(object sender, TrackedState e)
         {
-            if (ReferenceEquals(sender, current))
+            if (ReferenceEquals(sender, currenttracked))
             {
                 OnPropertyChanged(nameof(CurrentState));
             }
         }
-
+        private void Currenttracked_TrackedEntityError(object sender, Exception e)
+        {
+            var newex = new Exception($"TrackedEntity threw an error: {e.Message}", e);
+            TrackedListError?.Invoke(this, newex);
+        }
         private void ClearInternal()
         {
-            if (current != null)
-                current.TrackedStateChanged -= CurrentTrackedStateChanged;
+            if (currenttracked != null)
+            {
+                currenttracked.TrackedStateChanged -= CurrentTrackedStateChanged;
+                currenttracked.TrackedEntityError -= Currenttracked_TrackedEntityError;
+            }
 
-            current = null;
+            currenttracked = null;
             currentIndex = -1;
             bindingList.Clear();
 
@@ -526,13 +554,17 @@ namespace MDDDataAccess
 
     public class TrackedEntityChangedEventArgs<T> : EventArgs where T : class, new()
     {
-        public TrackedEntityChangedEventArgs(TrackedEntity<T> previous, TrackedEntity<T> current)
+        public TrackedEntityChangedEventArgs(TrackedEntity<T> previoustracked, T previousentity, TrackedEntity<T> currenttracked, T currententity)
         {
-            Previous = previous;
-            Current = current;
+            PreviousTracked = previoustracked;
+            PreviousEntity = previousentity;
+            CurrentTracked = currenttracked;
+            CurrentEntity = currententity;
         }
 
-        public TrackedEntity<T> Previous { get; }
-        public TrackedEntity<T> Current { get; }
+        public TrackedEntity<T> PreviousTracked { get; }
+        public T PreviousEntity { get; }
+        public TrackedEntity<T> CurrentTracked { get; }
+        public T CurrentEntity { get; }
     }
 }

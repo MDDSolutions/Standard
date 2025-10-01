@@ -45,13 +45,13 @@ namespace MDDDataAccess
 
     public sealed class AsyncDbCommand : ICommand
     {
-        private readonly Func<DBEngine, Task> _execute;
+        private readonly Func<DBEngine, Task<bool>> _execute;
         private readonly Func<bool> _canExecute;
         private readonly Action<Exception> _onError;
         private bool _isExecuting;
 
         public AsyncDbCommand(
-            Func<DBEngine, Task> execute,
+            Func<DBEngine, Task<bool>> execute,
             Func<bool> canExecute = null,
             Action<Exception> onError = null)
         {
@@ -69,11 +69,14 @@ namespace MDDDataAccess
             // Require a DBEngine parameter (or allow null if you prefer)
             return true; // parameter is DBEngine;
         }
-
-        public async void Execute(object parameter)
+        public void Execute (object parameter)
+        {
+            throw new NotImplementedException();
+        }
+        public async Task<bool> ExecuteAsync(object parameter)
         {
             if (!(parameter is DBEngine db) || !CanExecute(parameter))
-                return;
+                return false;
 
             _isExecuting = true;
             RaiseCanExecuteChanged();
@@ -81,13 +84,15 @@ namespace MDDDataAccess
             try
             {
                 await _execute(db).ConfigureAwait(false);
+                return true;
             }
-            catch (Exception ex)
-            {
-                // Surface errors somewhere sensible (log/UI)
-                if (_onError != null) _onError(ex);
-                else System.Diagnostics.Debug.WriteLine(ex);
-            }
+            //catch (Exception ex)
+            //{
+            //    // Surface errors somewhere sensible (log/UI)
+            //    if (_onError != null) _onError(ex);
+            //    else System.Diagnostics.Debug.WriteLine(ex);
+            //    return false;
+            //}
             finally
             {
                 _isExecuting = false;

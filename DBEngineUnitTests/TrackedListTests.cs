@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using MDDDataAccess;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
@@ -48,7 +49,7 @@ namespace DBEngineUnitTests
         }
 
         [TestMethod]
-        public void SetCurrent_InBrowserMode_AppendsNewEntityAndTrimsForwardHistory()
+        public async Task SetCurrent_InBrowserMode_AppendsNewEntityAndTrimsForwardHistory()
         {
             var items = new[]
             {
@@ -59,11 +60,11 @@ namespace DBEngineUnitTests
 
             var trackedList = new TrackedList<TestEntity>(tracker, items);
             trackedList.BrowserMode = true;
-            trackedList.CurrentIndex = 2; // move to the second entry (1-based index)
+            await trackedList.SetCurrentIndexAsync(2); // move to the second entry (1-based index)
 
             var fourth = CreateEntity(4);
 
-            trackedList.SetCurrent(fourth);
+            await trackedList.SetCurrentAsync(fourth);
 
             CollectionAssert.AreEqual(new List<int> { 1, 2, 4 }, trackedList.DataSource.Select(e => e.Id).ToList(),
                 "Browser-mode navigation should trim items ahead of the previous position and append the new entity.");

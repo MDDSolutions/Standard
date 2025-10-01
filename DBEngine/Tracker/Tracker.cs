@@ -23,7 +23,7 @@ namespace MDDDataAccess
                 );
             DBEngine = dbengine;
         }
-        private DBEngine DBEngine { get; }
+        public DBEngine DBEngine { get; }
         private readonly ConcurrentDictionary<object, TrackedEntity<T>> trackedObjects = new ConcurrentDictionary<object, TrackedEntity<T>>();
         /// <summary>
         /// This is the one that will now never be used - the problem was if you put an unbaked T in the tracker and then you puke when trying to finish baking it, you're
