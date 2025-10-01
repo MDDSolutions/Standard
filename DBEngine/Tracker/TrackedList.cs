@@ -80,6 +80,7 @@ namespace MDDDataAccess
         public TrackedState CurrentState => currenttracked?.State ?? TrackedState.Invalid;
 
         public T CurrentEntity => currenttracked != null && currenttracked.TryGetEntity(out var entity) ? entity : null;
+        //public T CurrentEntity { get; private set; }
 
         public Func<TrackedEntity<T>, bool?> SaveChanges { get; set; } = _ => true;
 

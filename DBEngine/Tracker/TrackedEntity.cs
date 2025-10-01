@@ -38,7 +38,7 @@ namespace MDDDataAccess
         public static Action<T, object> SetKeyValue;
         public static Func<T, object> GetConcurrencyValue;
         public static Action<T, object> SetConcurrencyValue;
-        private static Dictionary<string,PropertyDelegateInfo<T>> AllPropertyDelegates;
+        public static Dictionary<string, PropertyDelegateInfo<T>> AllPropertyDelegates { get; set; }
         private static readonly ConditionalWeakTable<T, TrackedEntity<T>> _entityToTracked = new ConditionalWeakTable<T, TrackedEntity<T>>();
         private static readonly object initLock = new object();
         public static void Initialize(Type keyAttributeType = null, Type concurrencyAttributeType = null)
