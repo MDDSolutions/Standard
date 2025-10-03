@@ -8,7 +8,6 @@ namespace DBEngineUnitTests
     [TestClass]
     public class NavigationPropertyTests
     {
-        string ConnString = "server=MDD-SQL2022;database=tempdb;Trusted_Connection=true;";
         DBEngine _db;
 
         [TestInitialize]
@@ -79,7 +78,7 @@ SELECT 501, 2, ItemId FROM dbo.Item;
 UPDATE dbo.Category SET CategoryName = CategoryName;
 UPDATE dbo.Item SET ItemName = ItemName;
 UPDATE dbo.OrderDetails SET OrderQty = OrderQty;";
-            _db = new DBEngine(ConnString, "NavigationPropertyTesting") { AllowAdHoc = true, Tracking = ObjectTracking.IfAvailable };
+            _db = new DBEngine(Global.ConnString, "NavigationPropertyTesting") { AllowAdHoc = true, Tracking = ObjectTracking.IfAvailable };
             _db.ExecuteScript(script);
         }
         [TestMethod]

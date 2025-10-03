@@ -65,6 +65,8 @@ namespace DBEngineUnitTests
 
         public string CustomerName { get => customername; set => SetProperty(ref customername, value); }
         public decimal Amount { get => amount; set => SetProperty(ref amount, value); }
+        [DBLoadedTime]
+        public DateTime LoadedAt { get; set; }
 
         private int id;
         private byte[] rowversion;

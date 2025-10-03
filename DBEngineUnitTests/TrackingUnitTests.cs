@@ -7,6 +7,7 @@ using System.Data.SqlClient;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace DBEngineUnitTests
@@ -208,7 +209,7 @@ namespace DBEngineUnitTests
         [TestInitialize]
         public void Setup()
         {
-            dbEngine = new DBEngine("Server=.\\SQLEXPRESS;Database=master;Trusted_Connection=True;", "UnitTests");
+            dbEngine = new DBEngine(Global.ConnString, "UnitTests");
         }
 
         [TestMethod]
@@ -630,7 +631,7 @@ namespace DBEngineUnitTests
 
         private static DBEngine CreateDbEngine()
         {
-            return new DBEngine("Server=.\\SQLEXPRESS;Database=master;Trusted_Connection=True;", "UnitTests");
+            return new DBEngine(Global.ConnString, "UnitTests");
         }
 
         private static PropertyInfo InvokeEnsureConcurrency<T>(DBEngine db, T entity, PropertyInfo concurrency)

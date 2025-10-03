@@ -3,6 +3,7 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System;
 using System.Data.SqlClient;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 
 
@@ -11,7 +12,6 @@ namespace DBEngineUnitTests
     [TestClass]
     public class DBEngineTests
     {
-        string ConnString = "server=MDD-SQL2022;database=tempdb;Trusted_Connection=true;";
         DBEngine _db;
         string testorderupdate = "UPDATE dbo.TestOrders SET CustomerName = @CustomerName, Amount = @Amount WHERE OrderId = @Id AND RowVersion = @RowVersion;SELECT * FROM dbo.TestOrders WHERE OrderId = @Id;";
         [TestInitialize]
@@ -19,7 +19,7 @@ namespace DBEngineUnitTests
         {
             if (_db == null)
             {
-                _db = new DBEngine(ConnString, "DBEngineUnitTests");
+                _db = new DBEngine(Global.ConnString, "DBEngineUnitTests");
                 _db.AllowAdHoc = true;
                 _db.Tracking = ObjectTracking.IfAvailable;
                 DBEngine.Default = _db;
@@ -895,6 +895,31 @@ FROM (SELECT TOP (2) object_id AS n FROM sys.objects WHERE OBJECT_ID > 0) n
                 propertyName = ex.PropertyName;
             }
             Assert.AreEqual("TestChar1", propertyName);
+        }
+        [TestMethod]
+        public async Task DBLoadedPropertyUpdatesAndDoesNotCauseDirty()
+        {
+            var start = DateTime.Now;
+            var order = (await _db.SqlRunQueryWithResultsAsync<TestOrderNO>("SELECT * FROM dbo.TestOrders", false, CancellationToken.None)).FirstOrDefault();
+            Assert.IsNotNull(order);
+            Assert.IsTrue(order.LoadedAt >= start);
+            Assert.IsTrue(order.LoadedAt <= DateTime.Now);
+            var tracker = _db.GetTracker<TestOrderNO>();
+            Assert.IsNotNull(tracker);
+            var success = tracker.TryGet(order.Id, out var tracked);
+            Assert.IsTrue(success);
+            Assert.IsNotNull(tracked);
+            Assert.AreEqual(tracked.State, TrackedState.Unchanged);
+
+
+
+            await Task.Delay(100);
+            start = DateTime.Now;
+            order = (await _db.SqlRunQueryWithResultsAsync<TestOrderNO>("SELECT * FROM dbo.TestOrders WHERE OrderId = @Id", false, CancellationToken.None, -1, null, new SqlParameter("@Id", order.Id))).FirstOrDefault();
+            Assert.IsNotNull(order);
+            Assert.IsTrue(order.LoadedAt >= start);
+            Assert.IsTrue(order.LoadedAt <= DateTime.Now);
+            Assert.AreEqual(tracked.State, TrackedState.Unchanged);
         }
     }
 }

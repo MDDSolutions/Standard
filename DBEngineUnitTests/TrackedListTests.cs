@@ -16,7 +16,7 @@ namespace DBEngineUnitTests
         [TestInitialize]
         public void SetUp()
         {
-            dbEngine = new DBEngine("Server=.\\SQLEXPRESS;Database=master;Trusted_Connection=True;", "UnitTests");
+            dbEngine = new DBEngine(Global.ConnString, "UnitTests");
             tracker = new Tracker<TestEntity>(dbEngine);
         }
 

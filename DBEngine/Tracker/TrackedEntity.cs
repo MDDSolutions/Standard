@@ -260,7 +260,7 @@ namespace MDDDataAccess
 
                     // save original values for actual entity data columns - key is already not in AllPropertyDelegates so this should
                     // basically be anything that doesn't have an attribute which should be an actual data column
-                    foreach (var kw in _allpropertydelegates.Where(x => !x.Value.Concurrency && !x.Value.Ignore && !x.Value.Optional))
+                    foreach (var kw in _allpropertydelegates.Where(x => !x.Value.Concurrency && !x.Value.Ignore && !x.Value.Optional && !x.Value.DBLoaded))
                         _originalValues.Add(kw.Key, kw.Value.Getter.Invoke(entity));
                 }
 
@@ -323,7 +323,7 @@ namespace MDDDataAccess
                     if (_originalValues.TryGetValue(e.PropertyName, out var original))
                     {
                         //var current = AllPropertyDelegates[e.PropertyName].Invoke(entity);
-                        if (!Foundation.ValueEquals(e.NewValue, original))
+                        if (!Foundation.ValueEquals(e.NewValue, original, pd.PropertyType))
                         {
                             _dirtyProps.Add(e.PropertyName);
                             _isDirtyCached = true;
@@ -538,7 +538,7 @@ namespace MDDDataAccess
 
                 List<KeyValuePair<string, PropertyDelegateInfo<T>>> list = null;
                 if (optionalonly)
-                    list = _allpropertydelegates.Where(x => x.Value.Optional).ToList(); // || x.Value.Ignore).ToList();
+                    list = _allpropertydelegates.Where(x => x.Value.Optional || x.Value.DBLoaded).ToList(); // || x.Value.Ignore).ToList();
                 else
                     list = _allpropertydelegates.Where(x => !x.Value.Ignore).ToList(); 
                 
