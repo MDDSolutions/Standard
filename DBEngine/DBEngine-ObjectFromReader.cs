@@ -4,6 +4,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data.SqlClient;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Linq.Expressions;
@@ -253,6 +254,7 @@ namespace MDDDataAccess
                 }
                 catch (Exception ex)
                 {
+                    if (Debugger.IsAttached) Console.WriteLine(ex.Message);
                     //if we are not able to build a map for a child object, that's fine - it's just not that kind of query
                 }
             }

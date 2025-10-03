@@ -7,6 +7,7 @@ using System.ComponentModel;
 using System.Data;
 using System.Data.SqlClient;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Linq.Expressions;
@@ -435,9 +436,11 @@ namespace MDDDataAccess
         }
         public static bool ValueEquals(object val1, object val2)
         {
-            if (val1 == null && val2 == null) return true;
-            if (val1 == null || val2 == null) return false;
+            // covers (null, null) and same reference fast-path
             if (ReferenceEquals(val1, val2)) return true;
+
+            // at this point, at least one is non-null; if either is null → not equal
+            if (val1 is null || val2 is null) return false;
 
             if (val1 is ValueType && val2 is ValueType)
                 return val1.Equals(val2);
@@ -448,7 +451,6 @@ namespace MDDDataAccess
             if (val1 is byte[] b1 && val2 is byte[] b2)
                 return b1.SequenceEqual(b2);
 
-            // Fast path for other primitive arrays (int[], long[], etc.)
             if (val1 is Array arr1 && val2 is Array arr2)
             {
                 var t = arr1.GetType().GetElementType();
@@ -460,12 +462,31 @@ namespace MDDDataAccess
                             return false;
                     return true;
                 }
-                // Fallback for non-primitive arrays
                 return arr1.Cast<object>().SequenceEqual(arr2.Cast<object>());
             }
 
-            // Value types and other reference types
             return val1.Equals(val2);
+        }
+        public static bool ValueEquals(object a, object b, Type declaredType)
+        {
+            if (ReferenceEquals(a, b)) return true;
+            if (a == null || b == null) return false;
+            if (declaredType != null)
+            {
+                var t = Nullable.GetUnderlyingType(declaredType) ?? declaredType;
+                a = CoerceIfNeeded(a, t);
+                b = CoerceIfNeeded(b, t);
+            }
+            return ValueEquals(a, b);
+        }
+        private static object CoerceIfNeeded(object v, Type t)
+        {
+            if (v == null) return null;
+            if (t.IsInstanceOfType(v)) return v;
+
+            // Prefer your existing conversion helpers if available
+            // e.g., DBEngine.Coerce(v, t) or Foundation.Coerce(...)
+            return Convert.ChangeType(v, t, CultureInfo.InvariantCulture);
         }
         public static bool IsDefaultOrNull(object key)
         {

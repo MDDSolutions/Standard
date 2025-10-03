@@ -64,6 +64,7 @@ namespace DBEngineUnitTests
         public Object SqlVariantCol { get => _sqlvariantcol; set => SetProperty(ref _sqlvariantcol, value); }
         //public XDocument XmlCol { get => _xmlcol; set => SetProperty(ref _xmlcol, value); }
 
+        //private XDocument _xmlcol;
         private Guid _id;
         private DateTime _modifieddate, _datecol, _datetimecol;
         private byte _tinyintcol;
@@ -79,7 +80,6 @@ namespace DBEngineUnitTests
         private DateTimeOffset _datetimeoffsetcol;
         private bool _bitcol;
         private Object _sqlvariantcol;
-        private XDocument _xmlcol;
     }
 
 }
