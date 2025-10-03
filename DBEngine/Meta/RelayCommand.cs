@@ -75,7 +75,7 @@ namespace MDDDataAccess
         }
         public async Task<bool> ExecuteAsync(object parameter)
         {
-            if (!(parameter is DBEngine db) || !CanExecute(parameter))
+            if (!CanExecute(parameter))
                 return false;
 
             _isExecuting = true;
@@ -83,7 +83,7 @@ namespace MDDDataAccess
 
             try
             {
-                return await _execute(db).ConfigureAwait(false);
+                return await _execute(parameter as DBEngine).ConfigureAwait(false);
             }
             //catch (Exception ex)
             //{

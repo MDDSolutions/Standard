@@ -26,7 +26,7 @@ namespace MDDDataAccess
 
         public event EventHandler<DataSourceChangedEventArgs> DataSourceChanged;
         public event EventHandler<TrackedEntityChangedEventArgs<T>> CurrentChanged;
-        public event EventHandler<Exception> TrackedListError;
+        public Action<TrackedList<T>, Exception> TrackedListError { get; set; }
 
         public TrackedList(Tracker<T> tracker, IEnumerable<T> initialItems = null, bool browserModeEnabled = false)
         {
@@ -82,7 +82,7 @@ namespace MDDDataAccess
         public T CurrentEntity => currenttracked != null && currenttracked.TryGetEntity(out var entity) ? entity : null;
         //public T CurrentEntity { get; private set; }
 
-        public Func<TrackedEntity<T>, bool?> SaveChanges { get; set; } = _ => true;
+        public Func<TrackedEntity<T>, bool?> SaveChanges { get; set; } = null;
         public Func<TrackedEntity<T>, bool> PreparingForNavigation { get; set; } = _=> true;
 
         private AsyncDbCommand saveCommand;
@@ -318,7 +318,7 @@ namespace MDDDataAccess
 
             if (currenttracked.State != TrackedState.Modified)
                 return true;
-            var decision = SaveChanges?.Invoke(currenttracked);
+            var decision = SaveChanges != null ? SaveChanges.Invoke(currenttracked) : true;
             if (decision == true)
             {
                 var command = currenttracked.SaveCommand as AsyncDbCommand;

@@ -300,6 +300,10 @@ namespace MDDDataAccess
                     }
                     p.Value = DBNull.Value;
                 }
+                else if (MDDFoundation.Foundation.IsDateTimeType(item.ObjectProperty.PropertyType) && (DateTime)value == DateTime.MinValue)
+                {
+                    p.Value = DBNull.Value;
+                }
                 else
                 {
                     //p = new SqlParameter(item.name, value);
