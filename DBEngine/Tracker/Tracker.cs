@@ -64,7 +64,7 @@ namespace MDDDataAccess
                             //if the existing state is unchanged, but the concurrency value is different, mark it as initializing so it gets reloaded
                             if (TrackedEntity<T>.HasConcurrency)
                             {
-                                if (!DBEngine.ValueEquals(concurrency, existing.ConcurrencyValue))
+                                if (!Foundation.ValueEquals(concurrency, existing.ConcurrencyValue))
                                 {
                                     // remote row has changed compared to tracked copy; mark for reload
                                     existing.Initializing = true;
@@ -81,7 +81,7 @@ namespace MDDDataAccess
                             //if the existing state is modified, the concurrency value must match
                             if (TrackedEntity<T>.HasConcurrency)
                             {
-                                if (!DBEngine.ValueEquals(concurrency, existing.ConcurrencyValue))
+                                if (!Foundation.ValueEquals(concurrency, existing.ConcurrencyValue))
                                     throw new InvalidOperationException("The entity has been modified and the concurrency value does not match.");
                                 return existing;
                             }
@@ -158,7 +158,7 @@ namespace MDDDataAccess
                                     //if the object does not have concurrency, I guess we just blindly merge the values from the loaded object - they could be new, but who knows?
                                     //if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 55, "OFR cache hit", r.ToString(), typeof(T).Name));
 
-                                    if (!TrackedEntity<T>.HasConcurrency || !DBEngine.ValueEquals(loadingconcurrency, TrackedEntity<T>.GetConcurrencyValue(existingentity)))
+                                    if (!TrackedEntity<T>.HasConcurrency || !Foundation.ValueEquals(loadingconcurrency, TrackedEntity<T>.GetConcurrencyValue(existingentity)))
                                     {
                                         var allowDirtyAware = DBEngine.DirtyAwareObjectCopy && TrackedEntity<T>.SupportsDirtyAwareCopy;
                                         existingtracked.CopyValues(loading, allowDirtyAware);

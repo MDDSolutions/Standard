@@ -150,118 +150,6 @@ namespace MDDFoundation
                 return false;
             }
         }
-        public static bool TryParseDateTime(string dateString, out DateTime dt)
-        {
-            dateString = dateString.Trim();
-            dateString = dateString.Trim('•');
-            dateString = dateString.Replace("Released:", "");
-            dateString = dateString.Trim();
-
-            if (dateString.Length > 20 && dateString.Contains("(") && dateString.Contains(")"))
-            {
-                dateString = TextBetween(dateString, "(", ")");
-            }
-
-
-            // First, try to parse the date using the regular DateTime.TryParse
-            if (DateTime.TryParse(dateString, out dt))
-            {
-                if (dateString.Contains(dt.Day.ToString()))
-                    return true;
-            }
-            if (dateString.Length > 9 && dateString.Substring(9,1) == ":")
-            {
-                if (DateTime.TryParse($"{dateString.Substring(0, 6)}, {DateTime.Now.Year}", out dt))
-                {
-                    if (TimeSpan.TryParse(dateString.Substring(7), out TimeSpan ts))
-                    {
-                        dt = dt + ts;
-                    }
-                    return true;
-                }
-            }
-
-            if (dateString.Equals("last week", StringComparison.OrdinalIgnoreCase))
-            {
-                dt = DateTime.Now.Date.AddDays(-7);
-                return true;
-            }
-
-            if (dateString.Equals("today", StringComparison.OrdinalIgnoreCase))
-            {
-                dt = DateTime.Now.Date;
-                return true;
-            }
-
-            var match = Regex.Match(dateString, @"(\d+)\s+(day|week|month|year)s?\s+ago", RegexOptions.IgnoreCase);
-
-            if (match.Success)
-            {
-                int value = int.Parse(match.Groups[1].Value);
-                string unit = match.Groups[2].Value.ToLower();
-
-                switch (unit)
-                {
-                    case "day":
-                        dt = DateTime.Now.Date.AddDays(-value);
-                        return true;
-                    case "week":
-                        dt = DateTime.Now.Date.AddDays(-7 * value);
-                        return true;
-                    case "month":
-                        // Approximate as 30 days per month
-                        dt = DateTime.Now.Date.AddDays(-30 * value);
-                        return true;
-                    case "year":
-                        dt = DateTime.Now.Date.AddYears(-value);
-                        return true;
-                }
-            }
-
-
-
-            // If regular parsing fails, remove the suffix from the day part
-            string cleanedDateString = Regex.Replace(dateString, @"\b(\d{1,2})(st|nd|rd|th)\b", "$1");
-
-
-            //try a general parse on the cleaned string
-            if (DateTime.TryParse(cleanedDateString, out dt))
-            {
-                //if (dateString.Contains(dt.Day.ToString()))
-                    return true;
-            }
-
-            // Define the format of the cleaned date string
-            string format = "d MMM yyyy";
-            CultureInfo provider = CultureInfo.InvariantCulture;
-
-            // Try to parse the cleaned date string
-            if (DateTime.TryParseExact(cleanedDateString, format, provider, DateTimeStyles.None, out dt))
-                return true;
-
-            return false;
-        }
-        public static double Subtract(this Point pnt1, Point pnt2)
-        {
-            return Math.Sqrt((pnt1.X - pnt2.X) * (pnt1.X - pnt2.X) + (pnt1.Y - pnt2.Y) * (pnt1.Y - pnt2.Y));
-        }
-        public static string TextBetween(string SearchString, string BeforeStr, string AfterStr)
-        {
-            if (String.IsNullOrWhiteSpace(SearchString))
-                return null;
-            int TmpIndex = SearchString.IndexOf(BeforeStr, StringComparison.OrdinalIgnoreCase);
-            if (TmpIndex == -1)
-                return null;
-            else
-            {
-                TmpIndex = TmpIndex + BeforeStr.Length;
-                int AfterIndex = SearchString.IndexOf(AfterStr, TmpIndex, StringComparison.OrdinalIgnoreCase);
-                if (AfterIndex == -1)
-                    return SearchString.Substring(TmpIndex);
-                else
-                    return SearchString.Substring(TmpIndex, AfterIndex - TmpIndex);
-            }
-        }
         public static void ForEach<T>(this IEnumerable<T> source, Action<T> action)
         {
             foreach (T element in source)
@@ -1129,29 +1017,6 @@ namespace MDDFoundation
                 pinfo = property as PropertyInfo;
             sync.SynchronizedInvoke(() => pinfo.SetValue(sync, value));
         }
-        public static string Replace(this string str, string oldValue, string newValue, StringComparison comparison)
-        {
-            StringBuilder sb = new StringBuilder();
-
-            int previousIndex = 0;
-            int index = str.IndexOf(oldValue, comparison);
-            while (index != -1)
-            {
-                sb.Append(str.Substring(previousIndex, index - previousIndex));
-                sb.Append(newValue);
-                index += oldValue.Length;
-
-                previousIndex = index;
-                index = str.IndexOf(oldValue, index, comparison);
-            }
-            sb.Append(str.Substring(previousIndex));
-
-            return sb.ToString();
-        }
-        public static bool Contains(this string source, string toCheck, StringComparison comp)
-        {
-            return source?.IndexOf(toCheck, comp) >= 0;
-        }
         [DllImport("user32", EntryPoint = "OpenDesktopA", CharSet = CharSet.Ansi, SetLastError = true, ExactSpelling = true)]
         private static extern Int32 OpenDesktop(string lpszDesktop, Int32 dwFlags, bool fInherit, Int32 dwDesiredAccess);
         [DllImport("user32", CharSet = CharSet.Ansi, SetLastError = true, ExactSpelling = true)]
@@ -1239,21 +1104,6 @@ namespace MDDFoundation
             //{
             //}
             return str;
-        }
-        public static T NullIf<T>(this T value, T compareValue) where T : class
-        {
-            return value == compareValue ? null : value;
-        }
-        public static string NullIf(this string value)
-        {
-            return string.IsNullOrWhiteSpace(value) ? null : value;
-        }
-        public static bool IsSameAs<T>(this T ref1, T ref2)
-        {
-            foreach (var prop in typeof(T).GetProperties())
-                if (!StructuralComparisons.StructuralEqualityComparer.Equals(prop.GetValue(ref2), prop.GetValue(ref1)))
-                    return false;
-            return true;
         }
         [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Auto)]
         static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong lpFreeBytesAvailable, out ulong lpTotalNumberOfBytes, out ulong lpTotalNumberOfFreeBytes);

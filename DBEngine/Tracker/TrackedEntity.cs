@@ -1,4 +1,5 @@
-﻿using System;
+﻿using MDDFoundation;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Globalization;
@@ -279,24 +280,28 @@ namespace MDDDataAccess
             if (!Initializing && _originalValues.TryGetValue(e.PropertyName, out var original))
             {
                 bool dirtypre = _isDirtyCached.Value;
-                var current = _allpropertydelegates[e.PropertyName].Getter.Invoke(entity);
-                if (!DBEngine.ValueEquals(current, original))
-                {
-                    _dirtyProps.Add(e.PropertyName);
-                    _isDirtyCached = true;
-                }
-                else
-                {
-                    _dirtyProps.Remove(e.PropertyName);
-                    _isDirtyCached = _dirtyProps.Count > 0;
-                }
-                if (dirtypre != _isDirtyCached.Value)
-                {
-                    _dirtyVersion++; // membership changed
-                    DirtySetChanged?.Invoke(this, new DirtySetChangedEventArgs(_dirtyVersion, _dirtyProps.Count));
 
-                    TrackedStateChanged?.Invoke(this, _isDirtyCached.Value ? TrackedState.Modified : TrackedState.Unchanged);
-                    (SaveCommand as AsyncDbCommand)?.RaiseCanExecuteChanged();
+                if (_allpropertydelegates.TryGetValue(e.PropertyName, out var pd) && !pd.Optional && !pd.Ignore && !pd.Concurrency && !pd.DBLoaded)
+                {
+                    var current = pd.Getter.Invoke(entity);
+                    if (!Foundation.ValueEquals(current, original))
+                    {
+                        _dirtyProps.Add(e.PropertyName);
+                        _isDirtyCached = true;
+                    }
+                    else
+                    {
+                        _dirtyProps.Remove(e.PropertyName);
+                        _isDirtyCached = _dirtyProps.Count > 0;
+                    }
+                    if (dirtypre != _isDirtyCached.Value)
+                    {
+                        _dirtyVersion++; // membership changed
+                        DirtySetChanged?.Invoke(this, new DirtySetChangedEventArgs(_dirtyVersion, _dirtyProps.Count));
+
+                        TrackedStateChanged?.Invoke(this, _isDirtyCached.Value ? TrackedState.Modified : TrackedState.Unchanged);
+                        (SaveCommand as AsyncDbCommand)?.RaiseCanExecuteChanged();
+                    }
                 }
             }
             //else
@@ -312,35 +317,38 @@ namespace MDDDataAccess
             if (!Initializing)
             {
                 bool dirtypre = _isDirtyCached.Value;
-                if (_originalValues.TryGetValue(e.PropertyName, out var original))
+
+                if (_allpropertydelegates.TryGetValue(e.PropertyName, out var pd) && !pd.Optional && !pd.Ignore && !pd.Concurrency && !pd.DBLoaded)
                 {
-                    //var current = AllPropertyDelegates[e.PropertyName].Invoke(entity);
-                    if (!DBEngine.ValueEquals(e.NewValue, original))
+                    if (_originalValues.TryGetValue(e.PropertyName, out var original))
                     {
-                        _dirtyProps.Add(e.PropertyName);
-                        _isDirtyCached = true;
+                        //var current = AllPropertyDelegates[e.PropertyName].Invoke(entity);
+                        if (!Foundation.ValueEquals(e.NewValue, original))
+                        {
+                            _dirtyProps.Add(e.PropertyName);
+                            _isDirtyCached = true;
+                        }
+                        else
+                        {
+                            _dirtyProps.Remove(e.PropertyName);
+                            _isDirtyCached = _dirtyProps.Count > 0;
+                        }
                     }
                     else
                     {
-                        _dirtyProps.Remove(e.PropertyName);
-                        _isDirtyCached = _dirtyProps.Count > 0;
+                        _originalValues[e.PropertyName] = e.OldValue;
+                        _dirtyProps.Add(e.PropertyName);
+                        _isDirtyCached = true;
+                    }
+                    if (dirtypre != _isDirtyCached.Value)
+                    {
+                        _dirtyVersion++; // membership changed
+                        DirtySetChanged?.Invoke(this, new DirtySetChangedEventArgs(_dirtyVersion, _dirtyProps.Count));
+
+                        TrackedStateChanged?.Invoke(this, _isDirtyCached.Value ? TrackedState.Modified : TrackedState.Unchanged);
+                        (SaveCommand as AsyncDbCommand)?.RaiseCanExecuteChanged();
                     }
                 }
-                else if (_allpropertydelegates.TryGetValue(e.PropertyName, out var pd) && !pd.Optional && !pd.Ignore && !pd.Concurrency)
-                {
-                    _originalValues[e.PropertyName] = e.OldValue;
-                    _dirtyProps.Add(e.PropertyName);
-                    _isDirtyCached = true;
-                }
-                if (dirtypre != _isDirtyCached.Value)
-                {
-                    _dirtyVersion++; // membership changed
-                    DirtySetChanged?.Invoke(this, new DirtySetChangedEventArgs(_dirtyVersion, _dirtyProps.Count));
-
-                    TrackedStateChanged?.Invoke(this, _isDirtyCached.Value ? TrackedState.Modified : TrackedState.Unchanged);
-                    (SaveCommand as AsyncDbCommand)?.RaiseCanExecuteChanged();
-                }
-
             }
         }
         private bool initializing = true;
@@ -384,7 +392,7 @@ namespace MDDDataAccess
                     foreach (var kv in _originalValues)
                     {
                         var current = _allpropertydelegates[kv.Key].Getter.Invoke(entity);
-                        if (!DBEngine.ValueEquals(current, kv.Value))
+                        if (!Foundation.ValueEquals(current, kv.Value))
                         {
                             return TrackedState.Modified;
                         }
@@ -424,7 +432,7 @@ namespace MDDDataAccess
                     foreach (var kv in _originalValues)
                     {
                         var current = _allpropertydelegates[kv.Key].Getter.Invoke(entity);
-                        if (!DBEngine.ValueEquals(current, kv.Value))
+                        if (!Foundation.ValueEquals(current, kv.Value))
                         {
                             result[kv.Key] = (kv.Value, current);
                         }
@@ -454,6 +462,7 @@ namespace MDDDataAccess
                     if (attr is DBOptionalAttribute) delegateinfo.Optional = true;
                     if (attr is DBIgnoreAttribute) delegateinfo.Ignore = true;
                     if (attr is DisableDirtyAwareCopyAttribute) delegateinfo.DirtyAwareEnabled = false;
+                    if (attr is DBLoadedTimeAttribute) delegateinfo.DBLoaded = true;
                 }
                 if (!skip)
                 {
@@ -523,7 +532,7 @@ namespace MDDDataAccess
 
                 var fromkey = GetKeyValue(from);
                 var tokey = GetKeyValue(to);
-                if (!DBEngine.ValueEquals(fromkey, tokey)) throw new Exception($"Cannot copy values on {typeof(T).Name} with key {fromkey} to an object with key {tokey}");
+                if (!Foundation.ValueEquals(fromkey, tokey)) throw new Exception($"Cannot copy values on {typeof(T).Name} with key {fromkey} to an object with key {tokey}");
 
                 var mismatchrecords = new List<ConcurrencyMismatchRecord>();
 
@@ -550,24 +559,23 @@ namespace MDDDataAccess
                         //for optional or Ignored properties, only copy the value
                         //if the one in the from object looks more interesting than the one in the to object
 
-                        if (!DBEngine.ValueEquals(fromval, toval) && (DBEngine.IsDefaultOrNull(toval) || !DBEngine.IsDefaultOrNull(fromval)))
+                        if (!Foundation.ValueEquals(fromval, toval) && (Foundation.IsDefaultOrNull(toval) || !Foundation.IsDefaultOrNull(fromval)))
                             delegateinfo.Value.Setter(to, fromval);
                     }
                     else
                     {
-
-                        if (DBEngine.ValueEquals(fromval, toval))
+                        if (Foundation.ValueEquals(fromval, toval))
                         {
                             // just clean
-                            if (currentorigpresent && !DBEngine.ValueEquals(currentorigval, fromval))
+                            if (currentorigpresent && !Foundation.ValueEquals(currentorigval, fromval))
                                 _originalValues[delegateinfo.Key] = fromval;
                             _dirtyProps.Remove(delegateinfo.Key);
                         }
-                        else if (ConcurrencyProperty.Name == delegateinfo.Key || !currentorigpresent || !dirtypresent)
+                        else if (delegateinfo.Value.Concurrency || !currentorigpresent || !dirtypresent || delegateinfo.Value.DBLoaded)
                         {
                             //clean and overwrite
                             //notifications should go out, but the property should stay clean
-                            if (currentorigpresent && !DBEngine.ValueEquals(currentorigval, fromval))
+                            if (currentorigpresent && !Foundation.ValueEquals(currentorigval, fromval))
                                 _originalValues[delegateinfo.Key] = fromval;
                             _dirtyProps.Remove(delegateinfo.Key);
                             delegateinfo.Value.Setter(to, fromval);
@@ -575,7 +583,7 @@ namespace MDDDataAccess
                         }
                         // at this point the property is dirty - if the incoming value is the same as
                         // the original value, then let the property stay dirty / preserve the user's pending update
-                        else if (DBEngine.ValueEquals(currentorigval, fromval) && allowdirty)
+                        else if (Foundation.ValueEquals(currentorigval, fromval) && allowdirty)
                         {
                             dirtyset = true;
                         }
@@ -586,7 +594,7 @@ namespace MDDDataAccess
                         {
                             success = false;
                             mismatchrecords.Add(new ConcurrencyMismatchRecord { PropertyName = delegateinfo.Key, AppValue = toval, DBValue = fromval });
-                            if (currentorigpresent && !DBEngine.ValueEquals(currentorigval, fromval))
+                            if (currentorigpresent && !Foundation.ValueEquals(currentorigval, fromval))
                                 _originalValues[delegateinfo.Key] = fromval;
                             _dirtyProps.Remove(delegateinfo.Key);
                             delegateinfo.Value.Setter(to, fromval);
@@ -637,6 +645,7 @@ namespace MDDDataAccess
         public bool Optional { get; set; } = false;
         public bool Ignore { get; set; } = false;
         public bool Concurrency { get; set; } = false;
+        public bool DBLoaded { get; set; } = false;
         public bool DirtyAwareEnabled { get; set; } = true;
         public bool PublicSetter { get; set; }
         public Type PropertyType { get; set; }
