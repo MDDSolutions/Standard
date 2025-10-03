@@ -129,8 +129,22 @@ namespace MDDDataAccess
                         {
                             if (initializing)
                             {
-                                existingtracked.Initializing = true;
-                                existingtracked.EndInitialization();
+                                try
+                                {
+                                    existingtracked.Initializing = true;
+                                }
+                                finally
+                                {
+                                    existingtracked.EndInitialization();
+                                }
+                            }
+                            if (existingtracked.State == TrackedState.Initializing)
+                            {
+                                //this should never happen - we could throw here, but the entity may be valid - we could just
+                                //end initialization and hope for the best
+                                //if we throw, we would need to somehow send the user back to the database to reload
+                                //existingtracked.EndInitialization();
+                                throw new InvalidOperationException($"There is an object in the {typeof(T).Name} tracker with key {key} in an initializing state - this really shouldn't happen");
                             }
                             return existingtracked;
                         }

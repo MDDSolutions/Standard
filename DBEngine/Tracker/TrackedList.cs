@@ -83,6 +83,7 @@ namespace MDDDataAccess
         //public T CurrentEntity { get; private set; }
 
         public Func<TrackedEntity<T>, bool?> SaveChanges { get; set; } = _ => true;
+        public Func<TrackedEntity<T>, bool> PreparingForNavigation { get; set; } = _=> true;
 
         private AsyncDbCommand saveCommand;
         public AsyncDbCommand SaveCommand => saveCommand;
@@ -311,6 +312,10 @@ namespace MDDDataAccess
                 return true;
             if (currenttracked == null)
                 return true;
+
+            var cancontinue = PreparingForNavigation?.Invoke(currenttracked) ?? true;
+            if (!cancontinue) return false;
+
             if (currenttracked.State != TrackedState.Modified)
                 return true;
             var decision = SaveChanges?.Invoke(currenttracked);

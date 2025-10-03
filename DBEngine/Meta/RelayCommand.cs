@@ -83,8 +83,7 @@ namespace MDDDataAccess
 
             try
             {
-                await _execute(db).ConfigureAwait(false);
-                return true;
+                return await _execute(db).ConfigureAwait(false);
             }
             //catch (Exception ex)
             //{

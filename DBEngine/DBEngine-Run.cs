@@ -1014,6 +1014,8 @@ namespace MDDDataAccess
                                     ObjectFromReader(rdr, ref map, ref key, ref obj, ref t);
                                     found = true;
                                 }
+                                //advance through remaining results to surface any error
+                                while (rdr.NextResult()) { while (rdr.Read()) { } }
                             }
                         }
                         catch (Exception ex)

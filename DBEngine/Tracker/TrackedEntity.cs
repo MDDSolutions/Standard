@@ -38,7 +38,20 @@ namespace MDDDataAccess
         public static Action<T, object> SetKeyValue;
         public static Func<T, object> GetConcurrencyValue;
         public static Action<T, object> SetConcurrencyValue;
-        public static Dictionary<string, PropertyDelegateInfo<T>> AllPropertyDelegates { get; set; }
+
+        private static Dictionary<string, PropertyDelegateInfo<T>> _allpropertydelegates { get; set; }
+        public static Dictionary<string, PropertyDelegateInfo<T>> GetAllPropertyDelegates()
+        {
+            var result = new Dictionary<string, PropertyDelegateInfo<T>>();
+            foreach (var item in _allpropertydelegates)
+            {
+                if (item.Value.PublicSetter)
+                    result.Add(item.Key, item.Value);
+                else
+                    result.Add(item.Key,item.Value.GetSanitized());
+            }
+            return result;
+        }
         private static readonly ConditionalWeakTable<T, TrackedEntity<T>> _entityToTracked = new ConditionalWeakTable<T, TrackedEntity<T>>();
         private static readonly object initLock = new object();
         public static void Initialize(Type keyAttributeType = null, Type concurrencyAttributeType = null)
@@ -246,7 +259,7 @@ namespace MDDDataAccess
 
                     // save original values for actual entity data columns - key is already not in AllPropertyDelegates so this should
                     // basically be anything that doesn't have an attribute which should be an actual data column
-                    foreach (var kw in AllPropertyDelegates.Where(x => !x.Value.Concurrency && !x.Value.Ignore && !x.Value.Optional))
+                    foreach (var kw in _allpropertydelegates.Where(x => !x.Value.Concurrency && !x.Value.Ignore && !x.Value.Optional))
                         _originalValues.Add(kw.Key, kw.Value.Getter.Invoke(entity));
                 }
 
@@ -266,7 +279,7 @@ namespace MDDDataAccess
             if (!Initializing && _originalValues.TryGetValue(e.PropertyName, out var original))
             {
                 bool dirtypre = _isDirtyCached.Value;
-                var current = AllPropertyDelegates[e.PropertyName].Getter.Invoke(entity);
+                var current = _allpropertydelegates[e.PropertyName].Getter.Invoke(entity);
                 if (!DBEngine.ValueEquals(current, original))
                 {
                     _dirtyProps.Add(e.PropertyName);
@@ -279,6 +292,9 @@ namespace MDDDataAccess
                 }
                 if (dirtypre != _isDirtyCached.Value)
                 {
+                    _dirtyVersion++; // membership changed
+                    DirtySetChanged?.Invoke(this, new DirtySetChangedEventArgs(_dirtyVersion, _dirtyProps.Count));
+
                     TrackedStateChanged?.Invoke(this, _isDirtyCached.Value ? TrackedState.Modified : TrackedState.Unchanged);
                     (SaveCommand as AsyncDbCommand)?.RaiseCanExecuteChanged();
                 }
@@ -310,14 +326,17 @@ namespace MDDDataAccess
                         _isDirtyCached = _dirtyProps.Count > 0;
                     }
                 }
-                else if (AllPropertyDelegates.TryGetValue(e.PropertyName, out var pd) && !pd.Optional && !pd.Ignore && !pd.Concurrency)
+                else if (_allpropertydelegates.TryGetValue(e.PropertyName, out var pd) && !pd.Optional && !pd.Ignore && !pd.Concurrency)
                 {
                     _originalValues[e.PropertyName] = e.OldValue;
                     _dirtyProps.Add(e.PropertyName);
                     _isDirtyCached = true;
                 }
                 if (dirtypre != _isDirtyCached.Value)
-                { 
+                {
+                    _dirtyVersion++; // membership changed
+                    DirtySetChanged?.Invoke(this, new DirtySetChangedEventArgs(_dirtyVersion, _dirtyProps.Count));
+
                     TrackedStateChanged?.Invoke(this, _isDirtyCached.Value ? TrackedState.Modified : TrackedState.Unchanged);
                     (SaveCommand as AsyncDbCommand)?.RaiseCanExecuteChanged();
                 }
@@ -342,6 +361,10 @@ namespace MDDDataAccess
         private bool referencevalid = false;
         private readonly Dictionary<string, object> _originalValues = new Dictionary<string, object>();
         private readonly HashSet<string> _dirtyProps = new HashSet<string>();
+        private int _dirtyVersion = 0;
+        public int DirtyVersion => _dirtyVersion;
+        public int DirtyCount => _dirtyProps.Count;
+        public event EventHandler<DirtySetChangedEventArgs> DirtySetChanged;
         private bool? _isDirtyCached = null;
         public DirtyCheckMode DirtyCheckMode { get; private set; }
         public object KeyValue { get; }
@@ -360,7 +383,7 @@ namespace MDDDataAccess
                     }
                     foreach (var kv in _originalValues)
                     {
-                        var current = AllPropertyDelegates[kv.Key].Getter.Invoke(entity);
+                        var current = _allpropertydelegates[kv.Key].Getter.Invoke(entity);
                         if (!DBEngine.ValueEquals(current, kv.Value))
                         {
                             return TrackedState.Modified;
@@ -391,7 +414,7 @@ namespace MDDDataAccess
                         foreach (var propName in _dirtyProps)
                         {
                             var original = _originalValues[propName];
-                            var current = AllPropertyDelegates[propName].Getter.Invoke(entity);
+                            var current = _allpropertydelegates[propName].Getter.Invoke(entity);
                             result[propName] = (original, current);
                         }
                     }
@@ -400,7 +423,7 @@ namespace MDDDataAccess
                 {
                     foreach (var kv in _originalValues)
                     {
-                        var current = AllPropertyDelegates[kv.Key].Getter.Invoke(entity);
+                        var current = _allpropertydelegates[kv.Key].Getter.Invoke(entity);
                         if (!DBEngine.ValueEquals(current, kv.Value))
                         {
                             result[kv.Key] = (kv.Value, current);
@@ -418,7 +441,7 @@ namespace MDDDataAccess
         }
         private static void BuildPropertyDelegates()
         {
-            AllPropertyDelegates = new Dictionary<string, PropertyDelegateInfo<T>>();
+            _allpropertydelegates = new Dictionary<string, PropertyDelegateInfo<T>>();
             var type = typeof(T);
             foreach (var prop in type.GetProperties().Where(x => x.CanWrite && x.CanRead))
             {
@@ -438,6 +461,7 @@ namespace MDDDataAccess
                     if (!proptype.IsValueType && proptype != typeof(string) && !proptype.IsArray)
                         delegateinfo.Optional = true;
 
+                    delegateinfo.PropertyType = proptype;
 
                     // parameter: (T entity)
                     var entityParam = Expression.Parameter(typeof(T), "entity");
@@ -457,9 +481,13 @@ namespace MDDDataAccess
 
                     var setter = Expression.Lambda<Action<T, object>>(assign, entityParam, valueParam).Compile();
 
+
+                    var setMethod = prop.GetSetMethod(true);
+                    delegateinfo.PublicSetter = setMethod.IsPublic;
+
                     delegateinfo.Getter = getter;
                     delegateinfo.Setter = setter;
-                    AllPropertyDelegates.Add(prop.Name, delegateinfo);
+                    _allpropertydelegates.Add(prop.Name, delegateinfo);
                 }
             }
         }
@@ -501,9 +529,9 @@ namespace MDDDataAccess
 
                 List<KeyValuePair<string, PropertyDelegateInfo<T>>> list = null;
                 if (optionalonly)
-                    list = AllPropertyDelegates.Where(x => x.Value.Optional).ToList(); // || x.Value.Ignore).ToList();
+                    list = _allpropertydelegates.Where(x => x.Value.Optional).ToList(); // || x.Value.Ignore).ToList();
                 else
-                    list = AllPropertyDelegates.Where(x => !x.Value.Ignore).ToList(); 
+                    list = _allpropertydelegates.Where(x => !x.Value.Ignore).ToList(); 
                 
                 // right now I'm thinking tracker method should ignore DBIgnore properties - incoming loading objects will never have values in them anyway because OFR ignores them
                 // if the app has done something with them, then the existing object should have whatever values they should have and that's always what we're copying into, so right
@@ -610,8 +638,29 @@ namespace MDDDataAccess
         public bool Ignore { get; set; } = false;
         public bool Concurrency { get; set; } = false;
         public bool DirtyAwareEnabled { get; set; } = true;
+        public bool PublicSetter { get; set; }
+        public Type PropertyType { get; set; }
         public Func<T, object> Getter { get; set; }
         public Action<T, object> Setter { get; set; }
+        public PropertyDelegateInfo<T> GetSanitized()
+        {
+            return new PropertyDelegateInfo<T>
+            {
+                Optional = Optional,
+                Ignore = Ignore,
+                Concurrency = Concurrency,
+                DirtyAwareEnabled = DirtyAwareEnabled,
+                PublicSetter = PublicSetter,
+                PropertyType = PropertyType,
+                Getter = Getter,
+                Setter = null
+            };
+        }
     }
-
+    public sealed class DirtySetChangedEventArgs : EventArgs
+    {
+        public int Version { get; }
+        public int Count { get; }
+        public DirtySetChangedEventArgs(int version, int count) { Version = version; Count = count; }
+    }
 }
