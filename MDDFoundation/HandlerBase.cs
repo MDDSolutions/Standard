@@ -6,6 +6,15 @@ using System.Threading.Tasks;
 
 namespace MDDFoundation
 {
+    public class GenericHandler<T> : HandlerBase<T>
+    {
+        public Func<T, object, Task> HandleFunc = null;
+        public async override Task HandleAsync(T inObj, object ParamObj = null)
+        {
+            if (HandleFunc == null) throw new Exception("you must set HandleFunc");
+            await HandleFunc(inObj, ParamObj);
+        }
+    }
     public abstract class HandlerBase<T> : ILoader<T>
     {
         protected HandlerBase() => _instances.Add(this);

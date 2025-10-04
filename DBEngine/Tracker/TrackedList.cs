@@ -14,20 +14,12 @@ namespace MDDDataAccess
     /// tracked objects instead of <see cref="System.Data.DataRow"/> instances.
     /// </summary>
     /// <typeparam name="T">Entity type being tracked.</typeparam>
-    public class TrackedList<T> : INotifyPropertyChanged where T : class, new()
+    public class TrackedList<T> : HandlerBase<T>, INotifyPropertyChanged where T : class, new()
     {
         private readonly Tracker<T> tracker;
         private readonly SortableBindingList<T> bindingList;
-
-        private int currentIndex = -1;
-        private TrackedEntity<T> currenttracked;
         private bool browserModeEnabled;
         private bool suppressNavigationPrompt = false;
-
-        public event EventHandler<DataSourceChangedEventArgs> DataSourceChanged;
-        public event EventHandler<TrackedEntityChangedEventArgs<T>> CurrentChanged;
-        public Action<TrackedList<T>, Exception> TrackedListError { get; set; }
-
         public TrackedList(Tracker<T> tracker, IEnumerable<T> initialItems = null, bool browserModeEnabled = false)
         {
             this.tracker = tracker ?? throw new ArgumentNullException(nameof(tracker));
@@ -56,10 +48,17 @@ namespace MDDDataAccess
             InitializeCommands();
         }
 
+        private int currentIndex = -1;
+        private TrackedEntity<T> currenttracked;
+
+        public event EventHandler<DataSourceChangedEventArgs> DataSourceChanged;
+        public event EventHandler<TrackedEntityChangedEventArgs<T>> CurrentChanged;
+        public Action<TrackedList<T>, Exception> TrackedListError { get; set; }
+
+
         #region Public Surface
 
         public SortableBindingList<T> DataSource => bindingList;
-
         public bool BrowserMode
         {
             get => browserModeEnabled;
@@ -72,57 +71,24 @@ namespace MDDDataAccess
                 }
             }
         }
-
         public int Count => bindingList.Count;
-
         public int CurrentIndex => currentIndex >= 0 ? currentIndex + 1 : 0;
-
         public TrackedEntity<T> CurrentTracked => currenttracked;
-
         public TrackedState CurrentState => currenttracked?.State ?? TrackedState.Invalid;
-
         public T CurrentEntity => (currentIndex >= 0 && currentIndex < bindingList.Count)
             ? bindingList[currentIndex]
             : null;
-        //public T CurrentEntity => currenttracked != null && currenttracked.TryGetEntity(out var entity) ? entity : null;
-
         public Func<TrackedEntity<T>, bool?> SaveChanges { get; set; } = null;
         public Func<TrackedEntity<T>, bool> PreparingForNavigation { get; set; } = _=> true;
 
         private AsyncDbCommand saveCommand;
         public AsyncDbCommand SaveCommand => saveCommand;
-
         public ICommand NextCommand { get; private set; }
         public ICommand PreviousCommand { get; private set; }
         public ICommand FirstCommand { get; private set; }
         public ICommand LastCommand { get; private set; }
         public ICommand RemoveCurrentCommand { get; private set; }
 
-        // Synchronous load for initial population only (no async save possible)
-        public void Load(IEnumerable<T> entities)
-        {
-            if (entities == null) throw new ArgumentNullException(nameof(entities));
-
-            ClearInternal();
-
-            foreach (var item in entities)
-            {
-                var entity = item;
-                EnsureTracked(ref entity);
-                bindingList.Add(entity);
-            }
-
-            OnDataSourceChanged();
-
-            if (bindingList.Count > 0)
-            {
-                SetCurrentIndexInternal(0, suppressPrompt: true);
-            }
-            else
-            {
-                SetCurrentIndexInternal(-1, suppressPrompt: true);
-            }
-        }
 
         // Async load for scenarios where async navigation/save may be triggered
         public async Task LoadAsync(IEnumerable<T> entities)
@@ -141,7 +107,6 @@ namespace MDDDataAccess
             else
                 await SetCurrentIndexInternalAsync(-1, suppressPrompt: true);
         }
-
         public async Task AddAsync(T entity, bool makeCurrent = true)
         {
             if (entity == null) throw new ArgumentNullException(nameof(entity));
@@ -169,7 +134,6 @@ namespace MDDDataAccess
             else
                 RaiseNavigationCanExecute();
         }
-
         public async Task<bool> RemoveCurrentAsync()
         {
             if (currentIndex < 0 || currentIndex >= bindingList.Count)
@@ -177,7 +141,6 @@ namespace MDDDataAccess
             await RemoveAtAsync(currentIndex);
             return true;
         }
-
         public async Task RemoveAtAsync(int index)
         {
             if (index < 0 || index >= bindingList.Count)
@@ -195,14 +158,12 @@ namespace MDDDataAccess
                 : previousIndex;
             await SetCurrentIndexInternalAsync(targetIndex, suppressPrompt: true);
         }
-
         public async Task ClearAsync()
         {
             if (!await PrepareForNavigationAsync()) return;
             ClearInternal();
             OnDataSourceChanged();
         }
-
         public async Task SetCurrentAsync(T entity)
         {
             if (entity == null) throw new ArgumentNullException(nameof(entity));
@@ -211,7 +172,6 @@ namespace MDDDataAccess
             var tracked = EnsureTracked(ref local);
             SetCurrentInternal(ref local, tracked, allowAdd: true, suppressPrompt: true);
         }
-
         public async Task SetCurrentByKeyAsync(object key)
         {
             if (key == null) throw new ArgumentNullException(nameof(key));
@@ -231,7 +191,6 @@ namespace MDDDataAccess
             var local = entity;
             SetCurrentInternal(ref local, tracked, allowAdd: true, suppressPrompt: true);
         }
-
         public async Task<bool> SetCurrentIndexAsync(int value)
         {
             if (value <= 0)
@@ -240,11 +199,97 @@ namespace MDDDataAccess
                 return await SetCurrentIndexInternalAsync(value - 1);
             return currentIndex == value;
         }
-
+        public async Task NextAsync()
+        {
+            if (CanMoveNext())
+                await SetCurrentIndexInternalAsync(currentIndex + 1);
+        }
+        public async Task PreviousAsync()
+        {
+            if (CanMovePrevious())
+                await SetCurrentIndexInternalAsync(currentIndex - 1);
+        }
+        public async Task FirstAsync()
+        {
+            if (CanMoveFirst())
+                await SetCurrentIndexInternalAsync(0);
+        }
+        public async Task LastAsync()
+        {
+            if (CanMoveLast())
+                await SetCurrentIndexInternalAsync(bindingList.Count - 1);
+        }
+        public async Task<bool> TryDispose()
+        {
+            if (!await PrepareForNavigationAsync()) return false;
+            Unregister();
+            //could put in a bunch of guards to prevent further interaction, but not sure if strictly necessary
+            return true;
+        }
         #endregion
 
         #region Internal helpers
+        private async Task<bool> PrepareForNavigationAsync()
+        {
+            if (suppressNavigationPrompt)
+                return true;
+            if (currenttracked == null)
+                return true;
 
+            var cancontinue = PreparingForNavigation?.Invoke(currenttracked) ?? true;
+            if (!cancontinue) return false;
+
+            if (currenttracked.State != TrackedState.Modified)
+                return true;
+            var decision = SaveChanges != null ? SaveChanges.Invoke(currenttracked) : true;
+            if (decision == true)
+            {
+                var command = currenttracked.SaveCommand as AsyncDbCommand;
+                if (command?.CanExecute(null) == true)
+                {
+                    try
+                    {
+                        return await command.ExecuteAsync(tracker.DBEngine);
+                    }
+                    catch (Exception ex)
+                    {
+                        if (TrackedListError != null)
+                            TrackedListError.Invoke(this, ex);
+                        else
+                            throw;
+                        return false;
+                    }
+                }
+                return true;
+            }
+            if (decision == false) return true;
+            return false;
+        }
+        // Synchronous load for initial population only (no async save possible)
+        private void Load(IEnumerable<T> entities)
+        {
+            if (entities == null) throw new ArgumentNullException(nameof(entities));
+
+            ClearInternal();
+
+            foreach (var item in entities)
+            {
+                var entity = item;
+                EnsureTracked(ref entity);
+                bindingList.Add(entity);
+            }
+
+            OnDataSourceChanged();
+
+            if (bindingList.Count > 0)
+            {
+                SetCurrentIndexInternal(0, suppressPrompt: true);
+            }
+            else
+            {
+                SetCurrentIndexInternal(-1, suppressPrompt: true);
+            }
+        }
         private void InitializeCommands()
         {
             saveCommand = new AsyncDbCommand(
@@ -317,7 +362,7 @@ namespace MDDDataAccess
                             OnPropertyChanged(nameof(CurrentState));
                             OnPropertyChanged(nameof(SaveCommand));
 
-                            CurrentChanged?.Invoke(this, new TrackedEntityChangedEventArgs<T>(null, entity, currenttracked, entity));
+                            CurrentChanged?.Invoke(this, new TrackedEntityChangedEventArgs<T>(null, entity, currenttracked, entity, null));
 
                             RaiseNavigationCanExecute();
                             
@@ -341,82 +386,15 @@ namespace MDDDataAccess
             LastCommand = new RelayCommand(() => _ = LastAsync(), CanMoveLast);
             RemoveCurrentCommand = new RelayCommand(() => _ = RemoveCurrentAsync(), () => bindingList.Count > 0);
         }
-
-        public async Task NextAsync()
-        {
-            if (CanMoveNext())
-                await SetCurrentIndexInternalAsync(currentIndex + 1);
-        }
-
         private bool CanMoveNext() => currentIndex >= 0 && currentIndex < bindingList.Count - 1;
-
-        public async Task PreviousAsync()
-        {
-            if (CanMovePrevious())
-                await SetCurrentIndexInternalAsync(currentIndex - 1);
-        }
-
         private bool CanMovePrevious() => currentIndex > 0;
-
-        public async Task FirstAsync()
-        {
-            if (CanMoveFirst())
-                await SetCurrentIndexInternalAsync(0);
-        }
-
         private bool CanMoveFirst() => bindingList.Count > 0 && currentIndex != 0;
-
-        public async Task LastAsync()
-        {
-            if (CanMoveLast())
-                await SetCurrentIndexInternalAsync(bindingList.Count - 1);
-        }
-
         private bool CanMoveLast() => bindingList.Count > 0 && currentIndex != bindingList.Count - 1;
-
         private void BindingListOnListChanged(object sender, ListChangedEventArgs e)
         {
             OnPropertyChanged(nameof(Count));
             RaiseNavigationCanExecute();
         }
-
-        public async Task<bool> PrepareForNavigationAsync()
-        {
-            if (suppressNavigationPrompt)
-                return true;
-            if (currenttracked == null)
-                return true;
-
-            var cancontinue = PreparingForNavigation?.Invoke(currenttracked) ?? true;
-            if (!cancontinue) return false;
-
-            if (currenttracked.State != TrackedState.Modified)
-                return true;
-            var decision = SaveChanges != null ? SaveChanges.Invoke(currenttracked) : true;
-            if (decision == true)
-            {
-                var command = currenttracked.SaveCommand as AsyncDbCommand;
-                if (command?.CanExecute(null) == true)
-                {
-                    try
-                    {
-                        return await command.ExecuteAsync(tracker.DBEngine);
-                    }
-                    catch (Exception ex)
-                    {
-                        if (TrackedListError != null)
-                            TrackedListError.Invoke(this, ex);
-                        else 
-                            throw;
-                        return false;
-                    }
-                }
-                return true;
-            }
-            if (decision == false) return true;
-            return false;
-        }
-
         private void SetCurrentInternal(ref T entity, TrackedEntity<T> tracked, bool allowAdd, bool suppressPrompt)
         {
             int existingIndex = -1;
@@ -439,7 +417,6 @@ namespace MDDDataAccess
             OnDataSourceChanged();
             SetCurrentIndexInternal(bindingList.Count - 1, suppressPrompt: true);
         }
-
         // Synchronous internal navigation for initial load only
         private bool SetCurrentIndexInternal(int index, bool suppressPrompt = false)
         {
@@ -450,7 +427,6 @@ namespace MDDDataAccess
             UpdateCurrent(index);
             return true;
         }
-
         // Async internal navigation for all other cases
         private async Task<bool> SetCurrentIndexInternalAsync(int index, bool suppressPrompt = false)
         {
@@ -461,7 +437,6 @@ namespace MDDDataAccess
             UpdateCurrent(index);
             return true;
         }
-
         private void UpdateCurrent(int index)
         {
             var previoustracked = currenttracked;
@@ -511,13 +486,14 @@ namespace MDDDataAccess
             OnPropertyChanged(nameof(SaveCommand));
 
             if (!ReferenceEquals(previousentity, currententity))
-                CurrentChanged?.Invoke(this, new TrackedEntityChangedEventArgs<T>(previoustracked, previousentity, currenttracked, currententity));
+            {
+                object handlerparameter = HandlerParameter;
+                HandlerParameter = null;
+                CurrentChanged?.Invoke(this, new TrackedEntityChangedEventArgs<T>(previoustracked, previousentity, currenttracked, currententity, handlerparameter));
+            }
 
             RaiseNavigationCanExecute();
         }
-
-
-
         private void SaveCommand_CanExecuteChanged(object sender, EventArgs e)
         {
             saveCommand.RaiseCanExecuteChanged();
@@ -551,7 +527,6 @@ namespace MDDDataAccess
             OnPropertyChanged(nameof(CurrentState));
             OnPropertyChanged(nameof(SaveCommand));
         }
-
         private void TrimBrowserHistory(int startIndex)
         {
             for (var i = bindingList.Count - 1; i >= startIndex; i--)
@@ -559,7 +534,6 @@ namespace MDDDataAccess
                 bindingList.RemoveAt(i);
             }
         }
-
         private TrackedEntity<T> EnsureTracked(ref T entity)
         {
             if (entity == null) throw new ArgumentNullException(nameof(entity));
@@ -579,7 +553,6 @@ namespace MDDDataAccess
 
             return tracked;
         }
-
         private int FindIndexByKey(object key)
         {
             if (key == null)
@@ -598,7 +571,6 @@ namespace MDDDataAccess
 
             return -1;
         }
-
         private void RaiseNavigationCanExecute()
         {
             (NextCommand as RelayCommand)?.RaiseCanExecuteChanged();
@@ -607,23 +579,29 @@ namespace MDDDataAccess
             (LastCommand as RelayCommand)?.RaiseCanExecuteChanged();
             (RemoveCurrentCommand as RelayCommand)?.RaiseCanExecuteChanged();
         }
-
         private void OnDataSourceChanged()
         {
             DataSourceChanged?.Invoke(this, new DataSourceChangedEventArgs(bindingList));
         }
-
         #endregion
 
         #region INotifyPropertyChanged
-
         public event PropertyChangedEventHandler PropertyChanged;
-
         protected virtual void OnPropertyChanged([CallerMemberName] string propertyName = null)
         {
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
         }
+        #endregion
 
+        #region Handler
+        private object HandlerParameter = null;
+        public Func<T, string> GetHandlerCaption = null;
+        public override string HandlerCaption => GetHandlerCaption != null ? GetHandlerCaption(CurrentEntity) : CurrentEntity != null ? CurrentEntity.ToString() : "< no current entity>";
+        public override async Task HandleAsync(T inObj, object ParamObj = null)
+        {
+            HandlerParameter = ParamObj;
+            await SetCurrentAsync(inObj).ConfigureAwait(false);
+        }
         #endregion
     }
 
@@ -639,17 +617,19 @@ namespace MDDDataAccess
 
     public class TrackedEntityChangedEventArgs<T> : EventArgs where T : class, new()
     {
-        public TrackedEntityChangedEventArgs(TrackedEntity<T> previoustracked, T previousentity, TrackedEntity<T> currenttracked, T currententity)
+        public TrackedEntityChangedEventArgs(TrackedEntity<T> previoustracked, T previousentity, TrackedEntity<T> currenttracked, T currententity, object handlerParameter)
         {
             PreviousTracked = previoustracked;
             PreviousEntity = previousentity;
             CurrentTracked = currenttracked;
             CurrentEntity = currententity;
+            HandlerParameter = handlerParameter;
         }
 
         public TrackedEntity<T> PreviousTracked { get; }
         public T PreviousEntity { get; }
         public TrackedEntity<T> CurrentTracked { get; }
         public T CurrentEntity { get; }
+        public object HandlerParameter { get; }
     }
 }

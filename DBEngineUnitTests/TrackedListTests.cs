@@ -38,7 +38,7 @@ namespace DBEngineUnitTests
                 CreateEntity(2, name: "Second")
             };
 
-            trackedList.Load(initialItems);
+            trackedList.LoadAsync(initialItems).GetAwaiter().GetResult();
 
             Assert.AreEqual(1, dataSourceEvents, "Load should raise a single DataSourceChanged event.");
             Assert.AreSame(trackedList.DataSource, latestDataSource, "The binding list should be provided in the change event.");
