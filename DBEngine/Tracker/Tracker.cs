@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Threading;
 
@@ -13,7 +14,12 @@ namespace MDDDataAccess
         IfAvailable,
         Full
     }
-    public class Tracker<T> where T : class, new()
+    internal interface ITrackerMaintenance
+    {
+        void PruneInvalid();
+    }
+
+    public class Tracker<T> : ITrackerMaintenance where T : class, new()
     {
         public Tracker(DBEngine dbengine)
         {
@@ -232,6 +238,12 @@ namespace MDDDataAccess
         public ObjectTracking Tracking { get; set; } = ObjectTracking.None;
 
         private readonly ConcurrentDictionary<Type, object> trackers = new ConcurrentDictionary<Type, object>();
+        private readonly object trackerMaintenanceSync = new object();
+        private CancellationTokenSource trackerMaintenanceCancellation;
+        private Thread trackerMaintenanceThread;
+        private bool trackerMaintenanceShutdownHooked = false;
+
+        public TimeSpan TrackerMaintenanceInterval { get; set; } = TimeSpan.FromMinutes(5);
         private readonly ConcurrentDictionary<Type,bool> untrackedobjects = new ConcurrentDictionary<Type, bool>();
         public bool DirtyAwareObjectCopy { get; set; } = false;
         public Tracker<T> GetTracker<T>() where T : class, new()
@@ -251,6 +263,8 @@ namespace MDDDataAccess
                         return new Tracker<T>(this);
                     });
                 if (DebugLevel >= 100 && logEntry != null) Log.Entry(logEntry);
+
+                EnsureTrackerMaintenanceRunning();
 
                 if (string.IsNullOrWhiteSpace(TrackedEntity<T>.UpdateCommand))
                 {
@@ -283,6 +297,136 @@ namespace MDDDataAccess
             {
                 tracker = null;
                 return false;
+            }
+        }
+        private void EnsureTrackerMaintenanceRunning()
+        {
+            if (trackers.IsEmpty)
+                return;
+
+            lock (trackerMaintenanceSync)
+            {
+                if (trackerMaintenanceThread != null && trackerMaintenanceThread.IsAlive)
+                    return;
+
+                trackerMaintenanceCancellation?.Dispose();
+                trackerMaintenanceCancellation = new CancellationTokenSource();
+                var token = trackerMaintenanceCancellation.Token;
+
+                trackerMaintenanceThread = new Thread(() => TrackerMaintenanceLoop(token))
+                {
+                    IsBackground = true,
+                    Priority = ThreadPriority.Lowest,
+                    Name = $"DBEngineTrackerMaintenance-{GetHashCode()}"
+                };
+
+                trackerMaintenanceThread.Start();
+
+                if (!trackerMaintenanceShutdownHooked)
+                {
+                    AppDomain.CurrentDomain.ProcessExit += (_, __) => ShutdownTrackerMaintenance();
+                    AppDomain.CurrentDomain.DomainUnload += (_, __) => ShutdownTrackerMaintenance();
+                    trackerMaintenanceShutdownHooked = true;
+                }
+            }
+        }
+
+        private void TrackerMaintenanceLoop(CancellationToken token)
+        {
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    foreach (var tracker in trackers.Values.OfType<ITrackerMaintenance>())
+                    {
+                        if (token.IsCancellationRequested)
+                            break;
+
+                        try
+                        {
+                            tracker.PruneInvalid();
+                        }
+                        catch (Exception ex)
+                        {
+                            LogTrackerMaintenanceError($"Tracker prune failure in {tracker.GetType().Name}", ex);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogTrackerMaintenanceError("Tracker maintenance loop failure", ex);
+                }
+
+                if (token.IsCancellationRequested)
+                    break;
+
+                var delay = TrackerMaintenanceInterval;
+                if (delay <= TimeSpan.Zero)
+                    delay = TimeSpan.FromSeconds(1);
+
+                try
+                {
+                    if (token.WaitHandle.WaitOne(delay))
+                        break;
+                }
+                catch (ObjectDisposedException)
+                {
+                    break;
+                }
+            }
+        }
+
+        private void LogTrackerMaintenanceError(string message, Exception ex)
+        {
+            try
+            {
+                Log?.Entry("DBEngine.Tracking", 90, message, ex?.ToString());
+            }
+            catch
+            {
+                // ignored
+            }
+        }
+
+        public void ShutdownTrackerMaintenance()
+        {
+            Thread threadToJoin = null;
+
+            lock (trackerMaintenanceSync)
+            {
+                if (trackerMaintenanceCancellation == null)
+                    return;
+
+                try
+                {
+                    trackerMaintenanceCancellation.Cancel();
+                }
+                catch
+                {
+                    // ignored
+                }
+
+                threadToJoin = trackerMaintenanceThread;
+                trackerMaintenanceThread = null;
+            }
+
+            if (threadToJoin != null)
+            {
+                try
+                {
+                    if (threadToJoin.IsAlive)
+                        threadToJoin.Join(TimeSpan.FromSeconds(2));
+                }
+                catch
+                {
+                    // ignored
+                }
+            }
+
+            lock (trackerMaintenanceSync)
+            {
+                trackerMaintenanceCancellation?.Dispose();
+                trackerMaintenanceCancellation = null;
             }
         }
         public object TrackerAddObject(object entity, bool initializing)
