@@ -219,13 +219,18 @@ namespace MDDDataAccess
         //}
         public void PruneInvalid()
         {
+            int objectcount = 0;
+            int prunedcount = 0;
             foreach (var kvp in trackedObjects)
             {
+                objectcount++;
                 if (!kvp.Value.Initializing && !kvp.Value.TryGetEntity(out _))
                 {
+                    prunedcount++;
                     trackedObjects.TryRemove(kvp.Key, out _);
                 }
             }
+            DBEngine.Log.Entry("Tracking", 10, $"PruneInvalid ran for {typeof(T).Name} on {objectcount} objects and pruned {prunedcount}", null);
         }
 
         public override string ToString()
