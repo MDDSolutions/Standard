@@ -51,6 +51,8 @@ namespace MDDDataAccess
             }
             suppressNavigationPrompt = false;
 
+            //TrackedEntity<T>.TrackedEntityError += Currenttracked_TrackedEntityError;
+
             InitializeCommands();
         }
 
@@ -75,12 +77,14 @@ namespace MDDDataAccess
 
         public int CurrentIndex => currentIndex >= 0 ? currentIndex + 1 : 0;
 
-        public TrackedEntity<T> Current => currenttracked;
+        public TrackedEntity<T> CurrentTracked => currenttracked;
 
         public TrackedState CurrentState => currenttracked?.State ?? TrackedState.Invalid;
 
-        public T CurrentEntity => currenttracked != null && currenttracked.TryGetEntity(out var entity) ? entity : null;
-        //public T CurrentEntity { get; private set; }
+        public T CurrentEntity => (currentIndex >= 0 && currentIndex < bindingList.Count)
+            ? bindingList[currentIndex]
+            : null;
+        //public T CurrentEntity => currenttracked != null && currenttracked.TryGetEntity(out var entity) ? entity : null;
 
         public Func<TrackedEntity<T>, bool?> SaveChanges { get; set; } = null;
         public Func<TrackedEntity<T>, bool> PreparingForNavigation { get; set; } = _=> true;
@@ -144,7 +148,13 @@ namespace MDDDataAccess
             if (makeCurrent && !await PrepareForNavigationAsync()) return;
             var local = entity;
             var tracked = EnsureTracked(ref local);
-            var existingIndex = FindIndexByKey(tracked.KeyValue);
+
+            if (!makeCurrent && tracked == null) throw new Exception("New Records must be made current");
+
+
+            int existingIndex = -1;
+            if (tracked != null) 
+                existingIndex = FindIndexByKey(tracked.KeyValue);
             if (existingIndex >= 0)
             {
                 if (!ReferenceEquals(bindingList[existingIndex], local))
@@ -240,26 +250,90 @@ namespace MDDDataAccess
             saveCommand = new AsyncDbCommand(
                 async (dbe) =>
                 {
-                    bool success = false;
-                    var cmd = currenttracked?.SaveCommand as AsyncDbCommand;
-                    if (cmd != null && cmd.CanExecute(tracker.DBEngine))
+                    if (currenttracked != null)
                     {
-                        try
+                        var cmd = currenttracked.SaveCommand as AsyncDbCommand;
+                        if (cmd != null && cmd.CanExecute(tracker.DBEngine))
                         {
-                            success = await cmd.ExecuteAsync(tracker.DBEngine); 
+
+
+                            try { return await cmd.ExecuteAsync(tracker.DBEngine); }
+
+                            catch (Exception ex)
+                            {
+
+                                if (TrackedListError != null) TrackedListError.Invoke(this, ex);
+
+                                else throw;
+                                return false;
+                            }
                         }
-                        catch (Exception ex)
-                        {
-                            if (TrackedListError != null)
-                                TrackedListError.Invoke(this, ex);
-                            else
-                                throw;
-                            return false;
-                        }
+                        return false;
                     }
-                    return success;
+                    else // new entity path
+                    {
+                        var cmd = TrackedEntity<T>.StaticSaveCommand as AsyncStaticDbCommand<T>;
+                        var entity = CurrentEntity;
+                        if (cmd != null && cmd.CanExecute(entity))
+                        {
+                            bool result = false;
+                            try 
+                            { 
+                                result = await cmd.ExecuteAsync(tracker.DBEngine, entity); 
+                            }
+                            catch (Exception ex)
+                            {
+                                if (TrackedListError != null) TrackedListError.Invoke(this, ex);
+                                else throw;
+                                return false;
+                            }
+                            var key = TrackedEntity<T>.GetKeyValue(entity);
+                            if (Foundation.IsDefaultOrNull(key))
+                            {
+                                var ex = new Exception("Save failed - entity did not get a key");
+                                if (TrackedListError != null) TrackedListError.Invoke(this, ex);
+                                else throw ex;
+                                return false;
+                            }
+                            var tr = EnsureTracked(ref entity);
+                            if (tr == null)
+                            {
+                                var ex = new Exception("Save may have succeeded but entity could not be added to the tracker");
+                                if (TrackedListError != null) TrackedListError.Invoke(this, ex);
+                                else throw ex;
+                                return false;
+                            }
+                            // if EnsureTracked swapped the instance, keep the list consistent
+                            if (!ReferenceEquals(entity, bindingList[currentIndex]))
+                                bindingList[currentIndex] = entity;
+
+                            currenttracked = tr;
+                            currenttracked.TrackedStateChanged += CurrentTrackedStateChanged;
+                            if (currenttracked.SaveCommand != null)
+                                currenttracked.SaveCommand.CanExecuteChanged += SaveCommand_CanExecuteChanged;
+
+                            OnPropertyChanged(nameof(CurrentTracked));
+                            OnPropertyChanged(nameof(CurrentEntity));
+                            OnPropertyChanged(nameof(CurrentState));
+                            OnPropertyChanged(nameof(SaveCommand));
+
+                            CurrentChanged?.Invoke(this, new TrackedEntityChangedEventArgs<T>(null, entity, currenttracked, entity));
+
+                            RaiseNavigationCanExecute();
+                            
+                            return true;
+                        }
+                        return false;
+                    }
                 },
-                () => currenttracked?.SaveCommand?.CanExecute(tracker.DBEngine) == true
+                () =>
+                {
+                    // enable when tracked row has something to save, OR when this is a new row and we have an insert handler + entity
+                    if (currenttracked != null)
+                        return currenttracked.SaveCommand?.CanExecute(tracker.DBEngine) == true;
+
+                    return TrackedEntity<T>.StaticSaveCommand.CanExecute(CurrentEntity);
+                }
             );
             NextCommand = new RelayCommand(() => _ = NextAsync(), CanMoveNext);
             PreviousCommand = new RelayCommand(() => _ = PreviousAsync(), CanMovePrevious);
@@ -345,7 +419,9 @@ namespace MDDDataAccess
 
         private void SetCurrentInternal(ref T entity, TrackedEntity<T> tracked, bool allowAdd, bool suppressPrompt)
         {
-            var existingIndex = FindIndexByKey(tracked.KeyValue);
+            int existingIndex = -1;
+            if (tracked != null)
+                existingIndex = FindIndexByKey(tracked.KeyValue);
             if (existingIndex >= 0)
             {
                 if (!ReferenceEquals(bindingList[existingIndex], entity))
@@ -393,7 +469,7 @@ namespace MDDDataAccess
             if (previoustracked != null)
             {
                 previoustracked.TrackedStateChanged -= CurrentTrackedStateChanged;
-                previoustracked.TrackedEntityError -= Currenttracked_TrackedEntityError;
+                
                 if (previoustracked.SaveCommand != null)
                     previoustracked.SaveCommand.CanExecuteChanged -= SaveCommand_CanExecuteChanged;
             }
@@ -416,27 +492,26 @@ namespace MDDDataAccess
 
                 currentIndex = index;
                 currententity = bindingList[currentIndex];
-                var tracked = EnsureTracked(ref currententity);
+                currenttracked = EnsureTracked(ref currententity);
                 if (!ReferenceEquals(currententity, bindingList[currentIndex]))
                     bindingList[currentIndex] = currententity;
 
-                currenttracked = tracked;
-                currenttracked.TrackedStateChanged += CurrentTrackedStateChanged;
-                currenttracked.TrackedEntityError += Currenttracked_TrackedEntityError;
-                if (currenttracked.SaveCommand != null)
-                    currenttracked.SaveCommand.CanExecuteChanged += SaveCommand_CanExecuteChanged;            
+                if (currenttracked != null)
+                {
+                    currenttracked.TrackedStateChanged += CurrentTrackedStateChanged;
+                    if (currenttracked.SaveCommand != null)
+                        currenttracked.SaveCommand.CanExecuteChanged += SaveCommand_CanExecuteChanged;   
+                }          
             }
 
             OnPropertyChanged(nameof(CurrentIndex));
-            OnPropertyChanged(nameof(Current));
+            OnPropertyChanged(nameof(CurrentTracked));
             OnPropertyChanged(nameof(CurrentEntity));
             OnPropertyChanged(nameof(CurrentState));
             OnPropertyChanged(nameof(SaveCommand));
 
-            if (!ReferenceEquals(previoustracked, currenttracked))
-            {
+            if (!ReferenceEquals(previousentity, currententity))
                 CurrentChanged?.Invoke(this, new TrackedEntityChangedEventArgs<T>(previoustracked, previousentity, currenttracked, currententity));
-            }
 
             RaiseNavigationCanExecute();
         }
@@ -464,7 +539,6 @@ namespace MDDDataAccess
             if (currenttracked != null)
             {
                 currenttracked.TrackedStateChanged -= CurrentTrackedStateChanged;
-                currenttracked.TrackedEntityError -= Currenttracked_TrackedEntityError;
             }
 
             currenttracked = null;
@@ -472,7 +546,7 @@ namespace MDDDataAccess
             bindingList.Clear();
 
             OnPropertyChanged(nameof(CurrentIndex));
-            OnPropertyChanged(nameof(Current));
+            OnPropertyChanged(nameof(CurrentTracked));
             OnPropertyChanged(nameof(CurrentEntity));
             OnPropertyChanged(nameof(CurrentState));
             OnPropertyChanged(nameof(SaveCommand));
@@ -489,6 +563,11 @@ namespace MDDDataAccess
         private TrackedEntity<T> EnsureTracked(ref T entity)
         {
             if (entity == null) throw new ArgumentNullException(nameof(entity));
+
+            // NEW: don't attach tracking if key is not set yet
+            var key = TrackedEntity<T>.GetKeyValue(entity);
+            if (Foundation.IsDefaultOrNull(key))
+                return null;
 
             var local = entity;
             var tracked = tracker.GetOrAdd(ref local);

@@ -47,17 +47,17 @@ namespace MDDDataAccess
     {
         private readonly Func<DBEngine, Task<bool>> _execute;
         private readonly Func<bool> _canExecute;
-        private readonly Action<Exception> _onError;
+//        private readonly Action<Exception> _onError;
         private bool _isExecuting;
 
         public AsyncDbCommand(
             Func<DBEngine, Task<bool>> execute,
-            Func<bool> canExecute = null,
-            Action<Exception> onError = null)
+            Func<bool> canExecute = null)
+//            Action<Exception> onError = null)
         {
             _execute = execute ?? throw new ArgumentNullException(nameof(execute));
             _canExecute = canExecute;
-            _onError = onError;
+//            _onError = onError;
         }
 
         public bool IsExecuting => _isExecuting;
@@ -103,6 +103,65 @@ namespace MDDDataAccess
 
         public void RaiseCanExecuteChanged() =>
             CanExecuteChanged?.Invoke(this, EventArgs.Empty);
+    }
+    public sealed class AsyncStaticDbCommand<T> : ICommand
+    {
+        private readonly Func<DBEngine, T, Task<bool>> _execute;
+        private readonly Func<T, bool> _canExecute;
+        //        private readonly Action<T, Exception> _onError;
+        private bool _isExecuting;
+
+
+        public AsyncStaticDbCommand(
+            Func<DBEngine, T, Task<bool>> execute,
+            Func<T, bool> canExecute = null)
+        //            Action<T, Exception> onError = null)
+        {
+            _execute = execute ?? throw new ArgumentNullException(nameof(execute));
+            _canExecute = canExecute;
+            //            _onError = onError;
+        }
+
+        public bool IsExecuting => _isExecuting;
+
+        public bool CanExecute(T entity)
+        {
+            if (_isExecuting) return false;
+            if (_canExecute != null && !_canExecute(entity)) return false;
+            return true;
+        }
+        public void Execute(object parameter)
+        {
+            throw new NotImplementedException();
+        }
+        public async Task<bool> ExecuteAsync(DBEngine db, T entity)
+        {
+            if (!CanExecute(entity))
+                return false;
+
+            _isExecuting = true;
+            RaiseCanExecuteChanged();
+
+            try
+            {
+                return await _execute(db, entity).ConfigureAwait(false);
+            }
+            finally
+            {
+                _isExecuting = false;
+                RaiseCanExecuteChanged();
+            }
+        }
+
+        public event EventHandler CanExecuteChanged;
+
+        public void RaiseCanExecuteChanged() =>
+            CanExecuteChanged?.Invoke(this, EventArgs.Empty);
+
+        public bool CanExecute(object parameter)
+        {
+            return CanExecute((T)parameter);
+        }
     }
     public sealed class DbCommand : ICommand
     {

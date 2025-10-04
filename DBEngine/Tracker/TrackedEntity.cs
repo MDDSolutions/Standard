@@ -137,6 +137,9 @@ namespace MDDDataAccess
                     NotifierObject.PropertyUpdated += NObjPropertyUpdated;
                 }
 
+                StaticSaveCommand = new AsyncStaticDbCommand<T>(Save, CanSave); //, (ex) => TrackedEntityError?.Invoke(this, ex));
+
+
                 istrackable = true;
             }
         }
@@ -169,7 +172,7 @@ namespace MDDDataAccess
         // ---------- Instance-level ----------
         private TrackedEntity()
         {
-            SaveCommand = new AsyncDbCommand(Save, CanSave,(ex) => TrackedEntityError?.Invoke(this, ex));
+            SaveCommand = new AsyncDbCommand(Save, CanSave); //,(ex) => TrackedEntityError?.Invoke(this, ex));
         }
         public TrackedEntity(T entity) : this()
         {
@@ -620,19 +623,24 @@ namespace MDDDataAccess
 
         public bool CanNotify => _isDirtyCached != null;
         public event EventHandler<TrackedState> TrackedStateChanged;
-        public event EventHandler<Exception> TrackedEntityError;
+        //public static event EventHandler<Exception> TrackedEntityError;
 
         public ICommand SaveCommand { get; private set; }
+        public static ICommand StaticSaveCommand { get; private set;}
         private async Task<bool> Save(DBEngine db)
         {
             if (TryGetEntity(out var entity))
             {
-                return await db.RunSqlUpdateAsync(entity,UpdateCommand,DBEngine.IsProcedure(UpdateCommand),CancellationToken.None,-1, null, DBEngine.Default.AutoParam(entity,UpdateCommand)).ConfigureAwait(false);
+                return await Save(db, entity);
             }
             return false;
         }
+        private static async Task<bool> Save(DBEngine db, T entity)
+        {
+            return await db.RunSqlUpdateAsync(entity, UpdateCommand, DBEngine.IsProcedure(UpdateCommand), CancellationToken.None, -1, null, DBEngine.Default.AutoParam(entity, UpdateCommand)).ConfigureAwait(false);
+        }
         private bool CanSave() => !string.IsNullOrWhiteSpace(UpdateCommand) && State == TrackedState.Modified;
-
+        private static bool CanSave(T entity) => entity != null;
         public override string ToString()
         {
             return $"{typeof(T).Name} [Key={KeyValue?.ToString() ?? "null"}, State={State}]";
