@@ -195,22 +195,6 @@ namespace MDDDataAccess
 
         public bool TryGet(object key, out TrackedEntity<T> tracked) => trackedObjects.TryGetValue(key, out tracked);
         public int Count => trackedObjects.Count;
-
-        //public IEnumerable<Tracked<T>> Entries => trackedObjects.Values;
-
-        //public IEnumerable<Tracked<T>> GetDirtyEntries()
-        //{
-        //    foreach (var entry in trackedObjects.Values)
-        //    {
-        //        if (entry.State == TrackedState.Modified)
-        //            yield return entry;
-        //    }
-        //}
-
-        //public void Detach(object key)
-        //{
-        //    trackedObjects.TryRemove(key, out _);
-        //}
         public void PruneInvalid()
         {
             foreach (var kvp in trackedObjects)
