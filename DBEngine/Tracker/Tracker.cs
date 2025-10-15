@@ -429,6 +429,9 @@ namespace MDDDataAccess
             var getTrackerMethod = typeof(DBEngine).GetMethod("GetTracker", BindingFlags.Public | BindingFlags.Instance);
             var genericMethod = getTrackerMethod.MakeGenericMethod(entity.GetType());
             var ctracker = genericMethod.Invoke(this, null);
+            
+            //if GetTracker returns null, then the object is not trackable so just return null
+            if (ctracker == null) return null;
 
             var getOrAddMethod = ctracker.GetType().GetMethod("GetOrAdd", new[] { entity.GetType().MakeByRefType(), typeof(bool) });
             var parameters = new object[] { entity, initializing };
