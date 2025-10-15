@@ -304,7 +304,7 @@ namespace MDDDataAccess
                 var op = ((UnaryExpression)expression.Body).Operand;
                 name = ((MemberExpression)op).Member.Name;
             }
-            return new SqlParameter(name, expression.Compile().DynamicInvoke());
+            return new SqlParameter($"@{name}", expression.Compile().DynamicInvoke());
         }
         public static string PrintExecStatement(SqlCommand cmd, bool suppresserror = false)
         {

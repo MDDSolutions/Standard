@@ -205,16 +205,22 @@ namespace MDDDataAccess
         {
             int objectcount = 0;
             int prunedcount = 0;
+
             foreach (var kvp in trackedObjects)
             {
                 objectcount++;
+
+                // If the same instance is still in the dict, Remove(kvp) will succeed atomically
                 if (!kvp.Value.Initializing && !kvp.Value.TryGetEntity(out _))
                 {
-                    prunedcount++;
-                    trackedObjects.TryRemove(kvp.Key, out _);
+                    // atomic: remove only if key still maps to this exact value instance
+                    if (((ICollection<KeyValuePair<object, TrackedEntity<T>>>)trackedObjects).Remove(kvp))
+                        prunedcount++;
                 }
             }
-            DBEngine.Log.Entry("Tracking", 10, $"PruneInvalid ran for {typeof(T).Name} on {objectcount} objects and pruned {prunedcount}", null);
+
+            DBEngine.Log.Entry("Tracking", 10,
+                $"PruneInvalid ran for {typeof(T).Name} on {objectcount} objects and pruned {prunedcount}", null);
         }
 
         public override string ToString()

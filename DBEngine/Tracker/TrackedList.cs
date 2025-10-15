@@ -596,6 +596,8 @@ namespace MDDDataAccess
         #region Handler
         private object HandlerParameter = null;
         public Func<T, string> GetHandlerCaption = null;
+
+        public override T Value => CurrentEntity;
         public override string HandlerCaption => GetHandlerCaption != null ? GetHandlerCaption(CurrentEntity) : CurrentEntity != null ? CurrentEntity.ToString() : "< no current entity>";
         public override async Task HandleAsync(T inObj, object ParamObj = null)
         {
