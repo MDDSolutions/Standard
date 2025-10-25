@@ -160,8 +160,9 @@ namespace MDDDataAccess
                             switch (existingtracked.State)
                             {
                                 case TrackedState.Unchanged:
-                                    //object exists and is unchanged in the tracker - if the concurrency property is the same, our load was for naught - we can just return the existing value
-                                    //if the object does not have concurrency, I guess we just blindly merge the values from the loaded object - they could be new, but who knows?
+                                    //object exists and is unchanged in the tracker - if the concurrency property is the same, our load was for naught - we can basically just return the existing value
+                                    //if the object does not have concurrency or the concurrency values are different, we just blindly merge the values from the loaded object - we will be overwriting
+                                    //values with updated values from the database
                                     //if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 55, "OFR cache hit", r.ToString(), typeof(T).Name));
 
                                     if (!TrackedEntity<T>.HasConcurrency || !Foundation.ValueEquals(loadingconcurrency, TrackedEntity<T>.GetConcurrencyValue(existingentity)))
@@ -171,15 +172,17 @@ namespace MDDDataAccess
                                     }
                                     else
                                     {
+                                        //do an "optional only" copy - we've determined that the concurrency value is the same, so important, tracked properties of the object are already
+                                        //confirmed to be the same, but optional/untracked properties might be different depending on if this is a different type of load, so copy them in
+                                        //copyvalues already keeps the "more interesting" value on any optional properties, so we will probably not be nulling out good values
                                         existingtracked.CopyValues(loading, true, true);
                                     }
                                     loading = existingentity;
                                     return existingtracked;
                                 case TrackedState.Modified:
-                                    //if the object exists and is modified, then we don't want any values from the new object whether it's concurrency value matches or not
-                                    //if the concurrency value does not match, then we are probably previewing a future concurrency conflict but not sure what to do about it
-                                    //now - whoever has the object and hasn't saved it yet is going to get an error, but there is no mechanism here to tell them
-                                    //whoever is loading the object is going to get the dirty, unsaved one and not the version in the database - that might be a clue
+                                    //if the object exists and is modified, then we need to forestall any future concurrency conflict and make sure the object reflects what is in the database
+                                    //even if that means overwriting unsaved changes in the object - CopyValues will throw if there is a concurrency conflict (which there will be unless
+                                    //dirtyawarecopy is enabled and it succeeds) but the object will be consistent with the database when this is done
                                     //if (DebugLevel >= 200) Log.Entry(new ObjectTrackerLogEntry("ObjectTracker", 55, "OFR cache hit", r.ToString(), typeof(T).Name));
                                     var attemptDirtyAware = DBEngine.DirtyAwareObjectCopy && TrackedEntity<T>.SupportsDirtyAwareCopy;
                                     existingtracked.CopyValues(loading, attemptDirtyAware);
