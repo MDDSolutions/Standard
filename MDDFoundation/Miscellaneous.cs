@@ -305,6 +305,7 @@ namespace MDDFoundation
             if (progresscallback != null)
             {
                 progress.BytesCopied = progress.FileSizeBytes;
+                progress.IsCompleted = true;
                 progress.Hash = hash.Hash;
                 progresscallback(progress);
             }
