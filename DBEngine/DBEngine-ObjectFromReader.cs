@@ -114,33 +114,34 @@ namespace MDDDataAccess
             foreach (var item in targetType.GetProperties(BindingFlags.Public | BindingFlags.Instance).Where(x => x.CanWrite))
             {
                 var type = item.PropertyType;
+                var entry = new PropertyMapEntry
+                {
+                    Optional = !item.GetSetMethod(true).IsPublic,
+                    ColumnName = item.Name,
+                    Property = item
+                };
+                bool include = true;
+                bool special = false;
+                foreach (var attr in item.GetCustomAttributes(true))
+                {
+                    if (attr is DBIgnoreAttribute)
+                        include = false;
+                    if (attr is DBNameAttribute dbna)
+                        entry.ColumnName = dbna.DBName;
+                    if (attr is DBOptionalAttribute)
+                        entry.Optional = true;
+                    if (attr is ListKeyAttribute && isRoot)
+                        key = item;
+                    if (attr is DBLoadedTimeAttribute)
+                    {
+                        special = true;
+                        entry.Ordinal = -100;
+                        entry.MapAction = BuildStaticDateTimeFunc(item);
+                    }
+                }
                 if (type.IsValueType || type == typeof(string) || type.IsArray)
                 {
-                    var entry = new PropertyMapEntry
-                    {
-                        Optional = !item.GetSetMethod(true).IsPublic,
-                        ColumnName = item.Name,
-                        Property = item
-                    };
-                    bool include = true;
-                    bool special = false;
-                    foreach (var attr in item.GetCustomAttributes(true))
-                    {
-                        if (attr is DBIgnoreAttribute)
-                            include = false;
-                        if (attr is DBNameAttribute dbna)
-                            entry.ColumnName = dbna.DBName;
-                        if (attr is DBOptionalAttribute)
-                            entry.Optional = true;
-                        if (attr is ListKeyAttribute && isRoot)
-                            key = item;
-                        if (attr is DBLoadedTimeAttribute)
-                        {
-                            special = true;
-                            entry.Ordinal = -100;
-                            entry.MapAction = BuildStaticDateTimeFunc(item);
-                        }
-                    }
+
                     if (include && !special)
                     {
                         if (!strict)
@@ -201,7 +202,7 @@ namespace MDDDataAccess
                         continue;
                     }
 
-                    navigationproperties.Add(item);
+                    if (include) navigationproperties.Add(item);
 
                 }
             }

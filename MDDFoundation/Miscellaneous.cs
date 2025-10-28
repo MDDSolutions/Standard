@@ -54,6 +54,23 @@ namespace MDDFoundation
         public bool IncompleteButNotError { get; set; } = false;
 
 
+        //integrated callback - added 2025-10-28 for AzureTransferCoordinator
+        public Action<FileCopyProgress> Callback { get; set; }
+        public TimeSpan ProgressReportInterval { get; set; } = TimeSpan.FromSeconds(1);
+        private TimeSpan lastreport = TimeSpan.Zero;
+        public void UpdateAndMaybeCallback(long addbytes)
+        {
+            BytesCopied += addbytes;
+            if (Callback != null && (Stopwatch.Elapsed - lastreport) > ProgressReportInterval)
+            {
+                lastreport = Stopwatch.Elapsed;
+                Callback(this);
+            }
+        }
+        public bool HasIntegratedCallback => Callback != null && ProgressReportInterval > TimeSpan.Zero;
+
+
+
         private long _BytesCopied;
         public long BytesCopied
         {
