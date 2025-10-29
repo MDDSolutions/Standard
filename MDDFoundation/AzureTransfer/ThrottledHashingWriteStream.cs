@@ -1,14 +1,14 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace MDDFoundation
 {
-    internal sealed class ThrottledHashingReadStream : Stream
+    internal sealed class ThrottledHashingWriteStream : Stream
     {
         private readonly Stream _base;
         private readonly long _start;
@@ -17,15 +17,16 @@ namespace MDDFoundation
 
         private readonly SHA256 _sha;
         private bool _finalized;
-        private byte[] _hash; // cached after finalize
+        private byte[] _hash;
 
         private readonly bool _throttle;
         private readonly double _bytesPerSecond;
         private long _bytesThisWindow;
         private Stopwatch _window;
+
         private readonly FileCopyProgress _progress;
 
-        public ThrottledHashingReadStream(Stream baseStream, long offset, long length, double maxMbPerSec, FileCopyProgress progress = null)
+        public ThrottledHashingWriteStream(Stream baseStream, long offset, long length, double maxMbPerSec, FileCopyProgress progress = null)
         {
             if (baseStream == null) throw new ArgumentNullException("baseStream");
             _base = baseStream;
@@ -45,12 +46,12 @@ namespace MDDFoundation
 
             if (progress != null && !progress.HasIntegratedCallback) throw new ArgumentException("if specifying progress object, it must have Integrated Callback");
             _progress = progress;
+            if (_base.CanSeek && _base.Position != _pos) _base.Seek(_pos, SeekOrigin.Begin);
         }
 
         private void EnsureFinalized()
         {
             if (_finalized) return;
-            // finalize and cache the hash BEFORE disposing SHA
             _sha.TransformFinalBlock(new byte[0], 0, 0);
             _hash = _sha.Hash;
             _finalized = true;
@@ -58,7 +59,6 @@ namespace MDDFoundation
 
         public string FinalizeHashAndGetHex()
         {
-            // safe if Dispose() already ran: we cached _hash in Dispose()
             if (!_finalized) EnsureFinalized();
             var h = _hash ?? new byte[0];
             var sb = new StringBuilder(h.Length * 2);
@@ -66,31 +66,28 @@ namespace MDDFoundation
             return sb.ToString();
         }
 
-        public override int Read(byte[] buffer, int offset, int count)
+        public override void Write(byte[] buffer, int offset, int count)
         {
             if (buffer == null) throw new ArgumentNullException("buffer");
             if (offset < 0 || count < 0 || (offset + count) > buffer.Length) throw new ArgumentOutOfRangeException("count");
-
-            if (_pos >= _endExclusive) return 0;
+            if (count == 0) return;
 
             long remaining = _endExclusive - _pos;
+            if (remaining <= 0) throw new IOException("Attempt to write beyond chunk bounds");
             if (count > remaining) count = (int)remaining;
 
-            if (_base.Position != _pos) _base.Seek(_pos, SeekOrigin.Begin);
+            if (_base.CanSeek && _base.Position != _pos) _base.Seek(_pos, SeekOrigin.Begin);
 
-            int read = _base.Read(buffer, offset, count);
-            if (read <= 0) return 0;
+            _sha.TransformBlock(buffer, offset, count, null, 0);
+            _base.Write(buffer, offset, count);
 
-            _pos += read;
+            _pos += count;
 
-            // update hash incrementally
-            _sha.TransformBlock(buffer, offset, read, null, 0);
-
-            _progress?.UpdateAndMaybeCallback(read);
+            if (_progress != null) _progress.UpdateAndMaybeCallback(count);
 
             if (_throttle)
             {
-                _bytesThisWindow += read;
+                _bytesThisWindow += count;
 
                 long elapsedMs = _window.ElapsedMilliseconds;
                 if (elapsedMs <= 0) elapsedMs = 1;
@@ -109,14 +106,54 @@ namespace MDDFoundation
                     _bytesThisWindow = 0;
                 }
             }
+        }
 
-            return read;
+        public override async Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            if (buffer == null) throw new ArgumentNullException("buffer");
+            if (offset < 0 || count < 0 || (offset + count) > buffer.Length) throw new ArgumentOutOfRangeException("count");
+            if (count == 0) return;
+
+            long remaining = _endExclusive - _pos;
+            if (remaining <= 0) throw new IOException("Attempt to write beyond chunk bounds");
+            if (count > remaining) count = (int)remaining;
+
+            if (_base.CanSeek && _base.Position != _pos) _base.Seek(_pos, SeekOrigin.Begin);
+
+            _sha.TransformBlock(buffer, offset, count, null, 0);
+            await _base.WriteAsync(buffer, offset, count, cancellationToken).ConfigureAwait(false);
+
+            _pos += count;
+
+            if (_progress != null) _progress.UpdateAndMaybeCallback(count);
+
+            if (_throttle)
+            {
+                _bytesThisWindow += count;
+
+                long elapsedMs = _window.ElapsedMilliseconds;
+                if (elapsedMs <= 0) elapsedMs = 1;
+
+                double allowedSoFar = _bytesPerSecond * (elapsedMs / 1000.0);
+                if (_bytesThisWindow > allowedSoFar)
+                {
+                    double overBytes = _bytesThisWindow - allowedSoFar;
+                    int msToWait = (int)Math.Ceiling((overBytes / _bytesPerSecond) * 1000.0);
+                    if (msToWait > 0) await Task.Delay(msToWait, cancellationToken).ConfigureAwait(false);
+                }
+
+                if (_window.ElapsedMilliseconds >= 1000)
+                {
+                    _window.Restart();
+                    _bytesThisWindow = 0;
+                }
+            }
         }
 
         // Stream boilerplate
-        public override bool CanRead { get { return true; } }
+        public override bool CanRead { get { return false; } }
         public override bool CanSeek { get { return true; } }
-        public override bool CanWrite { get { return false; } }
+        public override bool CanWrite { get { return true; } }
         public override long Length { get { return _endExclusive - _start; } }
 
         public override long Position
@@ -142,20 +179,18 @@ namespace MDDFoundation
             return _pos - _start;
         }
 
-        public override void Flush() { }
+        public override void Flush() { _base.Flush(); }
         public override void SetLength(long value) { throw new NotSupportedException(); }
-        public override void Write(byte[] buffer, int offset, int count) { throw new NotSupportedException(); }
+        public override int Read(byte[] buffer, int offset, int count) { throw new NotSupportedException(); }
 
         protected override void Dispose(bool disposing)
         {
             if (disposing)
             {
-                // finalize & cache the hash before disposing the algorithm
-                try { EnsureFinalized(); } catch { /* best effort */ }
+                try { EnsureFinalized(); } catch { }
                 _sha.Dispose();
             }
             base.Dispose(disposing);
         }
     }
-
 }

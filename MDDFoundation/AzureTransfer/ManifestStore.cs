@@ -15,7 +15,7 @@ namespace MDDFoundation
             _manifestUri = new Uri(manifestUrlWithSas);
         }
 
-        public async Task<BackupManifest> TryLoadAsync()
+        public async Task<TransferManifest> TryLoadAsync()
         {
             try
             {
@@ -25,7 +25,7 @@ namespace MDDFoundation
                         return null;
 
                     using (var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false))
-                        return BackupManifest.LoadFromStream(stream);
+                        return TransferManifest.LoadFromStream(stream);
                 }
             }
             catch
@@ -34,7 +34,7 @@ namespace MDDFoundation
             }
         }
 
-        public async Task SaveAsync(BackupManifest manifest)
+        public async Task SaveAsync(TransferManifest manifest)
         {
             // Write to memory first (atomic replacement pattern)
             var bytes = manifest.ToBytes();

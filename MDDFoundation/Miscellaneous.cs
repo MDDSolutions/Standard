@@ -1007,6 +1007,28 @@ namespace MDDFoundation
                 }
             }
         }
+        public static async Task RetryAsync(Func<bool> func, int numretries = 10, int delayms = 1000, Action<Exception, int> interimexception = null)
+        {
+            while (numretries > 0)
+            {
+                numretries--;
+                try
+                {
+                    var r = func.Invoke();
+                    if (r) return;
+                }
+                catch (Exception ex)
+                {
+                    if (numretries > 0)
+                    {
+                        await Task.Delay(delayms);
+                        interimexception?.Invoke(ex, numretries);
+                    }
+                    else
+                        throw ex;
+                }
+            }
+        }
         public static void SynchronizedInvoke(this ISynchronizeInvoke sync, Action action)
         {
             if (!sync.InvokeRequired)
