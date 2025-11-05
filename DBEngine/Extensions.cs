@@ -284,5 +284,33 @@ namespace MDDDataAccess
 
             return script;
         }
+        public static void SmartAdd<T>(this Dictionary<object, T> dict, T item) where T : class, new()
+        {
+            var key = TrackedEntity<T>.GetKeyValue(item);
+            if (dict.TryGetValue(key, out var existing))
+            {
+                foreach (var navprop in typeof(T).GetProperties().Where(x => x.PropertyType.IsGenericType && x.PropertyType.GetGenericTypeDefinition() == typeof(List<>)))
+                {
+                    var itemList = navprop.GetValue(item) as IList;
+                    var existingList = navprop.GetValue(existing) as IList;
+
+                    if (itemList != null && existingList != null)
+                    {
+                        foreach (var navItem in itemList)
+                        {
+                            if (!existingList.Contains(navItem))
+                            {
+                                existingList.Add(navItem);
+                            }
+                        }
+                    }
+                }
+            }
+            else
+            {
+                dict.Add(key, item);
+            }
+
+        }
     }
 }

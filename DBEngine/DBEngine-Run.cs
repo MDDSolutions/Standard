@@ -374,7 +374,18 @@ namespace MDDDataAccess
                             var l = new List<T>();
                             PropertyInfo key = null;
                             List<PropertyMapEntry> map = null;
-                            Tracker<T> t = Tracking != ObjectTracking.None && TrackedEntity<T>.IsTrackable ? GetTracker<T>() : null;
+
+                            Tracker<T> t = TrackedEntity<T>.IsTrackable && Tracking != ObjectTracking.None ? GetTracker<T>() : null;
+
+                            Dictionary<object, T> tdict = TrackedEntity<T>.KeyProperty != null && typeof(T).GetProperties().Any(x => x.PropertyType.IsGenericType && x.PropertyType.GetGenericTypeDefinition() == typeof(List<>))
+                                ? new Dictionary<object, T>() : null;
+
+                            bool posttracking = false;
+                            if (tdict != null && t != null)
+                            {
+                                t = null; //we can't track parent items as we read them because there may be duplicates
+                                posttracking = true;
+                            }
 
                             using (SqlDataReader rdr = ExecuteReader(cmd))
                             {
@@ -382,8 +393,20 @@ namespace MDDDataAccess
                                 {
                                     T r = null;
                                     ObjectFromReader<T>(rdr, ref map, ref key, ref r, ref t);
+                                    if (tdict != null)
+                                        tdict.SmartAdd(r);
+                                    else
+                                        l.Add(r);
+                                }
+                            }
+                            if (posttracking) t = GetTracker<T>();
+                            if (tdict != null)
+                            {
+                                foreach (var item in tdict.Values)
+                                {
+                                    T r = item;
+                                    t?.GetOrAdd(ref r, true);
                                     l.Add(r);
-
                                 }
                             }
                             return l;

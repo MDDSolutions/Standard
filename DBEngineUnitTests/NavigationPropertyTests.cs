@@ -1,7 +1,9 @@
 ﻿using MDDDataAccess;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System;
+using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 
 namespace DBEngineUnitTests
 {
@@ -21,6 +23,22 @@ END;
 IF OBJECT_ID('dbo.OrderDetails') IS NOT NULL DROP TABLE OrderDetails;
 IF OBJECT_ID('dbo.Item') IS NOT NULL DROP TABLE Item;
 IF OBJECT_ID('dbo.Category') IS NOT NULL DROP TABLE Category;
+IF OBJECT_ID('dbo.OrderHeader') IS NOT NULL DROP TABLE OrderHeader;
+
+
+CREATE TABLE OrderHeader (
+	OrderID INT PRIMARY KEY IDENTITY(50,1),
+	OrderDate DATE NOT NULL,
+	modified_date DATETIME
+);
+GO
+CREATE TRIGGER trgOrderHeader ON dbo.OrderHeader
+FOR UPDATE
+AS
+UPDATE tgt SET modified_date = GETDATE()
+FROM Inserted i
+	JOIN dbo.OrderHeader tgt ON tgt.OrderID = i.OrderID
+GO
 
 CREATE TABLE Category (
         CategoryId INT PRIMARY KEY IDENTITY(301,1),
@@ -51,7 +69,7 @@ FROM Inserted i
 GO
 CREATE TABLE OrderDetails (
 	OrderDetailId INT PRIMARY KEY IDENTITY(201,1),
-	OrderId INT,
+	OrderId INT NOT NULL FOREIGN KEY REFERENCES dbo.OrderHeader (OrderID),
 	OrderQty INT NOT NULL,
 	ItemId INT NOT NULL FOREIGN KEY REFERENCES dbo.Item (ItemId),
 	modified_date DATETIME
@@ -72,12 +90,11 @@ SELECT 'Table', CategoryId FROM dbo.Category WHERE CategoryName = 'Furniture';
 INSERT dbo.Item (ItemName, CategoryId)
 SELECT 'Chair', CategoryId FROM dbo.Category WHERE CategoryName = 'Office';
 
-INSERT dbo.OrderDetails (OrderId, OrderQty, ItemId)
-SELECT 501, 2, ItemId FROM dbo.Item;
+INSERT dbo.OrderHeader (OrderDate) VALUES ('2025-11-05');
+DECLARE @OrderID INT = SCOPE_IDENTITY();
 
-UPDATE dbo.Category SET CategoryName = CategoryName;
-UPDATE dbo.Item SET ItemName = ItemName;
-UPDATE dbo.OrderDetails SET OrderQty = OrderQty;";
+INSERT dbo.OrderDetails (OrderId, OrderQty, ItemId)
+SELECT @OrderID, 2, ItemId FROM dbo.Item;";
             _db = new DBEngine(Global.ConnString, "NavigationPropertyTesting") { AllowAdHoc = true, Tracking = ObjectTracking.IfAvailable };
             _db.ExecuteScript(script);
         }
@@ -125,11 +142,17 @@ UPDATE dbo.OrderDetails SET OrderQty = OrderQty;";
         [TestMethod]
         public void NavigationPropertyConcurrencyColumnsAreMappedIndependently()
         {
+            _db.SqlRunStatement("UPDATE dbo.Item SET ItemName = ItemName");
+            Thread.Sleep(50);
+            _db.SqlRunStatement("UPDATE dbo.OrderDetails SET OrderQty = OrderQty");
+
+
             string query = "SELECT * FROM dbo.OrderDetails od JOIN dbo.Item i ON i.ItemId = od.ItemId ORDER BY od.OrderDetailId";
             var od = _db.SqlRunQueryWithResults<OrderDetails>(query, false);
             Assert.IsNotNull(od);
             Assert.IsTrue(od.All(x => x.modified_date.HasValue));
             Assert.IsTrue(od.All(x => x.OrderItem != null && x.OrderItem.modified_date.HasValue));
+            Assert.IsTrue(od.All(x => x.OrderItem.modified_date < x.modified_date));
         }
 
         [TestMethod]
@@ -148,6 +171,16 @@ UPDATE dbo.OrderDetails SET OrderQty = OrderQty;";
             var categories = od.Select(x => x.OrderItem.Category.CategoryName).ToList();
             CollectionAssert.AreEquivalent(new[] { "Furniture", "Office" }, categories);
         }
+        [TestMethod]
+        public void NestedListNavigationPropertiesPopulateAndSmartAdd()
+        {
+            string query = @"SELECT * 
+                             FROM dbo.OrderHeader h
+	                            JOIN dbo.OrderDetails d ON d.OrderId = h.OrderID";
+            var ord = _db.SqlRunQueryWithResults<OrderHeader>(query, false);
+            Assert.IsTrue(ord.Count == 1);
+            Assert.IsTrue(ord[0].Details.Count == 2);
+        }
 
         private class OrderDetails
         {
@@ -159,6 +192,21 @@ UPDATE dbo.OrderDetails SET OrderQty = OrderQty;";
             public Item OrderItem { get; set; }
             [ListConcurrency]
             public DateTime? modified_date { get; set; }
+            public override string ToString()
+            {
+                return $"OrderDetailID: {OrderDetailId}, ItemId: {ItemId}";
+            }
+        }
+        private class OrderHeader
+        {
+            [ListKey] public int OrderID { get; set; }
+            public DateTime OrderDate { get; set; }
+            [ListConcurrency] public DateTime modified_date { get; set; }
+            public List<OrderDetails> Details { get; set; }
+            public override string ToString()
+            {
+                return $"OrderID: {OrderID}";
+            }
         }
         private class Item
         {
@@ -169,6 +217,10 @@ UPDATE dbo.OrderDetails SET OrderQty = OrderQty;";
             [ListConcurrency]
             public DateTime? modified_date { get; set; }
             public Category Category { get; set; }
+            public override string ToString()
+            {
+                return $"ItemId: {ItemId}";
+            }
         }
         private class Category
         {
@@ -177,6 +229,10 @@ UPDATE dbo.OrderDetails SET OrderQty = OrderQty;";
             public string CategoryName { get; set; }
             [ListConcurrency]
             public DateTime? modified_date { get; set; }
+            public override string ToString()
+            {
+                return $"CategoryId: {CategoryId}, CategoryName: {CategoryName}";
+            }
         }
     }
 }

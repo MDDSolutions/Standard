@@ -98,12 +98,12 @@ namespace MDDDataAccess
             var columnOrdinals = GetColumnOrdinals(rdr);
             var visited = new HashSet<Type>();
 
-            map = BuildPropertyMapInternal(typeof(T), rdr, columnOrdinals, strict, concurrencyproperty, visited, true, ref key);
+            map = BuildPropertyMapInternal(typeof(T), rdr, columnOrdinals, strict, concurrencyproperty, visited, true, ref key, true);
 
             map.Sort((x, y) => x.Ordinal.CompareTo(y.Ordinal));
         }
 
-        private List<PropertyMapEntry> BuildPropertyMapInternal(Type targetType, SqlDataReader rdr, Dictionary<string, Queue<int>> columnOrdinals, bool strict, PropertyInfo concurrencyProperty, HashSet<Type> recursionStack, bool isRoot, ref PropertyInfo key)
+        private List<PropertyMapEntry> BuildPropertyMapInternal(Type targetType, SqlDataReader rdr, Dictionary<string, Queue<int>> columnOrdinals, bool strict, PropertyInfo concurrencyProperty, HashSet<Type> recursionStack, bool isRoot, ref PropertyInfo key, bool navprops)
         {
             var result = new List<PropertyMapEntry>();
             var navigationproperties = new List<PropertyInfo>();
@@ -182,6 +182,18 @@ namespace MDDDataAccess
                 }
                 else
                 {
+                    if (!navprops)
+                        continue;
+                    if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>))
+                    {
+                        var elementType = type.GetGenericArguments()[0];
+                        if (elementType.IsClass && elementType != typeof(string))
+                        {
+                            // This is a List<SomeClass> navigation property
+                            navigationproperties.Add(item);
+                            continue;
+                        }
+                    }
                     if (!type.IsClass || type == typeof(string) || type.IsAbstract)
                     {
                         if (DebugLevel > 100)
@@ -211,12 +223,16 @@ namespace MDDDataAccess
             foreach (var item in navigationproperties)
             {
                 var type = item.PropertyType;
+                var isList = type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>);
+                var elementType = isList ? type.GetGenericArguments()[0] : null;
                 var clonedOrdinals = CloneColumnOrdinals(columnOrdinals);
                 PropertyInfo childKey = null;
 
                 try
                 {
-                    var childMap = BuildPropertyMapInternal(type, rdr, clonedOrdinals, true, null, recursionStack, false, ref childKey);
+                    var childMap = isList
+                        ? BuildPropertyMapInternal(elementType, rdr, clonedOrdinals, true, null, recursionStack, false, ref childKey, false)
+                        : BuildPropertyMapInternal(type, rdr, clonedOrdinals, true, null, recursionStack, false, ref childKey, false);
 
                     if (childMap.Count == 0)
                         continue;
@@ -234,22 +250,46 @@ namespace MDDDataAccess
                     var ord = childMap.Where(m => m.Ordinal >= 0).Select(m => m.Ordinal);
                     navigationEntry.Ordinal = ord.Any() ? ord.Min() : int.MaxValue;
 
-                    navigationEntry.MapAction = (reader, target) =>
+                    if (isList)
                     {
-                        bool hasValue = childMap.Any(cm => cm.Ordinal >= 0 && !reader.IsDBNull(cm.Ordinal));
-                        if (!hasValue)
-                            return;
-
-                        var current = item.GetValue(target);
-                        if (current == null)
+                        navigationEntry.MapAction = (reader, target) =>
                         {
-                            current = Activator.CreateInstance(type);
-                            item.SetValue(target, current);
-                        }
+                            bool hasValue = childMap.Any(cm => cm.Ordinal >= 0 && !reader.IsDBNull(cm.Ordinal));
+                            if (!hasValue)
+                                return;
 
-                        ExecutePropertyMap(reader, childMap, current, type);
-                        TrackerAddObject(current, true);
-                    };
+                            var currentList = item.GetValue(target) as System.Collections.IList;
+                            if (currentList == null)
+                            {
+                                currentList = (System.Collections.IList)Activator.CreateInstance(type);
+                                item.SetValue(target, currentList);
+                            }
+
+                            var element = Activator.CreateInstance(elementType);
+                            ExecutePropertyMap(reader, childMap, element, elementType);
+                            currentList.Add(element);
+                            TrackerAddObject(element, true);
+                        };
+                    }
+                    else
+                    {
+                        navigationEntry.MapAction = (reader, target) =>
+                        {
+                            bool hasValue = childMap.Any(cm => cm.Ordinal >= 0 && !reader.IsDBNull(cm.Ordinal));
+                            if (!hasValue)
+                                return;
+
+                            var current = item.GetValue(target);
+                            if (current == null)
+                            {
+                                current = Activator.CreateInstance(type);
+                                item.SetValue(target, current);
+                            }
+
+                            ExecutePropertyMap(reader, childMap, current, type);
+                            TrackerAddObject(current, true);
+                        };
+                    }
 
                     result.Add(navigationEntry);
                 }
