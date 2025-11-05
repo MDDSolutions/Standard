@@ -196,7 +196,7 @@ namespace MDDFoundation
 
                 using (FileStream fs = new FileStream(tgt.FullName, FileMode.Open, FileAccess.Read, FileShare.Read, 8192))
                 {
-                    using (var hashalg = new SHA1CryptoServiceProvider())
+                    using (var hashalg = SHA1.Create())
                     {
                         return await hashalg.ComputeHashAsync(fs, token, readprogress, progresscallback, progressreportinterval, suspenduntil);
                     }
@@ -206,10 +206,10 @@ namespace MDDFoundation
             {
                 if (ex is OperationCanceledException)
                 {
-                    if (progresscallback != null)
+                    if (readprogress != null)
                     {
                         readprogress.Cancelled = true;
-                        progresscallback(readprogress);
+                        progresscallback?.Invoke(readprogress);
                         return null;
                     }
                 }
@@ -238,7 +238,7 @@ namespace MDDFoundation
                 {
                     long seekpos = (Convert.ToInt64(fileindex) - 1) * Convert.ToInt64(breakupsizemb) * 1024 * 1024;
                     fs.Seek(seekpos, SeekOrigin.Begin);
-                    using (var hashalg = new SHA1CryptoServiceProvider())
+                    using (var hashalg = SHA1.Create())
                     {
                         return await hashalg.ComputeHashAsync(fs, token, readprogress, progresscallback, progressreportinterval, suspenduntil, breakupsizemb);
                     }
@@ -328,6 +328,12 @@ namespace MDDFoundation
             }
             return hash.Hash;
         }
+        public static string ToHexString(this byte[] bytes)
+        {
+            if (bytes == null || bytes.Length == 0)
+                return "0x";
+            return "0x" + BitConverter.ToString(bytes).Replace("-", "");
+        }
         public static async Task<byte[]> CopyToAsync(this FileInfo file, FileInfo destination, bool overwrite, CancellationToken token, bool MoveFile = false, Action<FileCopyProgress> progresscallback = null, TimeSpan progressreportinterval = default, Func<FileCopyProgress, bool> suspenduntil = null, bool computehash = false)
         {
             FileInfo tmpfile = null;
@@ -375,7 +381,7 @@ namespace MDDFoundation
                     }
                 }
 
-                using (var hash = new SHA1CryptoServiceProvider())
+                using (var hash = SHA1.Create())
                 using (var source = file.OpenRead())
                 using (var dest = tmpfile.OpenWrite())
                 {
@@ -501,7 +507,7 @@ namespace MDDFoundation
                     }
                 }
 
-                using (var hash = new SHA1CryptoServiceProvider())
+                using (var hash = SHA1.Create())
                 using (var source = file.OpenRead())
                 {
                     tmpdestinations = tmpfiles.Select(x => x.Item1.OpenWrite()).ToArray();

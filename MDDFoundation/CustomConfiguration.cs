@@ -90,7 +90,7 @@ namespace MDDFoundation
             if (string.IsNullOrEmpty(path))
             {
                 var fi = new FileInfo(System.Reflection.Assembly.GetExecutingAssembly().Location);
-                path = fi.DirectoryName;
+                path = fi.DirectoryName ?? AppDomain.CurrentDomain.BaseDirectory;
             }
             foreach (var file in Directory.GetFiles(path, "*.xml"))
             {
@@ -118,7 +118,8 @@ namespace MDDFoundation
                 FileInfo ass = new FileInfo(System.Reflection.Assembly.GetExecutingAssembly().Location);
                 if (string.IsNullOrWhiteSpace(filename))
                     filename = defaultfilename;
-                return Path.Combine(ass.DirectoryName, filename);
+                var dir = ass.DirectoryName ?? AppDomain.CurrentDomain.BaseDirectory;
+                return Path.Combine(dir, filename);
             }
             return filename;
         }
