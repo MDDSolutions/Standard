@@ -317,6 +317,9 @@ namespace MDDDataAccess
                 }
                 catch (Exception ex)
                 {
+
+
+
                     string objectvalues = null;
                     try
                     {
@@ -325,6 +328,19 @@ namespace MDDDataAccess
                     catch (Exception ex2)
                     {
                         objectvalues = $"Error getting object values: {ex2.Message}";
+                    }
+
+                    if (ex.Message.StartsWith("Invalid attempt to read from column ordinal") && ex.Message.Contains("With CommandBehavior.SequentialAccess, you may only read from column ordinal"))
+                    {
+                        throw new DBEnginePostMappingException<T>(
+                            target,
+                            entry.Property.Name,
+                            entry.Property.PropertyType.FullName,
+                            entry.ReaderType?.Name ?? "<unknown>",
+                            objectvalues,
+                            $"DBEngine internal error: Post-mapping error occured related to Sequential Access - this often means that OFR was attempting to auto-populate navigation properties, but the columns are specified out of order in the query and OFR must read all navigation properties together when populating objects - either re-order the columns in the query or do not run the reader with Sequential Access",
+                            ex
+                            );
                     }
 
                     throw new DBEnginePostMappingException<T>(
