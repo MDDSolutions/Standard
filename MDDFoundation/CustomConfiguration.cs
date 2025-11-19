@@ -113,15 +113,34 @@ namespace MDDFoundation
         public string FileName { get; set; }
         public static string FullFileName(string filename)
         {
-            if (string.IsNullOrWhiteSpace(filename) || !filename.Contains(@"\"))
+            // If no filename provided, use your default
+            if (string.IsNullOrWhiteSpace(filename))
             {
-                FileInfo ass = new FileInfo(System.Reflection.Assembly.GetExecutingAssembly().Location);
-                if (string.IsNullOrWhiteSpace(filename))
-                    filename = defaultfilename;
-                var dir = ass.DirectoryName ?? AppDomain.CurrentDomain.BaseDirectory;
-                return Path.Combine(dir, filename);
+                filename = defaultfilename;
             }
+
+            // If it's not rooted (relative or just a bare filename), resolve it next to the app
+            if (!Path.IsPathRooted(filename))
+            {
+                var baseDir = AppContext.BaseDirectory; // works in single-file too
+                return Path.Combine(baseDir, filename);
+            }
+
+            // Already an absolute path, just return it as-is
             return filename;
         }
+
+        //public static string FullFileName(string filename)
+        //{
+        //    if (string.IsNullOrWhiteSpace(filename) || !filename.Contains(@"\"))
+        //    {
+        //        FileInfo ass = new FileInfo(System.Reflection.Assembly.GetExecutingAssembly().Location);
+        //        if (string.IsNullOrWhiteSpace(filename))
+        //            filename = defaultfilename;
+        //        var dir = ass.DirectoryName ?? AppDomain.CurrentDomain.BaseDirectory;
+        //        return Path.Combine(dir, filename);
+        //    }
+        //    return filename;
+        //}
     }
 }
