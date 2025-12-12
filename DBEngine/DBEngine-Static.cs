@@ -16,6 +16,7 @@ using System.Runtime.Serialization;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Xml.Serialization;
 
 namespace MDDDataAccess
 {
@@ -257,7 +258,60 @@ namespace MDDDataAccess
         //    if (param.Value == null) param.Value = DBNull.Value;
         //    return param;
         //}
-        public static void ParameterizeCommand(SqlParameter[] list, SqlCommand cmd)
+
+    private static byte[] SerializeObjectToBytes(object value)
+    {
+        if (value == null) return null;
+        var type = value.GetType();
+
+        // Try DataContractSerializer (no extra NuGet, available on .NET Standard 2.0)
+        try
+        {
+            var dcs = new DataContractSerializer(type);
+            using (var ms = new MemoryStream())
+            {
+                dcs.WriteObject(ms, value);
+                return ms.ToArray();
+            }
+        }
+        catch
+        {
+            // Fallback to XmlSerializer (works for POCOs with public parameterless ctor and public members)
+            try
+            {
+                var xs = new XmlSerializer(type);
+                using (var ms = new MemoryStream())
+                {
+                    xs.Serialize(ms, value);
+                    return ms.ToArray();
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"Unable to serialize object of type {type.FullName}", ex);
+            }
+        }
+    }
+
+    private static object DeserializeBytesToObject(byte[] data, Type type)
+    {
+        if (data == null) return null;
+        using (var ms = new MemoryStream(data))
+        {
+            try
+            {
+                var dcs = new DataContractSerializer(type);
+                return dcs.ReadObject(ms);
+            }
+            catch
+            {
+                ms.Position = 0;
+                var xs = new XmlSerializer(type);
+                return xs.Deserialize(ms);
+            }
+        }
+    }
+    public static void ParameterizeCommand(SqlParameter[] list, SqlCommand cmd)
         {
             if (list != null)
             {
@@ -280,12 +334,7 @@ namespace MDDDataAccess
                     if (item.Value is ISerializable && !item.Value.GetType().FullName.Contains("System"))
                     {   // this is meant to handle properties that are serializable user types - i.e. classes that implement ISerializable (or are just decorated with [Serializable])
                         // it is mostly untested at this point
-                        var formatter = new BinaryFormatter();
-                        using (var stream = new MemoryStream())
-                        {
-                            formatter.Serialize(stream, item.Value);
-                            item.Value = stream.ToArray();
-                        }
+                        item.Value = SerializeObjectToBytes(item.Value);
                     }
                     if (item.Value == null) item.Value = DBNull.Value;
                     if (addcurrent) cmd.Parameters.Add(item);

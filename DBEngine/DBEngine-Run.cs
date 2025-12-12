@@ -16,7 +16,7 @@ namespace MDDDataAccess
     {
 
         #region Procedures And Statements
-        public async Task SqlRunProcedureAsync(string procName, CancellationToken CancellationToken, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list)
+        public async Task SqlRunProcedureAsync(string procName, CancellationToken CancellationToken, int ConnectionTimeout = -1, string? ApplicationName = null, params SqlParameter[] list)
         {
             using (var cn = await getconnectionasync(CancellationToken, ConnectionTimeout, ApplicationName).ConfigureAwait(false))
             {

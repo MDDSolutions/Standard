@@ -86,7 +86,7 @@ namespace MDDDataAccess
         {
             connectionstring = new SqlConnectionStringBuilder(inConnStr);
         }
-        private async Task<SqlConnection> getconnectionasync(CancellationToken CancellationToken, int ConnectionTimeout = -1, string ApplicationName = null)
+        private async Task<SqlConnection> getconnectionasync(CancellationToken CancellationToken, int ConnectionTimeout = -1, string? ApplicationName = null)
         {
             try
             {
