@@ -32,14 +32,14 @@ namespace MDDFoundation
 
     public class FileCopyProgress
     {
-        public string FileName { get; set; }
+        public string? FileName { get; set; }
         public long FileSizeBytes { get; set; }
         public string OperationDuring { get; set; } = "Copying";
         public string OperationComplete { get; set; } = "Copy";
-        public byte[] Hash { get; set; }
+        public byte[]? Hash { get; set; }
         public DateTime StartTime { get; set; }
-        private Stopwatch stopwatch = null;
-        public Stopwatch Stopwatch
+        private Stopwatch? stopwatch = null;
+        public Stopwatch? Stopwatch
         {
             get => stopwatch;
             set
@@ -55,22 +55,22 @@ namespace MDDFoundation
 
 
         //integrated callback - added 2025-10-28 for AzureTransferCoordinator
-        public Action<FileCopyProgress> Callback { get; set; }
+        public Action<FileCopyProgress>? Callback { get; set; }
         public TimeSpan ProgressReportInterval { get; set; } = TimeSpan.FromSeconds(1);
         private TimeSpan lastreport = TimeSpan.Zero;
         public void UpdateAndMaybeCallback(long addbytes)
         {
             BytesCopied += addbytes;
-            if (Callback != null && (Stopwatch.Elapsed - lastreport) > ProgressReportInterval)
+            if (Callback != null && (lastreport == TimeSpan.Zero || (Stopwatch?.Elapsed - lastreport) > ProgressReportInterval))
             {
-                lastreport = Stopwatch.Elapsed;
+                lastreport = Stopwatch?.Elapsed ?? TimeSpan.Zero;
                 Callback(this);
             }
         }
         public bool HasIntegratedCallback => Callback != null && ProgressReportInterval > TimeSpan.Zero;
 
 
-
+        public long BytesStart { get; set; } = 0;
         private long _BytesCopied;
         public long BytesCopied
         {
@@ -98,7 +98,7 @@ namespace MDDFoundation
             get
             {
                 if (Stopwatch == null) return 0;
-                return (BytesCopied / 1024.0 / 1024.0) / Stopwatch.Elapsed.TotalSeconds;
+                return (BytesCopied - BytesStart) / 1024.0 / 1024.0 / Stopwatch.Elapsed.TotalSeconds;
             }
         }
         public TimeSpan EstimatedRemaining
@@ -118,9 +118,9 @@ namespace MDDFoundation
             if (p < 1)
                 return $"{OperationDuring} {FileName} - {p * 100:N1}% - {RateMBPerSec:N1}MB/s...";
             else if (IsCompleted)
-                return $"{OperationComplete} of {FileName} complete in {Stopwatch.Elapsed} - {RateMBPerSec:N1}MB/s";
+                return $"{OperationComplete} of {FileName} complete in {Stopwatch?.Elapsed} - {RateMBPerSec:N1}MB/s";
             else
-                return $"{OperationComplete} of {FileName} finishing -  {Stopwatch.Elapsed} - {RateMBPerSec:N1}MB/s";
+                return $"{OperationComplete} of {FileName} finishing -  {Stopwatch?.Elapsed} - {RateMBPerSec:N1}MB/s";
 
         }
     }
@@ -334,7 +334,7 @@ namespace MDDFoundation
                 return "0x";
             return "0x" + BitConverter.ToString(bytes).Replace("-", "");
         }
-        public static async Task<byte[]> CopyToAsync(this FileInfo file, FileInfo destination, bool overwrite, CancellationToken token, bool MoveFile = false, Action<FileCopyProgress> progresscallback = null, TimeSpan progressreportinterval = default, Func<FileCopyProgress, bool> suspenduntil = null, bool computehash = false)
+        public static async Task<byte[]> CopyToAsync_old(this FileInfo file, FileInfo destination, bool overwrite, CancellationToken token, bool MoveFile = false, Action<FileCopyProgress> progresscallback = null, TimeSpan progressreportinterval = default, Func<FileCopyProgress, bool> suspenduntil = null, bool computehash = false)
         {
             FileInfo tmpfile = null;
             FileCopyProgress copyprogress = null;
@@ -454,7 +454,7 @@ namespace MDDFoundation
             return finalhash;
         }
         const int ERROR_DISK_FULL = 112;
-        public static async Task<byte[]> CopyToAsync(this FileInfo file, FileInfo[] destinations, bool overwrite, CancellationToken token, bool MoveFile = false, Action<FileCopyProgress> progresscallback = null, TimeSpan progressreportinterval = default, Func<FileCopyProgress, bool> suspenduntil = null, bool computehash = false)
+        public static async Task<byte[]> CopyToAsync_old(this FileInfo file, FileInfo[] destinations, bool overwrite, CancellationToken token, bool MoveFile = false, Action<FileCopyProgress> progresscallback = null, TimeSpan progressreportinterval = default, Func<FileCopyProgress, bool> suspenduntil = null, bool computehash = false)
         {
             string tmpfilename = Guid.NewGuid().ToString().Replace("-", "") + ".tmp";
             Tuple<FileInfo, FileInfo>[] tmpfiles = destinations.Select(x => new Tuple<FileInfo,FileInfo>(new FileInfo(Path.Combine(x.DirectoryName, tmpfilename)), x)).ToArray();

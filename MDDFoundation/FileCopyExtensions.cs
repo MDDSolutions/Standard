@@ -4,7 +4,6 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -12,8 +11,12 @@ namespace MDDFoundation
 {
     public static class FileCopyExtensions
     {
+        // --------------------------------------------------------------------
+        // Public API
+        // --------------------------------------------------------------------
+
         /// <summary>
-        /// Single-destination overload: forwards to multicast version.
+        /// Single-destination overload (wraps multicast).
         /// </summary>
         public static Task<byte[]> CopyToAsync(
             this FileInfo file,
@@ -26,8 +29,7 @@ namespace MDDFoundation
             bool computehash = false,
             bool resumable = true,
             int bufferSize = 1024 * 1024,
-            int commitEveryNBlocks = 8,
-            bool preallocateTemps = false)
+            double maxUsage = 1)
         {
             return file.CopyToAsync(
                 [destination],
@@ -39,26 +41,28 @@ namespace MDDFoundation
                 computehash,
                 resumable,
                 bufferSize,
-                commitEveryNBlocks,
-                preallocateTemps);
+                maxUsage);
         }
 
         /// <summary>
-        /// Multicast resumable copy.
+        /// Multicast resumable copy with resumable SHA1(file) hashing.
         ///
         /// Deterministic per-destination temp + state:
         ///   tmp   = destination.FullName + ".tmp"
         ///   state = destination.FullName + ".tmp.state"
         ///
-        /// Resume safety:
-        /// - We only consider bytes "committed" if recorded in the state file.
-        /// - State is updated only after writes are awaited and all temp streams are flushed.
-        /// - Resume is all-or-nothing across destinations: if any destination can't resume safely,
-        ///   we restart from 0 for all destinations to keep them in lockstep.
+        /// Resume model:
+        /// - Temp files are ALWAYS preallocated to source length when resumable==true (to avoid relying on Length at all).
+        /// - The ONLY progress signal is the sidecar state file.
+        /// - Resume offset is the MIN committed length across destinations.
+        /// - Hash resume uses the SHA1 state snapshot stored in the state file for that MIN committed length.
+        /// - On resume, all destinations are normalized to that offset:
+        ///     * seek tmp streams to resumeOffset
+        ///     * overwrite every destination's state file to exactly resumeOffset + chosen SHA1 state
         ///
-        /// Notes:
-        /// - If computehash=true and resuming, we re-hash the prefix (0..resumeOffset) for correctness.
-        /// - preallocateTemps=false by default (recommended). If true, we still rely on state, not Length, for resume.
+        /// Hashing:
+        /// - If computehash is true, we compute EXACT SHA1(file).
+        /// - If resuming, we restore SHA1 internal state and continue hashing from resumeOffset without rereading.
         /// </summary>
         public static async Task<byte[]> CopyToAsync(
             this FileInfo file,
@@ -70,21 +74,40 @@ namespace MDDFoundation
             TimeSpan progressreportinterval = default,
             bool computehash = false,
             bool resumable = true,
-            int bufferSize = 1024 * 1024,      // 1MB
-            int commitEveryNBlocks = 8,         // durability cadence
-            bool preallocateTemps = false)
+            int bufferSize = 1024 * 1024, // 1MB
+            double maxUsage = 1)
         {
             if (file == null) throw new ArgumentNullException(nameof(file));
             if (destinations == null) throw new ArgumentNullException(nameof(destinations));
             if (destinations.Length == 0) throw new ArgumentException("At least one destination is required.", nameof(destinations));
             if (!file.Exists) throw new IOException($"Source file {file.FullName} does not exist");
             if (bufferSize <= 0) throw new ArgumentOutOfRangeException(nameof(bufferSize));
-            if (commitEveryNBlocks <= 0) throw new ArgumentOutOfRangeException(nameof(commitEveryNBlocks));
+            if (maxUsage < 0 || maxUsage > 1) throw new ArgumentOutOfRangeException(nameof(maxUsage));
 
-            // Ensure destination list is sane (no nulls, no dup full names)
+            // Sanity: no null destinations, no dup full names
             if (destinations.Any(d => d == null)) throw new ArgumentException("Destinations contains a null entry.", nameof(destinations));
             var dup = destinations.GroupBy(d => d.FullName, StringComparer.OrdinalIgnoreCase).FirstOrDefault(g => g.Count() > 1);
             if (dup != null) throw new ArgumentException($"Duplicate destination path: {dup.Key}", nameof(destinations));
+
+            if (progressreportinterval == default) progressreportinterval = TimeSpan.FromSeconds(1);
+
+            long commitinterval = Convert.ToInt64(progressreportinterval.TotalMilliseconds * 60 * Stopwatch.Frequency / 1000);
+            var lastcommit = Stopwatch.GetTimestamp();
+            const long TargetBytes = 100L * 1024 * 1024; // 100 MiB
+            long blocks = (TargetBytes + bufferSize - 1) / bufferSize; // ceiling division
+            int maxcommitblocks = (blocks <= 0) ? 1 : (blocks > int.MaxValue ? int.MaxValue : (int)blocks);
+
+
+            DutyCycleThrottle? throttle = null;
+            if (maxUsage > 0 && maxUsage < 1)
+            {
+                var window = progressreportinterval;
+                // You might want a minimum window like 250ms
+                if (window < TimeSpan.FromMilliseconds(250)) window = TimeSpan.FromMilliseconds(250);
+
+                throttle = new DutyCycleThrottle(maxUsage, window);
+            }
+
 
             foreach (var d in destinations)
             {
@@ -95,28 +118,26 @@ namespace MDDFoundation
                     throw new IOException($"Destination file {d.FullName} exists (and overwrite was not specified)");
             }
 
-            if (progressreportinterval == default) progressreportinterval = TimeSpan.FromSeconds(1);
 
             long len = file.Length;
-            FileCopyProgress? copyprogress = null;
 
+            FileCopyProgress? copyprogress = null;
             if (progresscallback != null)
             {
                 copyprogress = new FileCopyProgress
                 {
                     FileSizeBytes = len,
                     FileName = file.Name,
-                    Stopwatch = Stopwatch.StartNew()
+                    Stopwatch = Stopwatch.StartNew(),
+                    Callback = progresscallback,
+                    ProgressReportInterval = (progressreportinterval == default ? TimeSpan.FromSeconds(1) : progressreportinterval),
                 };
             }
 
-            byte[] finalhash = Array.Empty<byte>();
+            byte[] finalHash = Array.Empty<byte>();
             bool toolatetocancel = false;
 
-            // Build per-destination temp/state mapping
-            var targets = destinations
-                .Select(d => new CopyTarget(d))
-                .ToArray();
+            var targets = destinations.Select(d => new CopyTarget(d)).ToArray();
 
             FileStream? source = null;
             FileStream[]? tempStreams = null;
@@ -125,40 +146,48 @@ namespace MDDFoundation
             {
                 token.ThrowIfCancellationRequested();
 
-                // Decide resume offset (lockstep across all destinations)
+                // Decide resume (min committed) and which SHA1 state to use (from a destination at min committed)
                 long resumeOffset = 0;
+                CopyResumeState? chosenStateAtResume = null;
 
                 if (resumable)
                 {
-                    var resumeInfo = CopyResumeLogic.TryComputeLockstepResumeOffset(file, targets, bufferSize);
+                    var resume = CopyResumeLogic.TryComputeMinCommittedResume(file, targets, bufferSize, computehash);
 
-                    if (resumeInfo.CanResume)
+                    if (resume.CanResume)
                     {
-                        resumeOffset = resumeInfo.ResumeOffset;
+                        resumeOffset = resume.ResumeOffset;
+                        chosenStateAtResume = resume.StateAtResume; // includes SHA1 snapshot iff computehash
+                        if (copyprogress != null)
+                        {
+                            copyprogress.BytesStart = resumeOffset;
+                            copyprogress.BytesCopied = resumeOffset;
+                            copyprogress.OperationDuring = "Resuming copy";
+                            copyprogress.UpdateAndMaybeCallback(0);
+                            copyprogress.OperationDuring = "Copying";   
+                        }
                     }
                     else
                     {
-                        // Restart from 0 for all (delete any partial tmp/state so we don't mix generations)
+                        // Restart from 0: clear old artifacts to avoid mixing generations
                         foreach (var t in targets)
                         {
                             SafeDeleteFile(t.TempPath);
                             SafeDeleteFile(t.StatePath);
                         }
                         resumeOffset = 0;
+                        chosenStateAtResume = null;
                     }
                 }
                 else
                 {
-                    // Not resumable => clear any old artifacts
+                    // Not resumable => clear old artifacts
                     foreach (var t in targets)
                     {
                         SafeDeleteFile(t.TempPath);
                         SafeDeleteFile(t.StatePath);
                     }
                 }
-
-                if (copyprogress != null)
-                    copyprogress.BytesCopied = resumeOffset;
 
                 // Open source
                 source = new FileStream(
@@ -169,7 +198,7 @@ namespace MDDFoundation
                     bufferSize: bufferSize,
                     useAsync: true);
 
-                // Open tmp streams
+                // Open tmp streams (exclusive)
                 tempStreams = targets
                     .Select(t => new FileStream(
                         t.TempPath,
@@ -180,35 +209,14 @@ namespace MDDFoundation
                         options: FileOptions.Asynchronous | FileOptions.SequentialScan))
                     .ToArray();
 
-                // Position / truncate temps
-                if (resumeOffset > 0)
-                {
-                    source.Seek(resumeOffset, SeekOrigin.Begin);
-                    foreach (var ts in tempStreams)
-                        ts.Seek(resumeOffset, SeekOrigin.Begin);
-                }
-                else
-                {
-                    // Fresh: truncate and create initial states
-                    foreach (var ts in tempStreams)
-                        ts.SetLength(0);
-
-                    foreach (var t in targets)
-                    {
-                        var st = CopyResumeState.CreateInitial(file, bufferSize);
-                        await CopyResumeStateFile.WriteAtomicAsync(t.StatePath, st, token).ConfigureAwait(false);
-                    }
-                }
-
-                // Optional preallocation (not recommended for resumable, but supported)
-                if (preallocateTemps)
+                // ALWAYS preallocate tmp files when resumable (so length is never meaningful)
+                if (resumable)
                 {
                     foreach (var (ts, idx) in tempStreams.Select((s, i) => (s, i)))
                     {
                         try
                         {
                             ts.SetLength(len);
-                            ts.Seek(resumeOffset, SeekOrigin.Begin);
                         }
                         catch (IOException ioEx)
                         {
@@ -217,70 +225,70 @@ namespace MDDFoundation
                     }
                 }
 
-                // Hashing
-                using SHA1? hash = computehash ? SHA1.Create() : null;
-                if (hash != null)
+                // Position streams
+                source.Seek(resumeOffset, SeekOrigin.Begin);
+                foreach (var ts in tempStreams)
+                    ts.Seek(resumeOffset, SeekOrigin.Begin);
+
+                // Hash setup (resumable SHA1)
+                Sha1Stateful? sha1 = null;
+                if (computehash)
                 {
-                    hash.Initialize();
+                    sha1 = new Sha1Stateful();
 
                     if (resumeOffset > 0)
                     {
-                        // Hash prefix (0..resumeOffset)
-                        source.Seek(0, SeekOrigin.Begin);
-                        byte[] prefixBuf = new byte[bufferSize];
-                        long remaining = resumeOffset;
+                        if (chosenStateAtResume == null || !chosenStateAtResume.HashEnabled || chosenStateAtResume.Sha1StateBlob == null)
+                            throw new IOException("Resumable hashing requested, but SHA1 state was missing at the chosen resume point.");
 
-                        while (remaining > 0)
-                        {
-                            token.ThrowIfCancellationRequested();
-                            int want = (int)Math.Min(bufferSize, remaining);
-                            int r = await source.ReadAsync(prefixBuf, 0, want, token).ConfigureAwait(false);
-                            if (r == 0) throw new EndOfStreamException("Unexpected EOF while hashing resume prefix.");
-                            hash.TransformBlock(prefixBuf, 0, r, null, 0);
-                            remaining -= r;
-                        }
-
-                        source.Seek(resumeOffset, SeekOrigin.Begin);
+                        sha1.ImportState(chosenStateAtResume.Sha1StateBlob);
+                    }
+                    else
+                    {
+                        sha1.Reset();
                     }
                 }
 
-                // Copy loop (double-buffer read, multicast write)
+                // Normalize: overwrite all destination state files to match the chosen resumeOffset + chosen hash snapshot.
+                // This makes future resumes deterministic even if some destinations were ahead.
+                if (resumable)
+                {
+                    CopyResumeState normalized = CopyResumeState.Create(file, bufferSize, resumeOffset, sha1);
+                    var normalizeWrites = targets.Select(t => CopyResumeStateFile.WriteAtomicAsync(t.StatePath, normalized, token)).ToArray();
+                    await Task.WhenAll(normalizeWrites).ConfigureAwait(false);
+                    chosenStateAtResume = normalized;
+                }
+
+                // Copy loop
                 byte[] bufferA = new byte[bufferSize];
                 byte[] bufferB = new byte[bufferSize];
                 bool swap = false;
 
-                Task[] writers = null;
+                Task[]? writers = null;
                 int blocksSinceCommit = 0;
 
-                var last = TimeSpan.Zero;
+                var lastProgress = TimeSpan.Zero;
 
                 while (true)
                 {
                     token.ThrowIfCancellationRequested();
 
-                    if (copyprogress != null && (copyprogress.Stopwatch.Elapsed - last) > progressreportinterval)
-                    {
-                        last = copyprogress.Stopwatch.Elapsed;
-                        progresscallback?.Invoke(copyprogress);
-                    }
-
                     byte[] buf = swap ? bufferA : bufferB;
+
+                    throttle?.StartBusy();
+
                     int read = await source.ReadAsync(buf, 0, buf.Length, token).ConfigureAwait(false);
                     if (read == 0) break;
 
-                    if (hash != null)
-                        hash.TransformBlock(buf, 0, read, null, 0);
+                    sha1?.Update(buf, 0, read);
 
-                    if (writers != null)
-                        await Task.WhenAll(writers).ConfigureAwait(false);
+                    await CompleteWrites(writers).ConfigureAwait(false);
 
-                    // Write to all destinations (preserve index so we can wrap errors with destination info)
                     writers = new Task[tempStreams.Length];
                     for (int i = 0; i < tempStreams.Length; i++)
                     {
                         var stream = tempStreams[i];
                         var destInfo = targets[i].Destination;
-
                         try
                         {
                             writers[i] = stream.WriteAsync(buf, 0, read, token);
@@ -294,71 +302,62 @@ namespace MDDFoundation
 
                     swap = !swap;
 
-                    if (copyprogress != null) copyprogress.BytesCopied += read;
+                    copyprogress?.UpdateAndMaybeCallback(read);
 
                     blocksSinceCommit++;
 
-                    // Commit cadence: await all writers, flush all tmp streams, then update all state files atomically
-                    if (resumable && blocksSinceCommit >= commitEveryNBlocks)
+                    if (resumable && (blocksSinceCommit >= maxcommitblocks || (Stopwatch.GetTimestamp() - lastcommit) >= commitinterval))
                     {
-                        await Task.WhenAll(writers).ConfigureAwait(false);
+                        if (Debugger.IsAttached)
+                            Debug.WriteLine($"{DateTime.Now:u}-CopyToAsync: committing at {MinPosition(tempStreams)} bytes after {blocksSinceCommit} blocks.");
 
-                        await FlushAllCommittedAsync(tempStreams, token).ConfigureAwait(false);
+                        await CompleteWrites(writers).ConfigureAwait(false);
 
-                        long committed = tempStreams[0].Position;
-                        // sanity: they should all match; if not, commit the minimum
-                        for (int i = 1; i < tempStreams.Length; i++)
-                            committed = Math.Min(committed, tempStreams[i].Position);
+                        await FlushAllCommittedAsync(tempStreams, token, false).ConfigureAwait(false);
 
-                        var st = CopyResumeState.Create(file, bufferSize, committed);
-                        var stateWrites = targets
-                            .Select(t => CopyResumeStateFile.WriteAtomicAsync(t.StatePath, st, token))
-                            .ToArray();
+                        long committed = MinPosition(tempStreams); // should be equal if writes+flush succeeded, but take min anyway.
 
+                        var st = CopyResumeState.Create(file, bufferSize, committed, sha1);
+                        var stateWrites = targets.Select(t => CopyResumeStateFile.WriteAtomicAsync(t.StatePath, st, token)).ToArray();
                         await Task.WhenAll(stateWrites).ConfigureAwait(false);
 
                         blocksSinceCommit = 0;
+                        lastcommit = Stopwatch.GetTimestamp();
+                        if (Debugger.IsAttached)
+                            Debug.WriteLine($"{DateTime.Now:u}-CopyToAsync: commit complete.");
                     }
+                    if (throttle != null)
+                        await throttle.ThrottleIfNeededAsync(token).ConfigureAwait(false);
                 }
 
-                if (writers != null)
-                    await Task.WhenAll(writers).ConfigureAwait(false);
+                await CompleteWrites(writers).ConfigureAwait(false);
 
-                // Final flush + final state commit
-                await FlushAllCommittedAsync(tempStreams, token).ConfigureAwait(false);
+                await FlushAllCommittedAsync(tempStreams, token, true).ConfigureAwait(false);
 
                 if (resumable)
                 {
-                    long committed = tempStreams[0].Position;
-                    for (int i = 1; i < tempStreams.Length; i++)
-                        committed = Math.Min(committed, tempStreams[i].Position);
-
-                    var st = CopyResumeState.Create(file, bufferSize, committed);
-                    var stateWrites = targets
-                        .Select(t => CopyResumeStateFile.WriteAtomicAsync(t.StatePath, st, token))
-                        .ToArray();
-
+                    long committed = MinPosition(tempStreams);
+                    var st = CopyResumeState.Create(file, bufferSize, committed, sha1);
+                    var stateWrites = targets.Select(t => CopyResumeStateFile.WriteAtomicAsync(t.StatePath, st, token)).ToArray();
                     await Task.WhenAll(stateWrites).ConfigureAwait(false);
                 }
 
-                // Finalize hash
-                if (hash != null)
+                if (sha1 != null)
                 {
-                    hash.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
-                    finalhash = hash.Hash ?? Array.Empty<byte>();
-                    if (copyprogress != null) copyprogress.Hash = finalhash;
+                    finalHash = sha1.FinalizeHash();
+                    if (copyprogress != null) copyprogress.Hash = finalHash;
                 }
 
                 token.ThrowIfCancellationRequested();
                 toolatetocancel = true;
 
-                // Dispose streams before renames
+                // Dispose streams before rename
                 foreach (var ts in tempStreams) ts.Dispose();
                 tempStreams = null;
                 source.Dispose();
                 source = null;
 
-                // Swap into place (delete existing if overwrite)
+                // Swap into place (delete destination if overwrite)
                 foreach (var t in targets)
                 {
                     if (t.Destination.Exists) t.Destination.Delete();
@@ -366,7 +365,6 @@ namespace MDDFoundation
 
                 foreach (var t in targets)
                 {
-                    // Move tmp => destination
                     var tmpFi = new FileInfo(t.TempPath);
                     tmpFi.Refresh();
                     if (!tmpFi.Exists)
@@ -375,7 +373,7 @@ namespace MDDFoundation
                     tmpFi.MoveTo(t.Destination.FullName);
                 }
 
-                // Ensure destination exists + set times (do not fire-and-forget)
+                // Verify existence + set times + cleanup state
                 foreach (var t in targets)
                 {
                     var waitloop = 0;
@@ -392,20 +390,18 @@ namespace MDDFoundation
                     File.SetLastWriteTime(t.Destination.FullName, file.LastWriteTime);
                     File.SetLastAccessTime(t.Destination.FullName, file.LastAccessTime);
 
-                    // Clean up resume state after success
                     SafeDeleteFile(t.StatePath);
                 }
 
                 if (MoveFile) file.Delete();
 
-                // Final progress
                 if (progresscallback != null && copyprogress != null)
                 {
                     copyprogress.BytesCopied = len;
                     progresscallback(copyprogress);
                 }
 
-                return finalhash;
+                return finalHash;
             }
             catch (OperationCanceledException)
             {
@@ -420,8 +416,8 @@ namespace MDDFoundation
             }
             finally
             {
-                // Ensure streams are disposed
                 try { source?.Dispose(); } catch { }
+
                 if (tempStreams != null)
                 {
                     foreach (var ts in tempStreams)
@@ -430,59 +426,71 @@ namespace MDDFoundation
                     }
                 }
 
-                // If we didn't finish swap, keep tmp+state for resumable, otherwise best-effort cleanup
-                if (!toolatetocancel)
+                // If not resumable and not completed, cleanup tmp/state
+                if (!toolatetocancel && !resumable)
                 {
-                    // Do NOT delete tmp/state if resumable: we want resume to work after failures/cancel.
-                    // If resumable is false, clean up.
-                    if (!resumable)
+                    foreach (var t in targets)
                     {
-                        foreach (var t in targets)
-                        {
-                            SafeDeleteFile(t.TempPath);
-                            SafeDeleteFile(t.StatePath);
-                        }
+                        SafeDeleteFile(t.TempPath);
+                        SafeDeleteFile(t.StatePath);
                     }
-                }
-
-                if (progresscallback != null && copyprogress != null && !toolatetocancel && token.IsCancellationRequested)
-                {
-                    copyprogress.Cancelled = true;
-                    progresscallback(copyprogress);
                 }
             }
         }
 
-        // -------------------------
-        // Helpers / error wrapping
-        // -------------------------
-
-        private static async Task FlushAllCommittedAsync(FileStream[] streams, CancellationToken token)
+        private static async Task CompleteWrites(Task[]? writers)
         {
-            // FlushAsync first
+            if (writers != null)
+            {
+                var sw = Stopwatch.StartNew();
+                await Task.WhenAll(writers).ConfigureAwait(false);
+                sw.Stop();
+                if (Debugger.IsAttached && sw.ElapsedMilliseconds > 200)
+                    Debug.WriteLine($"{DateTime.Now:u}-CopyToAsync: all writes completed in {sw.ElapsedMilliseconds} ms.");
+            }
+        }
+
+        // --------------------------------------------------------------------
+        // IO helpers
+        // --------------------------------------------------------------------
+
+        private static async Task FlushAllCommittedAsync(FileStream[] streams, CancellationToken token, bool fullflush = false)
+        {
+            var sw = Stopwatch.StartNew();
             var flushes = streams.Select(s => s.FlushAsync(token)).ToArray();
             await Task.WhenAll(flushes).ConfigureAwait(false);
 
-            // Then attempt Flush(true) for better durability (where supported)
-            foreach (var s in streams)
+            if (fullflush)
             {
-                try { s.Flush(true); } catch { /* platform/fs may not support */ }
+                foreach (var s in streams)
+                {
+                    try { s.Flush(true); } catch { /* platform/fs may not support */ }
+                }
             }
+            sw.Stop();
+            if (Debugger.IsAttached && sw.ElapsedMilliseconds > 200)
+                Debug.WriteLine($"{DateTime.Now:u}-CopyToAsync: all flushes completed in {sw.ElapsedMilliseconds} ms.");
+        }
+
+        private static long MinPosition(FileStream[] streams)
+        {
+            long committed = streams[0].Position;
+            for (int i = 1; i < streams.Length; i++)
+                committed = Math.Min(committed, streams[i].Position);
+            return committed;
         }
 
         private static void SafeDeleteFile(string path)
         {
             try
             {
-                if (File.Exists(path))
-                    File.Delete(path);
+                if (File.Exists(path)) File.Delete(path);
             }
             catch { /* best-effort */ }
         }
 
         private static void ThrowDiskFullOrWrap(IOException ioEx, FileInfo destination, string action)
         {
-            // ERROR_DISK_FULL = 112, HResult = 0x80070070
             const int ERROR_DISK_FULL = 112;
             bool diskFull =
                 ioEx.HResult == unchecked((int)0x80070070) ||
@@ -495,15 +503,14 @@ namespace MDDFoundation
                     ioEx);
             }
 
-            // Wrap with destination context but preserve original exception as inner
             throw new IOException(
                 $"I/O error while {action} for destination '{destination.FullName}': {ioEx.Message}",
                 ioEx);
         }
 
-        // -------------------------
-        // Per-destination target
-        // -------------------------
+        // --------------------------------------------------------------------
+        // Per-destination mapping
+        // --------------------------------------------------------------------
 
         private sealed class CopyTarget
         {
@@ -519,46 +526,47 @@ namespace MDDFoundation
             }
         }
 
-        // ----------------------------
-        // Resume state (binary, no JSON)
-        // ----------------------------
+        // --------------------------------------------------------------------
+        // Resume state file (binary; includes optional SHA1 internal state)
+        // --------------------------------------------------------------------
 
         private sealed class CopyResumeState
         {
             public const int Magic = unchecked((int)0x4D444443); // "MDDC"
-            public const int Version = 1;
+            public const int Version = 2; // hash-state support
 
             public long CommittedLength;
             public int BufferSize;
             public long SourceLength;
             public long SourceLastWriteUtcTicks;
 
-            public static CopyResumeState CreateInitial(FileInfo source, int bufferSize)
-            {
-                return new CopyResumeState
-                {
-                    CommittedLength = 0,
-                    BufferSize = bufferSize,
-                    SourceLength = source.Length,
-                    SourceLastWriteUtcTicks = source.LastWriteTimeUtc.Ticks
-                };
-            }
+            public bool HashEnabled;
+            public int HashAlgorithmId;      // 1 = SHA1
+            public byte[] Sha1StateBlob = Array.Empty<byte>();     // Sha1Stateful.ExportState()
 
-            public static CopyResumeState Create(FileInfo source, int bufferSize, long committedLength)
+            public static CopyResumeState Create(FileInfo source, int bufferSize, long committedLength, Sha1Stateful? sha1OrNull)
             {
-                return new CopyResumeState
+                var st = new CopyResumeState
                 {
                     CommittedLength = committedLength,
                     BufferSize = bufferSize,
                     SourceLength = source.Length,
                     SourceLastWriteUtcTicks = source.LastWriteTimeUtc.Ticks
                 };
+
+                if (sha1OrNull != null)
+                {
+                    st.HashEnabled = true;
+                    st.HashAlgorithmId = 1;
+                    st.Sha1StateBlob = sha1OrNull.ExportState();
+                }
+                return st;
             }
         }
 
         private static class CopyResumeStateFile
         {
-            public static CopyResumeState TryRead(string statePath)
+            public static CopyResumeState? TryRead(string statePath)
             {
                 if (!File.Exists(statePath)) return null;
 
@@ -573,13 +581,28 @@ namespace MDDFoundation
                     if (magic != CopyResumeState.Magic) return null;
                     if (ver != CopyResumeState.Version) return null;
 
-                    return new CopyResumeState
+                    var s = new CopyResumeState
                     {
                         CommittedLength = br.ReadInt64(),
                         BufferSize = br.ReadInt32(),
                         SourceLength = br.ReadInt64(),
-                        SourceLastWriteUtcTicks = br.ReadInt64()
+                        SourceLastWriteUtcTicks = br.ReadInt64(),
+                        HashEnabled = br.ReadBoolean(),
+                        HashAlgorithmId = br.ReadInt32()
                     };
+
+                    int blobLen = br.ReadInt32();
+                    if (blobLen < 0 || blobLen > 4096) return null;
+                    if (blobLen > 0)
+                        s.Sha1StateBlob = br.ReadBytes(blobLen);
+
+                    if (s.HashEnabled)
+                    {
+                        if (s.HashAlgorithmId != 1) return null;
+                        if (s.Sha1StateBlob == null || s.Sha1StateBlob.Length == 0) return null;
+                    }
+
+                    return s;
                 }
                 catch
                 {
@@ -601,6 +624,19 @@ namespace MDDFoundation
                     bw.Write(state.BufferSize);
                     bw.Write(state.SourceLength);
                     bw.Write(state.SourceLastWriteUtcTicks);
+
+                    bw.Write(state.HashEnabled);
+                    bw.Write(state.HashAlgorithmId);
+
+                    if (state.Sha1StateBlob != null && state.Sha1StateBlob.Length > 0)
+                    {
+                        bw.Write(state.Sha1StateBlob.Length);
+                        bw.Write(state.Sha1StateBlob);
+                    }
+                    else
+                    {
+                        bw.Write(0);
+                    }
 
                     bw.Flush();
                     await fs.FlushAsync(token).ConfigureAwait(false);
@@ -627,55 +663,101 @@ namespace MDDFoundation
 
         private static class CopyResumeLogic
         {
-            internal readonly struct LockstepResumeDecision
+            internal readonly struct MinResumeDecision
             {
                 public bool CanResume { get; }
                 public long ResumeOffset { get; }
+                public CopyResumeState? StateAtResume { get; }
 
-                public LockstepResumeDecision(bool canResume, long resumeOffset)
+                public MinResumeDecision(bool canResume, long resumeOffset, CopyResumeState? stateAtResume)
                 {
                     CanResume = canResume;
                     ResumeOffset = resumeOffset;
+                    StateAtResume = stateAtResume;
                 }
             }
 
             /// <summary>
-            /// Computes a single resume offset for all destinations, or decides that we must restart from 0.
-            /// All-or-nothing: if any destination can't resume safely, we return CanResume=false.
+            /// Choose resumeOffset = min(committedLength) across destinations.
+            /// Choose SHA1 state snapshot from a destination whose committedLength == that min.
+            /// Does NOT require destinations to have identical committed lengths; we normalize after selection.
             /// </summary>
-            public static LockstepResumeDecision TryComputeLockstepResumeOffset(FileInfo source, CopyTarget[] targets, int bufferSize)
+            public static MinResumeDecision TryComputeMinCommittedResume(FileInfo source, CopyTarget[] targets, int bufferSize, bool computehash)
             {
+                CopyResumeState[] states = new CopyResumeState[targets.Length];
+
                 long? minCommitted = null;
 
-                foreach (var t in targets)
+                for (int i = 0; i < targets.Length; i++)
                 {
-                    var tmpFi = new FileInfo(t.TempPath);
-                    if (!tmpFi.Exists) return new LockstepResumeDecision(false, 0);
-                    if (!File.Exists(t.StatePath)) return new LockstepResumeDecision(false, 0);
+                    var t = targets[i];
+
+                    if (!File.Exists(t.StatePath))
+                        return new MinResumeDecision(false, 0, null);
 
                     var st = CopyResumeStateFile.TryRead(t.StatePath);
-                    if (st == null) return new LockstepResumeDecision(false, 0);
+                    if (st == null)
+                        return new MinResumeDecision(false, 0, null);
 
-                    if (st.BufferSize != bufferSize) return new LockstepResumeDecision(false, 0);
-                    if (st.SourceLength != source.Length) return new LockstepResumeDecision(false, 0);
-                    if (st.SourceLastWriteUtcTicks != source.LastWriteTimeUtc.Ticks) return new LockstepResumeDecision(false, 0);
+                    // Validate source identity + parameters
+                    //if (st.BufferSize != bufferSize) return new MinResumeDecision(false, 0, null);
+                    // BufferSize does NOT affect resume correctness; it only affects throughput/behavior.
+                    // We keep it for observability but do not require it to match.
 
-                    tmpFi.Refresh();
-                    if (tmpFi.Length <= 0 && st.CommittedLength <= 0) return new LockstepResumeDecision(false, 0);
+                    if (st.SourceLength != source.Length) return new MinResumeDecision(false, 0, null);
+                    if (st.SourceLastWriteUtcTicks != source.LastWriteTimeUtc.Ticks) return new MinResumeDecision(false, 0, null);
 
-                    // Clamp committed to tmp length (safety)
-                    long committed = st.CommittedLength;
-                    if (committed < 0) return new LockstepResumeDecision(false, 0);
-                    committed = Math.Min(committed, tmpFi.Length);
+                    // Validate hash requirements
+                    if (computehash)
+                    {
+                        if (!st.HashEnabled) return new MinResumeDecision(false, 0, null);
+                        if (st.HashAlgorithmId != 1) return new MinResumeDecision(false, 0, null);
+                        if (st.Sha1StateBlob == null || st.Sha1StateBlob.Length == 0) return new MinResumeDecision(false, 0, null);
+                    }
 
-                    minCommitted = minCommitted.HasValue ? Math.Min(minCommitted.Value, committed) : committed;
+                    if (st.CommittedLength < 0) return new MinResumeDecision(false, 0, null);
+
+                    states[i] = st;
+
+                    minCommitted = minCommitted.HasValue ? Math.Min(minCommitted.Value, st.CommittedLength) : st.CommittedLength;
                 }
 
-                // Resume only if we have a meaningful offset (>0). If 0, treat as "restart".
                 if (!minCommitted.HasValue || minCommitted.Value <= 0)
-                    return new LockstepResumeDecision(false, 0);
+                    return new MinResumeDecision(false, 0, null);
 
-                return new LockstepResumeDecision(true, minCommitted.Value);
+                long min = minCommitted.Value;
+
+                // Find a state at exactly min committed length
+                // (There should always be at least one, by definition of min.)
+                CopyResumeState? chosen = null;
+                for (int i = 0; i < states.Length; i++)
+                {
+                    if (states[i].CommittedLength == min)
+                    {
+                        chosen = states[i];
+                        break;
+                    }
+                }
+
+                if (chosen == null)
+                    return new MinResumeDecision(false, 0, null);
+
+                // If hashing is required, ensure chosen has SHA1 state (already validated).
+                // Also sanity check state blob is structurally valid by attempting import into a throwaway SHA1.
+                if (computehash)
+                {
+                    try
+                    {
+                        var tmp = new Sha1Stateful();
+                        tmp.ImportState(chosen.Sha1StateBlob);
+                    }
+                    catch
+                    {
+                        return new MinResumeDecision(false, 0, null);
+                    }
+                }
+
+                return new MinResumeDecision(true, min, chosen);
             }
         }
     }
