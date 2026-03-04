@@ -136,7 +136,7 @@ namespace MDDDataAccess
             if (SecureMode) throw new Exception("Cannot return a SqlConnection Object in SecureMode");
             return await getconnectionasync(CancellationToken, ConnectionTimeout, ApplicationName).ConfigureAwait(false);
         }
-        private SqlConnection getconnection(int ConnectionTimeout = -1, string ApplicationName = null)
+        private SqlConnection getconnection(int ConnectionTimeout = -1, string? ApplicationName = null)
         {
             try
             {

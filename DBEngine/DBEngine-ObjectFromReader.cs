@@ -19,11 +19,11 @@ namespace MDDDataAccess
     public partial class DBEngine
     {
         public bool EnumParseIgnoreCase { get; set; } = true;
-        public void ObjectFromReader<T>(SqlDataReader rdr, ref List<PropertyMapEntry> map, ref PropertyInfo key, ref T r, ref Tracker<T> tracker, bool strict = true) where T : class, new()
+        public void ObjectFromReader<T>(SqlDataReader rdr, ref List<PropertyMapEntry>? map, ref PropertyInfo? key, ref T? r, ref Tracker<T> tracker, bool strict = true) where T : class, new()
         {
             if (map == null)
             {
-                PropertyInfo concurrencyproperty = null;
+                PropertyInfo? concurrencyproperty = null;
                 if (!strict) concurrencyproperty = EnsureConcurrencyProperty(r, concurrencyproperty);
                 BuildPropertyMap<T>(rdr, ref map, ref key, strict, concurrencyproperty);
             }

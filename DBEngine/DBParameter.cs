@@ -14,6 +14,16 @@ namespace MDDDataAccess
         public static bool IsProcedure { get; set; } = true;
         public static string NameParamName { get; set; } = "@ParamName";
         public static string ValParamName { get; set; } = "@ParamVal";
+        public static List<Tuple<string,string>> Replacements { get; set; } = new List<Tuple<string, string>>();
+        public static void AddReplacement(string find, string replace)
+        {
+            if (Replacements == null)
+                Replacements = new List<Tuple<string, string>>();
+            var current = Replacements.Find(r => r.Item1 == find);
+            if (current != null)
+                Replacements.Remove(current);
+            Replacements.Add(new Tuple<string, string>(find, replace));
+        }
         public static Func<string, string> NormalizeParamName { get; set; } = DefaultNormalize;
         static string DefaultNormalize(string paramname)
         {
@@ -21,7 +31,7 @@ namespace MDDDataAccess
                 return paramname.Substring(3);
             return paramname;
         }
-        public static object GetParamValue(string paramname, bool noerror = false)
+        public static string? GetParamValue(string paramname, bool noerror = false)
         {
             try
             {
@@ -29,8 +39,12 @@ namespace MDDDataAccess
                 paramval.Direction = ParameterDirection.Output;
                 DB.SqlRunProcedure(GetCMD, -1, null,
                     new SqlParameter(NameParamName, NormalizeParamName(paramname)),
+                    new SqlParameter("@AutofillCurrentParameters", false),
                     paramval);
-                return paramval.Value.ToString();
+                var retval = paramval.Value == DBNull.Value ? null : paramval.Value.ToString();
+                foreach (var replacement in Replacements)
+                    retval = retval?.Replace(replacement.Item1, replacement.Item2);
+                return retval;
             }
             catch (Exception ex)
             {

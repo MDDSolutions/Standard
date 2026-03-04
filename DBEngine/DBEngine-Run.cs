@@ -43,7 +43,7 @@ namespace MDDDataAccess
         {
             await SqlRunProcedureAsync(procName, CancellationToken, ConnectionTimeout, ApplicationName, StubsToSqlParameters(list)).ConfigureAwait(false);
         }
-        public void SqlRunProcedure(string procName, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list)
+        public void SqlRunProcedure(string procName, int ConnectionTimeout = -1, string? ApplicationName = null, params SqlParameter[] list)
         {
             using (var cn = getconnection(ConnectionTimeout, ApplicationName))
             {
@@ -356,7 +356,7 @@ namespace MDDDataAccess
         {
             return await SqlRunQueryWithResultsAsync<T>(cmdtext, IsProcedure, CancellationToken, ConnectionTimeout, ApplicationName, StubsToSqlParameters(list)).ConfigureAwait(false);
         }
-        public IList<T> SqlRunQueryWithResults<T>(string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T : class, new()
+        public IList<T> SqlRunQueryWithResults<T>(string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string? ApplicationName = null, params SqlParameter[] list) where T : class, new()
         {
             if (!IsProcedure && !AllowAdHoc) throw new Exception("Ad Hoc Queries are not allowed by this DBEngine");
             using (var cn = getconnection(ConnectionTimeout, ApplicationName))
@@ -843,15 +843,15 @@ namespace MDDDataAccess
                         ParameterizeCommand(list, cmd);
                         try
                         {
-                            T h = null;
+                            T? h = null;
                             using (SqlDataReader rdr = ExecuteReader(cmd))
                             {
                                 bool found = false;
                                 //List<Tuple<PropertyInfo, String>> map = null;
-                                PropertyInfo key = null;
-                                List<PropertyMapEntry> map = null;
-                                Tracker<T> tt = Tracking != ObjectTracking.None ? GetTracker<T>() : null;
-                                Tracker<R> tr = Tracking != ObjectTracking.None ? GetTracker<R>() : null;
+                                PropertyInfo? key = null;
+                                List<PropertyMapEntry>? map = null;
+                                Tracker<T>? tt = Tracking != ObjectTracking.None ? GetTracker<T>() : null;
+                                Tracker<R>? tr = Tracking != ObjectTracking.None ? GetTracker<R>() : null;
                                 while (rdr.Read())
                                 {
                                     if (found) throw new Exception("Only one record expected in the header result");
@@ -953,7 +953,7 @@ namespace MDDDataAccess
         #endregion
 
         #region Generics Update
-        bool runsqlupdateinternal<T>(T obj, string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, bool strict = true, params SqlParameter[] list) where T: class, new()
+        bool runsqlupdateinternal<T>(T obj, string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string? ApplicationName = null, bool strict = true, params SqlParameter[] list) where T: class, new()
         {
             Tracker<T> t = Tracking != ObjectTracking.None ? GetTracker<T>() : null;
             //if (t != null && obj != null)
@@ -996,7 +996,7 @@ namespace MDDDataAccess
             }
             return found;
         }
-        public bool RunSqlUpdate<T>(T obj, string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T: class, new()
+        public bool RunSqlUpdate<T>(T obj, string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string? ApplicationName = null, params SqlParameter[] list) where T: class, new()
         {
             return runsqlupdateinternal(obj, cmdtext, IsProcedure, ConnectionTimeout, ApplicationName, true, list);
         }
@@ -1193,7 +1193,7 @@ namespace MDDDataAccess
             }
             throw new Exception("Something went wrong");
         }
-        public IList<dynamic> SqlRunQueryWithResultsDynamic(string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list)
+        public IList<dynamic> SqlRunQueryWithResultsDynamic(string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string? ApplicationName = null, params SqlParameter[] list)
         {
             using (var cn = getconnection(ConnectionTimeout, ApplicationName))
             {
@@ -1210,7 +1210,7 @@ namespace MDDDataAccess
                         {
                             while (rdr.Read())
                             {
-                                IDictionary<string, object> row = new ExpandoObject();
+                                IDictionary<string?, object?> row = new ExpandoObject();
                                 for (int i = 0; i < rdr.FieldCount; i++)
                                 {
                                     var value = rdr.IsDBNull(i) ? null : rdr.GetValue(i);

@@ -341,7 +341,7 @@ namespace MDDDataAccess
                 }
             }
         }
-        public static SqlParameter GetParameter(Expression<Func<object>> expression)
+        public static SqlParameter GetParameter(Expression<Func<object?>> expression)
         {
             string name;
             if (expression.Body is MemberExpression)
