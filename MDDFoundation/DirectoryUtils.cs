@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Xml;
@@ -61,14 +62,14 @@ namespace MDDFoundation
                 }
             });
 
-            EnumerateDirectory(path, searchPattern, recursive, fileprogress, CancellationToken.None); //, currentProgress, progress, progressreportinterval);
+            EnumerateDirectory(path, "", searchPattern, recursive, fileprogress, CancellationToken.None); //, currentProgress, progress, progressreportinterval);
             currentProgress.IsComplete = true;
             progress?.Report(currentProgress);
             return results;
         }
         public static void DirectoryContents(string path, Action<FileEntry> fileprogress, string searchPattern = "*", bool recursive = false)
         {
-            EnumerateDirectory(path, searchPattern, recursive, fileprogress, CancellationToken.None);
+            EnumerateDirectory(path, "", searchPattern, recursive, fileprogress, CancellationToken.None);
         }
         public static async Task <List<FileEntry>> DirectoryContentsAsync(string path, string searchPattern = "*", bool recursive = false, IProgress<DirectoryContentsProgress> progress = null, TimeSpan progressreportinterval = default)
         {
@@ -106,7 +107,7 @@ namespace MDDFoundation
                 }
             });
 
-            await Task.Run(() => EnumerateDirectory(path, searchPattern, recursive, fileprogress, CancellationToken.None)).ConfigureAwait(false); //, currentProgress, progress, progressreportinterval);
+            await Task.Run(() => EnumerateDirectory(path, "", searchPattern, recursive, fileprogress, CancellationToken.None)).ConfigureAwait(false); //, currentProgress, progress, progressreportinterval);
             currentProgress.IsComplete = true;
             progress?.Report(currentProgress);
             return results;
@@ -115,15 +116,15 @@ namespace MDDFoundation
         {
             if (token == default) token = CancellationToken.None; // Use default token if not provided
                                                                   //internalcount = 0; // Reset internal count for each new enumeration
-            int count = await Task.Run(() => EnumerateDirectory(path, searchPattern, recursive, fileprogress, token)); //, currentProgress, progress, progressreportinterval);
+            int count = await Task.Run(() => EnumerateDirectory(path, "", searchPattern, recursive, fileprogress, token)); //, currentProgress, progress, progressreportinterval);
             return count;
             //Console.WriteLine($"MDDFoundation.DirectoryContentsAsync internal count: {internalcount}"); // Output the total count of files processed
         }
         //private static int internalcount;
-        private static int EnumerateDirectory(string path, string searchPattern, bool recursive, Action<FileEntry> fileProgress, CancellationToken token) //, DirectoryContentsProgress currentProgress, IProgress<DirectoryContentsProgress> progress = null, TimeSpan progressreportinterval = default)
+        private static int EnumerateDirectory(string root, string relativepath, string searchPattern, bool recursive, Action<FileEntry> fileProgress, CancellationToken token) //, DirectoryContentsProgress currentProgress, IProgress<DirectoryContentsProgress> progress = null, TimeSpan progressreportinterval = default)
         {
-            if (Debugger.IsAttached) Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}: MDDFoundation.EnumerateDirectory running for {path}...");
-            string searchPath = Path.Combine(path, "*");
+            //if (Debugger.IsAttached) Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}: MDDFoundation.EnumerateDirectory running for {path}...");
+            string searchPath = Path.Combine(root, relativepath, "*");
             WIN32_FIND_DATA findData;
 
             IntPtr findHandle = FindFirstFile(searchPath, out findData);
@@ -142,14 +143,14 @@ namespace MDDFoundation
                     if (string.IsNullOrWhiteSpace(fileName) || fileName == "." || fileName == "..")
                         continue;
 
-                    string fullPath = Path.Combine(path, fileName);
+                    string fullPath = Path.Combine(root, relativepath, fileName);
 
                     bool isDirectory = (findData.dwFileAttributes & 0x10) != 0;
                     if (isDirectory)
                     {
                         if (recursive)
                         {
-                            count = count + EnumerateDirectory(fullPath, searchPattern, recursive, fileProgress, token); //, currentProgress, progress, progressreportinterval);
+                            count = count + EnumerateDirectory(root, Path.Combine(relativepath, fileName), searchPattern, recursive, fileProgress, token); //, currentProgress, progress, progressreportinterval);
                         }
                     }
                     else
@@ -161,7 +162,7 @@ namespace MDDFoundation
                             //currentProgress.FilesCurrentDirectory++;
                             // Compose FileInfo using the full path (metadata is already available)
                             count++;
-                            fileProgress(FileEntry.FromFindData(fullPath, findData));
+                            fileProgress(new FileEntry(root, relativepath, fileName, findData));
                         }
                     }
                 }
@@ -172,11 +173,13 @@ namespace MDDFoundation
                 // Handle cancellation if needed
                 return -1;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                // Log or handle exceptions as needed
-                if (Debugger.IsAttached) Console.WriteLine($"Error processing directory {path}: {ex.Message}");
-                return -1; // Indicate an error occurred
+                throw;
+
+                //// Log or handle exceptions as needed
+                //if (Debugger.IsAttached) Console.WriteLine($"Error processing directory {Path.Combine(root,relativepath)}: {ex.Message}");
+                //return -1; // Indicate an error occurred
             }
             finally
             {
@@ -199,6 +202,138 @@ namespace MDDFoundation
             else
                 return $"{sizeInBytes / (1024.0 * 1024 * 1024 * 1024 * 1024):F2} PB"; // Petabytes
         }
+        public static void AppendUniqueLinesToFileAtomic(string path, List<string> lines, Encoding? encoding = null)
+        {
+
+            using var filelock = NASFileLock.Acquire($"{path}.lock", 10, TimeSpan.FromSeconds(30));
+
+            encoding ??= Encoding.UTF8;
+
+            // Normalize by removing all whitespace and lower-casing for case-insensitive comparison.
+            static string Normalize(string s)
+            {
+                if (string.IsNullOrEmpty(s)) return string.Empty;
+                var sb = new System.Text.StringBuilder(s.Length);
+                foreach (var c in s)
+                {
+                    if (!char.IsWhiteSpace(c))
+                        sb.Append(char.ToLowerInvariant(c));
+                }
+                return sb.ToString();
+            }
+
+            // Retry/backoff configuration
+            const int maxAttempts = 4;
+            const int initialDelayMs = 100;
+            Exception? lastEx = null;
+
+            for (int attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                try
+                {
+                    // Single exclusive access to the file for read+check+append/replace.
+                    using var fs = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+
+                    // Read existing lines (respect BOM if present).
+                    using var sr = new StreamReader(fs, encoding, detectEncodingFromByteOrderMarks: true, 4096, leaveOpen: true);
+                    var existingLines = new List<string>();
+                    string? existingLine;
+                    while ((existingLine = sr.ReadLine()) != null)
+                    {
+                        existingLines.Add(existingLine);
+                    }
+
+                    // Capture the detected encoding for writing and dispose the reader.
+                    var writeEncoding = sr.CurrentEncoding ?? encoding;
+
+                    // Build map of normalized -> first index in existing file (preserve order).
+                    var existingMap = new Dictionary<string, int>(StringComparer.Ordinal);
+                    for (int i = 0; i < existingLines.Count; i++)
+                    {
+                        var n = Normalize(existingLines[i]);
+                        if (!existingMap.ContainsKey(n))
+                            existingMap[n] = i;
+                    }
+
+                    // Determine which incoming lines are new (normalize and de-duplicate within the input).
+                    var toAppend = new List<string>(capacity: lines.Count);
+                    var batchSet = new HashSet<string>(StringComparer.Ordinal); // normalized lines added in this batch
+                    bool anyReplacement = false;
+
+                    foreach (var line in lines)
+                    {
+                        var norm = Normalize(line ?? string.Empty);
+                        if (string.IsNullOrWhiteSpace(norm))
+                            continue;
+
+                        // If already present in file or already planned in this batch, skip.
+                        if (existingMap.ContainsKey(norm) || batchSet.Contains(norm))
+                            continue;
+
+                        // Special-case: incoming line with a leading '-' should update an existing entry without the dash.
+                        // e.g. existing "foo" and incoming "-foo" -> replace "foo" with "-foo"
+                        var stripped = norm.TrimStart('-');
+                        if (!string.Equals(stripped, norm, StringComparison.Ordinal) && existingMap.TryGetValue(stripped, out int idx))
+                        {
+                            // Replace the existing line in-place within the in-memory list.
+                            existingLines[idx] = line ?? string.Empty;
+                            // Update mapping: remove old key, add new key pointing to same index
+                            existingMap.Remove(stripped);
+                            existingMap[norm] = idx;
+                            anyReplacement = true;
+                            continue;
+                        }
+
+                        // Otherwise this is a true new line to append
+                        toAppend.Add(line ?? string.Empty);
+                        batchSet.Add(norm);
+                    }
+
+                    if (toAppend.Count == 0 && !anyReplacement)
+                        return; // nothing to do
+
+                    // Build final list: existing lines (with replacements applied) + new appended lines
+                    var finalLines = new List<string>(existingLines.Count + toAppend.Count);
+                    finalLines.AddRange(existingLines);
+                    finalLines.AddRange(toAppend);
+
+                    // Truncate file and write all final lines using the detected encoding (preserves BOM if any).
+                    fs.SetLength(0);
+                    fs.Seek(0, SeekOrigin.Begin);
+                    using var sw = new StreamWriter(fs, writeEncoding, 4096, leaveOpen: true);
+                    for (int i = 0; i < finalLines.Count; i++)
+                    {
+                        sw.Write(finalLines[i]);
+                        // write trailing newline for every line (matches previous behavior of appending newline after each entry)
+                        sw.Write(sw.NewLine);
+                    }
+                    sw.Flush();
+                    fs.Flush(true); // ensure data is flushed to disk
+                    return;
+                }
+                catch (IOException ioEx)
+                {
+                    lastEx = ioEx;
+                    if (attempt == maxAttempts) break;
+                    int delay = initialDelayMs * (1 << (attempt - 1));
+                    System.Threading.Thread.Sleep(delay + new Random().Next(0, 50));
+                    continue;
+                }
+                catch (UnauthorizedAccessException uaEx)
+                {
+                    lastEx = uaEx;
+                    if (attempt == maxAttempts) break;
+                    int delay = initialDelayMs * (1 << (attempt - 1));
+                    System.Threading.Thread.Sleep(delay + new Random().Next(0, 50));
+                    continue;
+                }
+            }
+
+            // If we reach here, all attempts failed — surface a fatal exception.
+            throw new IOException($"Failed to append unique lines to '{path}' after {maxAttempts} attempts.", lastEx);
+        }
+
+
     }
 
     /// <summary>
@@ -212,9 +347,12 @@ namespace MDDFoundation
     /// for every file as with FileInfo in order to retrieve the metadata</remarks>
     public class FileEntry : IXmlSerializable
     {
-        public string FullName { get; private set; }
+        public string FullName => Path.Combine(RootFolder, RelativePath, Name);
         public string Name { get; private set; }
-        public string DirectoryName { get; private set; }
+        public string DirectoryName => Path.Combine(RootFolder, RelativePath);
+        public string Extension { get; set; }
+        public string RootFolder { get; set; }
+        public string RelativePath { get; set; }
         public long Length { get; private set; }
         public DateTime CreationTime { get; private set; }
         public DateTime CreationTimeUtc { get; private set; }
@@ -228,9 +366,12 @@ namespace MDDFoundation
         // Public constructor (like FileInfo)
         public FileEntry(string fullPath)
         {
-            FullName = fullPath;
+            if (string.IsNullOrWhiteSpace(fullPath))
+                throw new ArgumentNullException(nameof(fullPath), "Full path cannot be null or empty.");
+
+            RootFolder = Path.GetPathRoot(fullPath) ?? string.Empty;
+            RelativePath = Path.GetDirectoryName(fullPath)?.Substring(RootFolder.Length).TrimStart(Path.DirectorySeparatorChar) ?? string.Empty;
             Name = Path.GetFileName(fullPath);
-            DirectoryName = Path.GetDirectoryName(fullPath);
             Refresh();
         }
 
@@ -244,9 +385,13 @@ namespace MDDFoundation
             FileAttributes attributes, 
             bool exists)
         {
-            FullName = fullName;
+            if (string.IsNullOrWhiteSpace(fullName))
+                throw new ArgumentNullException(nameof(fullName), "Full path cannot be null or empty.");
+
             Name = Path.GetFileName(fullName);
-            DirectoryName = Path.GetDirectoryName(fullName);
+            RootFolder = Path.GetPathRoot(fullName) ?? string.Empty;
+            RelativePath = Path.GetDirectoryName(fullName)?.Substring(RootFolder.Length).TrimStart(Path.DirectorySeparatorChar) ?? string.Empty;
+            Extension = Path.GetExtension(fullName);
             Length = length;
             CreationTime = creationTime.LocalDateTime;
             CreationTimeUtc = creationTime.UtcDateTime;
@@ -258,36 +403,42 @@ namespace MDDFoundation
             Exists = exists;
         }
 
-        // Internal constructor
-        internal FileEntry() { }
 
-        internal static FileEntry FromFindData(string fullPath, WIN32_FIND_DATA findData)
+        internal FileEntry(string root, string relativepath, string filename, WIN32_FIND_DATA findData)
         {
-            long length = ((long)findData.nFileSizeHigh << 32) | findData.nFileSizeLow;
-            DateTime creationTimeUtc = DateTime.FromFileTimeUtc(
-                ((long)findData.ftCreationTime.dwHighDateTime << 32) | (uint)findData.ftCreationTime.dwLowDateTime);
-            DateTime lastWriteTimeUtc = DateTime.FromFileTimeUtc(
-                ((long)findData.ftLastWriteTime.dwHighDateTime << 32) | (uint)findData.ftLastWriteTime.dwLowDateTime);
-            DateTime lastAccessTimeUtc = DateTime.FromFileTimeUtc(
-                ((long)findData.ftLastAccessTime.dwHighDateTime << 32) | (uint)findData.ftLastAccessTime.dwLowDateTime);
+            if (string.IsNullOrWhiteSpace(root))
+                throw new ArgumentNullException(nameof(root), "Root cannot be null or empty.");
+            if (relativepath == null)
+                throw new ArgumentNullException(nameof(relativepath), "Relative path cannot be null.");
+            if (string.IsNullOrWhiteSpace(filename))
+                throw new ArgumentNullException(nameof(filename), "File name cannot be null or empty.");
 
-            return new FileEntry
-            {
-                FullName = fullPath,
-                Name = Path.GetFileName(fullPath),
-                DirectoryName = Path.GetDirectoryName(fullPath),
-                Length = length,
-                CreationTimeUtc = creationTimeUtc,
-                CreationTime = creationTimeUtc.ToLocalTime(),
-                LastWriteTimeUtc = lastWriteTimeUtc,
-                LastWriteTime = lastWriteTimeUtc.ToLocalTime(),
-                LastAccessTimeUtc = lastAccessTimeUtc,
-                LastAccessTime = lastAccessTimeUtc.ToLocalTime(),
-                Attributes = (FileAttributes)findData.dwFileAttributes,
-                Exists = true
-            };
+            // Ensure non-nullable fields are initialized deterministically on the hot path
+
+            RootFolder = root;
+            RelativePath = relativepath;
+            Name = filename;
+            Extension = Path.GetExtension(filename);
+
+            Length = ((long)findData.nFileSizeHigh << 32) | findData.nFileSizeLow;
+
+            // Build 64-bit FILETIME values (cast low DWORD to uint to avoid sign-extension)
+            long creationFileTime = ((long)findData.ftCreationTime.dwHighDateTime << 32) | (uint)findData.ftCreationTime.dwLowDateTime;
+            long lastWriteFileTime = ((long)findData.ftLastWriteTime.dwHighDateTime << 32) | (uint)findData.ftLastWriteTime.dwLowDateTime;
+            long lastAccessFileTime = ((long)findData.ftLastAccessTime.dwHighDateTime << 32) | (uint)findData.ftLastAccessTime.dwLowDateTime;
+
+            // Convert FILETIME -> UTC DateTime once, then compute local times
+            CreationTimeUtc = DateTime.FromFileTimeUtc(creationFileTime);
+            LastWriteTimeUtc = DateTime.FromFileTimeUtc(lastWriteFileTime);
+            LastAccessTimeUtc = DateTime.FromFileTimeUtc(lastAccessFileTime);
+
+            CreationTime = CreationTimeUtc.ToLocalTime();
+            LastWriteTime = LastWriteTimeUtc.ToLocalTime();
+            LastAccessTime = LastAccessTimeUtc.ToLocalTime();
+
+            Attributes = (FileAttributes)findData.dwFileAttributes;
+            Exists = true;
         }
-
         // Refresh method (like FileInfo.Refresh)
         public void Refresh()
         {
@@ -310,7 +461,7 @@ namespace MDDFoundation
 
         #region IXmlSerializable Implementation
 
-        public XmlSchema GetSchema() => null;
+        public XmlSchema? GetSchema() => null;
 
         public void WriteXml(XmlWriter writer)
         {
@@ -328,9 +479,9 @@ namespace MDDFoundation
             reader.MoveToContent();
             reader.ReadStartElement();
 
-            FullName = reader.ReadElementContentAsString(nameof(FullName), "");
             Name = Path.GetFileName(FullName);
-            DirectoryName = Path.GetDirectoryName(FullName);
+            RootFolder = Path.GetPathRoot(FullName) ?? string.Empty;
+            RelativePath = Path.GetDirectoryName(FullName)?.Substring(RootFolder.Length).TrimStart(Path.DirectorySeparatorChar) ?? string.Empty;
             Length = reader.ReadElementContentAsLong(nameof(Length), "");
 
             var cto = DateTimeOffset.Parse(reader.ReadElementContentAsString(nameof(CreationTime), ""));
@@ -375,7 +526,7 @@ namespace MDDFoundation
         public int TotalFilesFound { get; set; } = 0;
         public int DirectoriesProcessed { get; set; } = 0;
         public int FilesCurrentDirectory { get; set; } = 0;
-        public string CurrentDirectory { get; set; } = null;
+        public string? CurrentDirectory { get; set; } = null;
         public bool IsComplete { get; set; } = false;
         public bool IsCanceled { get; set; } = false;
         public override string ToString()

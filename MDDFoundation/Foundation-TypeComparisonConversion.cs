@@ -11,7 +11,7 @@ namespace MDDFoundation
 {
     public static partial class Foundation
     {
-        public static bool ValueEquals(object val1, object val2)
+        public static bool ValueEquals(object? val1, object? val2)
         {
             // covers (null, null) and same reference fast-path
             if (ReferenceEquals(val1, val2)) return true;

@@ -50,6 +50,17 @@ public partial class Foundation
 
         return null;
     }
+    public static bool TryExtractDateTimeFromString(string input, out DateTime dt)
+    {
+        dt = default;
+        DateTime? result = ExtractDateTimeFromString(input);
+        if (result.HasValue)
+        {
+            dt = result.Value;
+            return true;
+        }
+        return false;
+    }
 
     // ---------- patterns (adjacent windows over chunks[]) ----------
 
