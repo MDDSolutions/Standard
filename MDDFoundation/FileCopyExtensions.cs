@@ -491,6 +491,7 @@ namespace MDDFoundation
                 Callback = progresscallback,
                 ProgressReportInterval = progressreportinterval,
             };
+            copyprogress.UpdateAndMaybeCallback(0);
 
             byte[] finalHash = Array.Empty<byte>();
             bool toolatetocancel = false;
