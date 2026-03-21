@@ -167,9 +167,13 @@ SELECT @OrderID, 2, ItemId FROM dbo.Item;";
             Assert.IsNotNull(od);
             Assert.AreEqual(od.Count, 2);
             Assert.IsTrue(od.All(x => x.OrderItem != null));
-            Assert.IsTrue(od.All(x => x.OrderItem.Category != null));
-            var categories = od.Select(x => x.OrderItem.Category.CategoryName).ToList();
-            CollectionAssert.AreEquivalent(new[] { "Furniture", "Office" }, categories);
+            //Category is the 3rd level - I explictly turn off auto-navigating navigation properties after only one level
+            //if orders navigate to items and items navigate to orders (they wouldn't but I can't think of a better example at the moment)
+            //then the map builder could easily be in an endless loop - could try some shit where we keep a dictionary of which objects
+            //have been navigated and only navigate them once but haven't needed 3+ levels of auto-navigation in one query yet
+            Assert.IsTrue(od.All(x => x.OrderItem.Category == null));
+            //var categories = od.Select(x => x.OrderItem.Category.CategoryName).ToList();
+            //CollectionAssert.AreEquivalent(new[] { "Furniture", "Office" }, categories);
         }
         [TestMethod]
         public void NestedListNavigationPropertiesPopulateAndSmartAdd()

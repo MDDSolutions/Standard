@@ -139,83 +139,86 @@ namespace MDDDataAccess
                         entry.MapAction = BuildStaticDateTimeFunc(item);
                     }
                 }
-                if (type.IsValueType || type == typeof(string) || type.IsArray)
+                if (include)
                 {
+                    if (type.IsValueType || type == typeof(string) || type.IsArray)
+                    {
 
-                    if (include && !special)
-                    {
-                        if (!strict)
+                        if (!special)
                         {
-                            if (concurrencyProperty != null)
-                                entry.Optional = item != concurrencyProperty;
+                            if (!strict)
+                            {
+                                if (concurrencyProperty != null)
+                                    entry.Optional = item != concurrencyProperty;
+                                else
+                                    entry.Optional = true;
+                            }
+                            if (columnOrdinals.TryGetValue(entry.ColumnName, out var ordinals) && ordinals.Count > 0)
+                            {
+                                entry.Ordinal = ordinals.Dequeue();
+                                if (ordinals.Count == 0)
+                                    columnOrdinals.Remove(entry.ColumnName);
+                            }
                             else
-                                entry.Optional = true;
+                            {
+                                if (!entry.Optional)
+                                    throw new DBEngineColumnRequiredException(
+                                        item.Name,
+                                        item.PropertyType.FullName,
+                                        entry.ColumnName,
+                                        targetType.Name,
+                                        entry.Optional,
+                                        $"DBEngine internal error: The column '{entry.ColumnName}' was specified as a property (or DBName attribute) in the '{targetType.Name}' object but was not found in a query meant to populate objects of that type. " +
+                                        "You must either decorate this property with a DBIgnore attribute if you want ObjectFromReader to always ignore it, or a DBOptional attribute if you want ObjectFromReader to use it if it is there, but ignore it if it is not."
+                                    );
+                                else
+                                    include = false;
+                            }
+                            if (include)
+                            {
+                                entry.ReaderType = rdr.GetFieldType(entry.Ordinal);
+                                BuildCompiledMap(entry);
+                            }
                         }
-                        if (columnOrdinals.TryGetValue(entry.ColumnName, out var ordinals) && ordinals.Count > 0)
-                        {
-                            entry.Ordinal = ordinals.Dequeue();
-                            if (ordinals.Count == 0)
-                                columnOrdinals.Remove(entry.ColumnName);
-                        }
-                        else
-                        {
-                            if (!entry.Optional)
-                                throw new DBEngineColumnRequiredException(
-                                    item.Name,
-                                    item.PropertyType.FullName,
-                                    entry.ColumnName,
-                                    targetType.Name,
-                                    entry.Optional,
-                                    $"DBEngine internal error: The column '{entry.ColumnName}' was specified as a property (or DBName attribute) in the '{targetType.Name}' object but was not found in a query meant to populate objects of that type. " +
-                                    "You must either decorate this property with a DBIgnore attribute if you want ObjectFromReader to always ignore it, or a DBOptional attribute if you want ObjectFromReader to use it if it is there, but ignore it if it is not."
-                                );
-                            else
-                                include = false;
-                        }
-                        if (include)
-                        {
-                            entry.ReaderType = rdr.GetFieldType(entry.Ordinal);
-                            BuildCompiledMap(entry);
-                        }
+                        if (include) result.Add(entry);
                     }
-                    if (include) result.Add(entry);
-                }
-                else
-                {
-                    if (!navprops)
-                        continue;
-                    if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>))
+                    else
                     {
-                        var elementType = type.GetGenericArguments()[0];
-                        if (elementType.IsClass && elementType != typeof(string))
+                        if (!navprops)
+                            continue;
+                        if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>))
                         {
-                            // This is a List<SomeClass> navigation property
-                            navigationproperties.Add(item);
+                            var elementType = type.GetGenericArguments()[0];
+                            if (elementType.IsClass && elementType != typeof(string))
+                            {
+                                // This is a List<SomeClass> navigation property
+                                navigationproperties.Add(item);
+                                continue;
+                            }
+                        }
+                        if (!type.IsClass || type == typeof(string) || type.IsAbstract)
+                        {
+                            if (DebugLevel > 100)
+                            {
+                                if (unhandledtypesreported.TryAdd($"{targetType.Name}.{item.Name}", true))
+                                    Log.Entry("ObjectFromReader", 50, $"Unhandled type in {targetType.Name}.{item.Name} type full name: {type.FullName}", "");
+                            }
                             continue;
                         }
-                    }
-                    if (!type.IsClass || type == typeof(string) || type.IsAbstract)
-                    {
-                        if (DebugLevel > 100)
+
+                        if (type.GetConstructor(Type.EmptyTypes) == null)
                         {
-                            if (unhandledtypesreported.TryAdd($"{targetType.Name}.{item.Name}", true))
-                                Log.Entry("ObjectFromReader", 50, $"Unhandled type in {targetType.Name}.{item.Name} type full name: {type.FullName}", "");
+                            if (DebugLevel > 100)
+                            {
+                                if (unhandledtypesreported.TryAdd($"{targetType.Name}.{item.Name}", true))
+                                    Log.Entry("ObjectFromReader", 50, $"Unhandled type in {targetType.Name}.{item.Name} type full name: {type.FullName}", "");
+                            }
+                            continue;
                         }
-                        continue;
+
+                        if (include) navigationproperties.Add(item);
+
                     }
-
-                    if (type.GetConstructor(Type.EmptyTypes) == null)
-                    {
-                        if (DebugLevel > 100)
-                        {
-                            if (unhandledtypesreported.TryAdd($"{targetType.Name}.{item.Name}", true))
-                                Log.Entry("ObjectFromReader", 50, $"Unhandled type in {targetType.Name}.{item.Name} type full name: {type.FullName}", "");
-                        }
-                        continue;
-                    }
-
-                    if (include) navigationproperties.Add(item);
-
                 }
             }
 
@@ -295,8 +298,8 @@ namespace MDDDataAccess
                 }
                 catch (Exception ex)
                 {
-                    if (Debugger.IsAttached) Console.WriteLine(ex.Message);
-                    //if we are not able to build a map for a child object, that's fine - it's just not that kind of query
+                    if (Debugger.IsAttached) Console.WriteLine($"if we are not able to build a map for a child object, that's fine - it's just not that kind of query: {ex.Message}");
+                    //
                 }
             }
 

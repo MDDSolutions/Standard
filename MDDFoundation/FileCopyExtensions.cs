@@ -67,7 +67,7 @@ namespace MDDFoundation
         /// - If computehash is true, we compute EXACT SHA1(file).
         /// - If resuming, we restore SHA1 internal state and continue hashing from resumeOffset without rereading.
         /// </summary>
-        public static async Task<FileCopyProgress> CopyToAsync_old(
+        public static Task<FileCopyProgress> CopyToAsync(
             this FileInfo file,
             FileInfo[] destinations,
             bool overwrite,
@@ -80,77 +80,96 @@ namespace MDDFoundation
             int bufferSize = 1024 * 1024, // 1MB
             double maxUsage = 1)
         {
-            if (file == null) throw new ArgumentNullException(nameof(file));
-            if (destinations == null) throw new ArgumentNullException(nameof(destinations));
-            if (destinations.Length == 0) throw new ArgumentException("At least one destination is required.", nameof(destinations));
-            if (!file.Exists) throw new IOException($"Source file {file.FullName} does not exist");
-            if (bufferSize <= 0) bufferSize = 1024 * 1024;
-            if (maxUsage < 0 || maxUsage > 1) maxUsage = 1;
+            var copyprogress = new FileCopyProgress
+            {
+                FileName = file.Name,
+                Callback = progresscallback,
+                ProgressReportInterval = progressreportinterval,
+                SourceFile = file,
+                Destinations = destinations,
+                Overwrite = overwrite,
+                Token = token,
+                MoveFile = MoveFile,
+                ComputeHash = computehash,
+                Resumable = resumable,
+                BufferSize = bufferSize,
+                MaxUsage = maxUsage
+            };
+            return CopyToAsync(copyprogress);
+        }
 
-            // Sanity: no null destinations, no dup full names
-            if (destinations.Any(d => d == null)) throw new ArgumentException("Destinations contains a null entry.", nameof(destinations));
-            var dup = destinations.GroupBy(d => d.FullName, StringComparer.OrdinalIgnoreCase).FirstOrDefault(g => g.Count() > 1);
-            if (dup != null) throw new ArgumentException($"Duplicate destination path: {dup.Key}", nameof(destinations));
+        public static async Task<FileCopyProgress> CopyToAsync(FileCopyProgress copyprogress)
+        {
+            if (copyprogress == null) throw new ArgumentNullException(nameof(copyprogress));
+            copyprogress.Stopwatch = Stopwatch.StartNew();
+            if (copyprogress.SourceFile == null) throw new ArgumentException("copyprogress.SourceFile must be set to the source file.", nameof(copyprogress));
+            copyprogress.FileName = copyprogress.SourceFile.Name;
 
-            if (progressreportinterval == default) progressreportinterval = TimeSpan.FromSeconds(1);
+            if (copyprogress.Destinations == null) throw new ArgumentNullException(nameof(copyprogress.Destinations));
+            if (copyprogress.Destinations.Length == 0) throw new ArgumentException("At least one destination is required.", nameof(copyprogress.Destinations));
+            if (!copyprogress.SourceFile.Exists) throw new IOException($"Source file {copyprogress.SourceFile.FullName} does not exist");
+            copyprogress.FileSizeBytes = copyprogress.SourceFile.Length;
+            if (copyprogress.BufferSize <= 0) copyprogress.BufferSize = 1024 * 1024;
+            if (copyprogress.MaxUsage < 0 || copyprogress.MaxUsage > 1) copyprogress.MaxUsage = 1;
 
-            long commitinterval = Convert.ToInt64(progressreportinterval.TotalMilliseconds * 60 * Stopwatch.Frequency / 1000);
+            // Sanity: no null copyprogress.Destinations, no dup full names
+            if (copyprogress.Destinations.Any(d => d == null)) throw new ArgumentException("copyprogress.Destinations contains a null entry.", nameof(copyprogress.Destinations));
+            var dup = copyprogress.Destinations.GroupBy(d => d.FullName, StringComparer.OrdinalIgnoreCase).FirstOrDefault(g => g.Count() > 1);
+            if (dup != null) throw new ArgumentException($"Duplicate destination path: {dup.Key}", nameof(copyprogress.Destinations));
+
+            if (copyprogress.ProgressReportInterval == default) copyprogress.ProgressReportInterval = TimeSpan.FromSeconds(1);
+
+            long commitinterval = Convert.ToInt64(copyprogress.ProgressReportInterval.TotalMilliseconds * 60 * Stopwatch.Frequency / 1000);
             var lastcommit = Stopwatch.GetTimestamp();
-            long blocks = (TargetBytes + bufferSize - 1) / bufferSize; // ceiling division
+            long blocks = (TargetBytes + copyprogress.BufferSize - 1) / copyprogress.BufferSize; // ceiling division
             int maxcommitblocks = (blocks <= 0) ? 1 : (blocks > int.MaxValue ? int.MaxValue : (int)blocks);
 
 
             DutyCycleThrottle? throttle = null;
-            if (maxUsage > 0 && maxUsage < 1)
+            if (copyprogress.MaxUsage > 0 && copyprogress.MaxUsage < 1)
             {
-                var window = progressreportinterval;
+                var window = copyprogress.ProgressReportInterval;
                 // You might want a minimum window like 250ms
                 if (window < TimeSpan.FromMilliseconds(250)) window = TimeSpan.FromMilliseconds(250);
 
-                throttle = new DutyCycleThrottle(maxUsage, window);
+                throttle = new DutyCycleThrottle(copyprogress.MaxUsage, window);
             }
 
 
-            foreach (var d in destinations)
+            foreach (var d in copyprogress.Destinations)
             {
                 if (d.Directory == null || !d.Directory.Exists)
                     throw new IOException($"Destination folder {d.DirectoryName} does not exist or is not available");
 
-                if (d.Exists && !overwrite)
+                if (d.Exists && !copyprogress.Overwrite)
                     throw new IOException($"Destination file {d.FullName} exists (and overwrite was not specified)");
             }
 
 
-            long len = file.Length;
+            long len = copyprogress.SourceFile.Length;
 
-            var copyprogress = new FileCopyProgress
-            {
-                FileSizeBytes = len,
-                FileName = file.Name,
-                Stopwatch = Stopwatch.StartNew(),
-                Callback = progresscallback,
-                ProgressReportInterval = progressreportinterval,
-            };
+
+            copyprogress.UpdateAndMaybeCallback(0);
 
             byte[] finalHash = Array.Empty<byte>();
             bool toolatetocancel = false;
 
-            var targets = destinations.Select(d => new CopyTarget(d)).ToArray();
+            var targets = copyprogress.Destinations.Select(d => new CopyTarget(d)).ToArray();
 
             FileStream? source = null;
             FileStream[]? tempStreams = null;
 
             try
             {
-                token.ThrowIfCancellationRequested();
+                copyprogress.Token.ThrowIfCancellationRequested();
 
                 // Decide resume (min committed) and which SHA1 state to use (from a destination at min committed)
                 long resumeOffset = 0;
                 CopyResumeState? chosenStateAtResume = null;
 
-                if (resumable)
+                if (copyprogress.Resumable)
                 {
-                    var resume = CopyResumeLogic.TryComputeMinCommittedResume(file, targets, bufferSize, computehash);
+                    var resume = CopyResumeLogic.TryComputeMinCommittedResume(copyprogress.SourceFile, targets, copyprogress.BufferSize, copyprogress.ComputeHash);
 
                     if (resume.CanResume)
                     {
@@ -186,11 +205,11 @@ namespace MDDFoundation
 
                 // Open source
                 source = new FileStream(
-                    file.FullName,
+                    copyprogress.SourceFile.FullName,
                     FileMode.Open,
                     FileAccess.Read,
                     FileShare.Read,
-                    bufferSize: bufferSize,
+                    copyprogress.BufferSize,
                     useAsync: true);
 
                 // Open tmp streams (exclusive)
@@ -200,12 +219,12 @@ namespace MDDFoundation
                         FileMode.OpenOrCreate,
                         FileAccess.ReadWrite,
                         FileShare.None,
-                        bufferSize: bufferSize,
+                        copyprogress.BufferSize,
                         options: FileOptions.Asynchronous | FileOptions.SequentialScan))
                     .ToArray();
 
-                // ALWAYS preallocate tmp files when resumable (so length is never meaningful)
-                if (resumable)
+                // ALWAYS preallocate tmp files when copyprogress.Resumable (so length is never meaningful)
+                if (copyprogress.Resumable)
                 {
                     foreach (var (ts, idx) in tempStreams.Select((s, i) => (s, i)))
                     {
@@ -227,7 +246,7 @@ namespace MDDFoundation
 
                 // Hash setup (resumable SHA1)
                 Sha1Stateful? sha1 = null;
-                if (computehash)
+                if (copyprogress.ComputeHash)
                 {
                     sha1 = new Sha1Stateful();
 
@@ -245,18 +264,18 @@ namespace MDDFoundation
                 }
 
                 // Normalize: overwrite all destination state files to match the chosen resumeOffset + chosen hash snapshot.
-                // This makes future resumes deterministic even if some destinations were ahead.
-                if (resumable)
+                // This makes future resumes deterministic even if some copyprogress.Destinations were ahead.
+                if (copyprogress.Resumable)
                 {
-                    CopyResumeState normalized = CopyResumeState.Create(file, bufferSize, resumeOffset, sha1);
-                    var normalizeWrites = targets.Select(t => CopyResumeStateFile.WriteAtomicAsync(t.StatePath, normalized, token)).ToArray();
+                    CopyResumeState normalized = CopyResumeState.Create(copyprogress.SourceFile, copyprogress.BufferSize, resumeOffset, sha1);
+                    var normalizeWrites = targets.Select(t => CopyResumeStateFile.WriteAtomicAsync(t.StatePath, normalized, copyprogress.Token)).ToArray();
                     await Task.WhenAll(normalizeWrites).ConfigureAwait(false);
                     chosenStateAtResume = normalized;
                 }
 
                 // Copy loop
-                byte[] bufferA = new byte[bufferSize];
-                byte[] bufferB = new byte[bufferSize];
+                byte[] bufferA = new byte[copyprogress.BufferSize];
+                byte[] bufferB = new byte[copyprogress.BufferSize];
                 bool swap = false;
 
                 Task[]? writers = null;
@@ -266,13 +285,13 @@ namespace MDDFoundation
 
                 while (true)
                 {
-                    token.ThrowIfCancellationRequested();
+                    copyprogress.Token.ThrowIfCancellationRequested();
 
                     byte[] buf = swap ? bufferA : bufferB;
 
                     throttle?.StartBusy();
 
-                    int read = await source.ReadAsync(buf, 0, buf.Length, token).ConfigureAwait(false);
+                    int read = await source.ReadAsync(buf, 0, buf.Length, copyprogress.Token).ConfigureAwait(false);
                     if (read == 0) break;
 
                     sha1?.Update(buf, 0, read);
@@ -286,7 +305,7 @@ namespace MDDFoundation
                         var destInfo = targets[i].Destination;
                         try
                         {
-                            writers[i] = stream.WriteAsync(buf, 0, read, token);
+                            writers[i] = stream.WriteAsync(buf, 0, read, copyprogress.Token);
                         }
                         catch (IOException ioEx)
                         {
@@ -301,19 +320,19 @@ namespace MDDFoundation
 
                     blocksSinceCommit++;
 
-                    if (resumable && (blocksSinceCommit >= maxcommitblocks || (Stopwatch.GetTimestamp() - lastcommit) >= commitinterval))
+                    if (copyprogress.Resumable && (blocksSinceCommit >= maxcommitblocks || (Stopwatch.GetTimestamp() - lastcommit) >= commitinterval))
                     {
                         if (Debugger.IsAttached)
                             Debug.WriteLine($"{DateTime.Now:u}-CopyToAsync: committing at {MinPosition(tempStreams)} bytes after {blocksSinceCommit} blocks.");
 
                         await CompleteWrites(writers).ConfigureAwait(false);
 
-                        await FlushAllCommittedAsync(tempStreams, token, false).ConfigureAwait(false);
+                        await FlushAllCommittedAsync(tempStreams, copyprogress.Token, false).ConfigureAwait(false);
 
                         long committed = MinPosition(tempStreams); // should be equal if writes+flush succeeded, but take min anyway.
 
-                        var st = CopyResumeState.Create(file, bufferSize, committed, sha1);
-                        var stateWrites = targets.Select(t => CopyResumeStateFile.WriteAtomicAsync(t.StatePath, st, token)).ToArray();
+                        var st = CopyResumeState.Create(copyprogress.SourceFile, copyprogress.BufferSize, committed, sha1);
+                        var stateWrites = targets.Select(t => CopyResumeStateFile.WriteAtomicAsync(t.StatePath, st, copyprogress.Token)).ToArray();
                         await Task.WhenAll(stateWrites).ConfigureAwait(false);
 
                         blocksSinceCommit = 0;
@@ -322,18 +341,18 @@ namespace MDDFoundation
                             Debug.WriteLine($"{DateTime.Now:u}-CopyToAsync: commit complete.");
                     }
                     if (throttle != null)
-                        await throttle.ThrottleIfNeededAsync(token).ConfigureAwait(false);
+                        await throttle.ThrottleIfNeededAsync(copyprogress.Token).ConfigureAwait(false);
                 }
 
                 await CompleteWrites(writers).ConfigureAwait(false);
 
-                await FlushAllCommittedAsync(tempStreams, token, true).ConfigureAwait(false);
+                await FlushAllCommittedAsync(tempStreams, copyprogress.Token, true).ConfigureAwait(false);
 
-                if (resumable)
+                if (copyprogress.Resumable)
                 {
                     long committed = MinPosition(tempStreams);
-                    var st = CopyResumeState.Create(file, bufferSize, committed, sha1);
-                    var stateWrites = targets.Select(t => CopyResumeStateFile.WriteAtomicAsync(t.StatePath, st, token)).ToArray();
+                    var st = CopyResumeState.Create(copyprogress.SourceFile, copyprogress.BufferSize, committed, sha1);
+                    var stateWrites = targets.Select(t => CopyResumeStateFile.WriteAtomicAsync(t.StatePath, st, copyprogress.Token)).ToArray();
                     await Task.WhenAll(stateWrites).ConfigureAwait(false);
                 }
 
@@ -343,7 +362,7 @@ namespace MDDFoundation
                     copyprogress.Hash = finalHash;
                 }
 
-                token.ThrowIfCancellationRequested();
+                copyprogress.Token.ThrowIfCancellationRequested();
                 toolatetocancel = true;
 
                 // Dispose streams before rename
@@ -375,25 +394,25 @@ namespace MDDFoundation
                     while (!t.Destination.Exists)
                     {
                         waitloop++;
-                        await Task.Delay(100, token).ConfigureAwait(false);
+                        await Task.Delay(100, copyprogress.Token).ConfigureAwait(false);
                         t.Destination.Refresh();
                         if (waitloop > 10)
-                            throw new Exception($"CopyToAsync: file {file.Name} - copy completed, but it did not appear in the destination '{t.Destination.FullName}'");
+                            throw new Exception($"CopyToAsync: file {copyprogress.SourceFile.Name} - copy completed, but it did not appear in the destination '{t.Destination.FullName}'");
                     }
 
-                    File.SetCreationTime(t.Destination.FullName, file.CreationTime);
-                    File.SetLastWriteTime(t.Destination.FullName, file.LastWriteTime);
-                    File.SetLastAccessTime(t.Destination.FullName, file.LastAccessTime);
+                    File.SetCreationTime(t.Destination.FullName, copyprogress.SourceFile.CreationTime);
+                    File.SetLastWriteTime(t.Destination.FullName, copyprogress.SourceFile.LastWriteTime);
+                    File.SetLastAccessTime(t.Destination.FullName, copyprogress.SourceFile.LastAccessTime);
 
                     SafeDeleteFile(t.StatePath);
                 }
 
-                if (MoveFile) file.Delete();
+                if (copyprogress.MoveFile) copyprogress.SourceFile.Delete();
 
                 copyprogress.BytesCopied = len;
                 copyprogress.IsCompleted = true;
-                if (progresscallback != null)
-                    progresscallback(copyprogress);
+                if (copyprogress.Callback != null)
+                    copyprogress.Callback(copyprogress);
 
                 return copyprogress;
             }
@@ -401,8 +420,8 @@ namespace MDDFoundation
             {
                 copyprogress.Cancelled = true;
                 copyprogress.IsCompleted = false;
-                if (progresscallback != null)
-                    progresscallback(copyprogress);
+                if (copyprogress.Callback != null)
+                    copyprogress.Callback(copyprogress);
 
                 // Keep tmp+state for resume
                 throw;
@@ -420,7 +439,7 @@ namespace MDDFoundation
                 }
 
                 // If not resumable and not completed, cleanup tmp/state
-                if (!toolatetocancel && !resumable)
+                if (!toolatetocancel && !copyprogress.Resumable)
                 {
                     foreach (var t in targets)
                     {
@@ -431,7 +450,7 @@ namespace MDDFoundation
             }
         }
 
-        public static async Task<FileCopyProgress> CopyToAsync(
+        public static async Task<FileCopyProgress> CopyToAsync_DoubleBuffer(
             this FileInfo file,
             FileInfo[] destinations,
             bool overwrite,
@@ -444,6 +463,10 @@ namespace MDDFoundation
             int bufferSize = 1024 * 1024, // 1MB
             double maxUsage = 1)
         {
+
+            // Code complete - needs testing if you ever want to use it
+
+
             if (file == null) throw new ArgumentNullException(nameof(file));
             if (destinations == null) throw new ArgumentNullException(nameof(destinations));
             if (destinations.Length == 0) throw new ArgumentException("At least one destination is required.", nameof(destinations));
@@ -620,20 +643,13 @@ namespace MDDFoundation
 
                 byte[] bufferA = new byte[bufferSize];
                 byte[] bufferB = new byte[bufferSize];
+                int readA = 0, readB = 0;
+                bool swap = false;
 
-                byte[] currentBuffer = bufferA;
-                byte[] nextBuffer = bufferB;
 
-                // Pre-read first block
-                int currentRead = await source.ReadAsync(currentBuffer, 0, currentBuffer.Length, token).ConfigureAwait(false);
-                if (currentRead == 0)
-                {
-                    // Empty file (or nothing to copy beyond resumeOffset)
-                    goto AfterCopyLoop;
-                }
 
-                Task<int>? nextReadTask = null;
                 Task[]? writers = null;
+                Task hashTask = null;
                 int blocksSinceCommit = 0;
                 var lastProgress = TimeSpan.Zero; // currently unused but kept in case you hook it later
 
@@ -643,14 +659,20 @@ namespace MDDFoundation
 
                     throttle?.StartBusy();
 
-                    // Start next read as early as possible to overlap with writes
-                    nextReadTask = source.ReadAsync(nextBuffer, 0, nextBuffer.Length, token);
+                    if (swap)
+                    {
+                        readA = await source.ReadAsync(bufferA, 0, bufferSize, token).ConfigureAwait(false);
+                        if (readA == 0) break;
+                    }
+                    else
+                    {
+                        readB = await source.ReadAsync(bufferB, 0, bufferSize, token).ConfigureAwait(false);
+                        if (readB == 0) break;
+                    }
 
-                    // Hash this chunk
-                    sha1?.Update(currentBuffer, 0, currentRead);
-
-                    // Ensure previous writes are done before we re-use writers array
-                    await CompleteWrites(writers).ConfigureAwait(false);
+                    // Ensure previous writes /hash updates are done before we re-use writers array
+                    if (writers != null) await CompleteWrites(writers).ConfigureAwait(false);
+                    if (hashTask != null) await hashTask.ConfigureAwait(false);
 
                     // Kick off writes for this chunk
                     writers = new Task[tempStreams.Length];
@@ -660,7 +682,7 @@ namespace MDDFoundation
                         var destInfo = targets[i].Destination;
                         try
                         {
-                            writers[i] = stream.WriteAsync(currentBuffer, 0, currentRead, token);
+                            writers[i] = stream.WriteAsync(swap ? bufferA : bufferB, 0, swap ? readA : readB, token);
                         }
                         catch (IOException ioEx)
                         {
@@ -668,9 +690,16 @@ namespace MDDFoundation
                             throw; // not reached; ThrowDiskFullOrWrap throws
                         }
                     }
+                    // Hash this chunk
+                    if (sha1 != null) 
+                    {
+                        var bufToHash = swap ? bufferA : bufferB;
+                        var countToHash = swap ? readA : readB;
+                        hashTask = Task.Run(() => sha1.Update(bufToHash, 0, countToHash));
+                    }
 
                     // Progress
-                    copyprogress.UpdateAndMaybeCallback(currentRead);
+                    copyprogress.UpdateAndMaybeCallback(swap ? readA : readB);
                     blocksSinceCommit++;
 
                     // Commit logic (resumable state)
@@ -679,8 +708,9 @@ namespace MDDFoundation
                         if (Debugger.IsAttached)
                             Debug.WriteLine($"{DateTime.Now:u}-CopyToAsync: committing at {MinPosition(tempStreams)} bytes after {blocksSinceCommit} blocks.");
 
-                        // Ensure current writes are fully persisted before we record state
+                        // Ensure current writes / hashes are fully persisted before we record state
                         await CompleteWrites(writers).ConfigureAwait(false);
+                        if (hashTask != null) await hashTask.ConfigureAwait(false);
 
                         await FlushAllCommittedAsync(tempStreams, token, false).ConfigureAwait(false);
 
@@ -699,18 +729,8 @@ namespace MDDFoundation
                     if (throttle != null)
                         await throttle.ThrottleIfNeededAsync(token).ConfigureAwait(false);
 
-                    // Await the next read (which has been running in parallel with writes)
-                    currentRead = await nextReadTask.ConfigureAwait(false);
-                    if (currentRead == 0)
-                    {
-                        // No more data; break out of loop
-                        break;
-                    }
-
                     // Swap buffers: next becomes current for the next iteration
-                    var tmpBuf = currentBuffer;
-                    currentBuffer = nextBuffer;
-                    nextBuffer = tmpBuf;
+                    swap = !swap;
                 }
 
                 // Finish outstanding writes
@@ -727,7 +747,6 @@ namespace MDDFoundation
                     await Task.WhenAll(finalStateWrites).ConfigureAwait(false);
                 }
 
-            AfterCopyLoop:
 
                 if (sha1 != null)
                 {
@@ -1594,6 +1613,126 @@ namespace MDDFoundation
 
                 return new MinResumeDecision(true, min, chosen);
             }
+        }
+    }
+    public class FileCopyProgress
+    {
+        public FileInfo? SourceFile { get; set; }
+        public FileInfo[]? Destinations { get; set; }
+        public Action<FileCopyProgress>? Callback { get; set; }
+
+
+
+        private string? filename = null;
+        public string? FileName 
+        { 
+            get
+            {
+                if (filename == null && SourceFile != null)
+                    filename = SourceFile.Name;
+                return filename;
+            }
+            set => filename = value;
+        } //legacy - pulled automatically from SourceFile 
+        public long FileSizeBytes { get; set; } //legacy - pulled automatically from SourceFile
+        public string OperationDuring { get; set; } = "Copying";
+        public string OperationComplete { get; set; } = "Copy";
+        public byte[]? Hash { get; set; }
+
+
+        public bool Overwrite { get; set; } = false;
+        public CancellationToken Token { get; set; } = default;
+        public bool MoveFile { get; set; } = false;
+        public bool ComputeHash { get; set; } = false;
+        public bool Resumable { get; set; } = true;
+
+        public int BufferSize { get; set; } = 1024 * 1024; // 1MB
+        public double MaxUsage { get; set; } = 1;
+
+        public DateTime StartTime { get; private set; }
+        private Stopwatch? stopwatch = null;
+        public Stopwatch? Stopwatch
+        {
+            get => stopwatch;
+            set
+            {
+                stopwatch = value;
+                StartTime = DateTime.Now;
+            }
+        }
+        public bool Queued { get; set; } = false;
+        public bool Cancelled { get; set; } = false;
+        public bool IsCompleted { get; set; } = false;
+        public bool IncompleteButNotError { get; set; } = false;
+
+
+        //integrated callback - added 2025-10-28 for AzureTransferCoordinator
+        public TimeSpan ProgressReportInterval { get; set; } = TimeSpan.FromSeconds(1);
+        private TimeSpan lastreport = TimeSpan.Zero;
+        public void UpdateAndMaybeCallback(long addbytes)
+        {
+            BytesCopied += addbytes;
+            if (Callback != null && (lastreport == TimeSpan.Zero || (Stopwatch?.Elapsed - lastreport) > ProgressReportInterval))
+            {
+                lastreport = Stopwatch?.Elapsed ?? TimeSpan.Zero;
+                Callback(this);
+            }
+        }
+        public bool HasIntegratedCallback => Callback != null && ProgressReportInterval > TimeSpan.Zero;
+
+
+        public long BytesStart { get; set; } = 0;
+        private long _BytesCopied;
+        public long BytesCopied
+        {
+            get { return _BytesCopied; }
+            set
+            {
+                if (value != _BytesCopied && value >= FileSizeBytes && FileSizeBytes > 0 && Stopwatch != null && Stopwatch.IsRunning)
+                {
+                    //IsCompleted = true;
+                    Stopwatch.Stop();
+                }
+                _BytesCopied = value;
+            }
+        }
+        public decimal PercentComplete
+        {
+            get
+            {
+                if (FileSizeBytes == 0) return 0;
+                return BytesCopied / Convert.ToDecimal(FileSizeBytes);
+            }
+        }
+        public double RateMBPerSec
+        {
+            get
+            {
+                if (Stopwatch == null) return 0;
+                return (BytesCopied - BytesStart) / 1024.0 / 1024.0 / Stopwatch.Elapsed.TotalSeconds;
+            }
+        }
+        public TimeSpan EstimatedRemaining
+        {
+            get
+            {
+                return TimeSpan.FromSeconds(BytesCopied == 0 ? 0 : Stopwatch.Elapsed.TotalSeconds * FileSizeBytes / BytesCopied) - Stopwatch.Elapsed;
+            }
+        }
+        public override string ToString()
+        {
+            if (Cancelled)
+                return $"{OperationDuring} of {FileName} cancelled";
+            if (Queued)
+                return $"{OperationDuring} of {FileName} queued...";
+            var p = PercentComplete;
+            if (p < 1)
+                return $"{OperationDuring} {FileName} - {p * 100:N1}% - {RateMBPerSec:N1}MB/s...";
+            else if (IsCompleted)
+                return $"{OperationComplete} of {FileName} complete in {Stopwatch?.Elapsed} - {RateMBPerSec:N1}MB/s";
+            else
+                return $"{OperationComplete} of {FileName} finishing -  {Stopwatch?.Elapsed} - {RateMBPerSec:N1}MB/s";
+
         }
     }
 }
