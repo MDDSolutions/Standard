@@ -273,46 +273,69 @@ namespace MDDFoundation
                     chosenStateAtResume = normalized;
                 }
 
-                // Explicit two-slot pipeline:
-                // - current block is being written to all destinations
-                // - next block is read from source into the other buffer
-                // This preserves overlap without ever issuing concurrent writes on the same destination stream.
+                // ==========================
+                //      PIPELINED COPY
+                // ==========================
+
                 byte[] bufferA = new byte[copyprogress.BufferSize];
                 byte[] bufferB = new byte[copyprogress.BufferSize];
-                int currentLength = 0;
-                Task[]? currentWriters = null;
+                int readA = 0, readB = 0;
+                bool swap = false;
+
+
+
+                Task[]? writers = null;
                 int blocksSinceCommit = 0;
+                var lastProgress = TimeSpan.Zero; // currently unused but kept in case you hook it later
 
-                async Task<int> ReadNextAsync(byte[] buffer)
+                while (true)
                 {
+                    copyprogress.Token.ThrowIfCancellationRequested();
+
                     throttle?.StartBusy();
-                    return await source.ReadAsync(buffer, 0, buffer.Length, copyprogress.Token).ConfigureAwait(false);
-                }
 
-                Task[] StartWrites(byte[] buffer, int length)
-                {
-                    var writers = new Task[tempStreams.Length];
+                    if (swap)
+                    {
+                        readA = await source.ReadAsync(bufferA, 0, bufferA.Length, copyprogress.Token).ConfigureAwait(false);
+                        if (readA == 0) break;
+                    }
+                    else
+                    {
+                        readB = await source.ReadAsync(bufferB, 0, bufferB.Length, copyprogress.Token).ConfigureAwait(false);
+                        if (readB == 0) break;
+                    }
+
+                    // Ensure previous writes are done before we re-use either buffer.
+                    if (writers != null) await CompleteWrites(writers).ConfigureAwait(false);
+
+                    writers = new Task[tempStreams.Length];
                     for (int i = 0; i < tempStreams.Length; i++)
                     {
                         var stream = tempStreams[i];
                         var destInfo = targets[i].Destination;
                         try
                         {
-                            writers[i] = stream.WriteAsync(buffer, 0, length, copyprogress.Token);
+                            writers[i] = stream.WriteAsync(swap ? bufferA : bufferB, 0, swap ? readA : readB, copyprogress.Token);
                         }
                         catch (IOException ioEx)
                         {
                             ThrowDiskFullOrWrap(ioEx, destInfo, $"writing to '{destInfo.DirectoryName}'");
-                            throw; // unreachable
+                            throw; // not reached; ThrowDiskFullOrWrap throws
                         }
                     }
-                    return writers;
-                }
 
-                async Task RetireCurrentBlockAsync()
-                {
-                    await CompleteWrites(currentWriters).ConfigureAwait(false);
-                    currentWriters = null;
+                    // Hash synchronously while the destination writes are already in flight.
+                    // In the common case where storage is the bottleneck, this overlaps CPU work
+                    // with I/O without the overhead/complexity of Task.Run.
+                    if (sha1 != null)
+                    {
+                        var bufToHash = swap ? bufferA : bufferB;
+                        var countToHash = swap ? readA : readB;
+                        sha1.Update(bufToHash, 0, countToHash);
+                    }
+
+                    // Progress
+                    copyprogress.UpdateAndMaybeCallback(swap ? readA : readB);
                     blocksSinceCommit++;
 
                     if (copyprogress.Resumable && (blocksSinceCommit >= maxcommitblocks || (Stopwatch.GetTimestamp() - lastcommit) >= commitinterval))
@@ -320,9 +343,11 @@ namespace MDDFoundation
                         if (Debugger.IsAttached)
                             Debug.WriteLine($"{DateTime.Now:u}-CopyToAsync: committing at {MinPosition(tempStreams)} bytes after {blocksSinceCommit} blocks.");
 
+                        await CompleteWrites(writers).ConfigureAwait(false);
+
                         await FlushAllCommittedAsync(tempStreams, copyprogress.Token, false).ConfigureAwait(false);
 
-                        long committed = MinPosition(tempStreams);
+                        long committed = MinPosition(tempStreams); // min across all targets
                         var st = CopyResumeState.Create(copyprogress.SourceFile, copyprogress.BufferSize, committed, sha1);
                         var stateWrites = targets.Select(t => CopyResumeStateFile.WriteAtomicAsync(t.StatePath, st, copyprogress.Token)).ToArray();
                         await Task.WhenAll(stateWrites).ConfigureAwait(false);
@@ -332,31 +357,15 @@ namespace MDDFoundation
                         if (Debugger.IsAttached)
                             Debug.WriteLine($"{DateTime.Now:u}-CopyToAsync: commit complete.");
                     }
-                }
-
-                byte[] currentBuffer = bufferA;
-                byte[] nextBuffer = bufferB;
-                currentLength = await ReadNextAsync(currentBuffer).ConfigureAwait(false);
-
-                while (currentLength > 0)
-                {
-                    copyprogress.Token.ThrowIfCancellationRequested();
-
-                    sha1?.Update(currentBuffer, 0, currentLength);
-                    currentWriters = StartWrites(currentBuffer, currentLength);
-                    copyprogress.UpdateAndMaybeCallback(currentLength);
-
-                    var nextReadTask = ReadNextAsync(nextBuffer);
-
-                    await RetireCurrentBlockAsync().ConfigureAwait(false);
 
                     if (throttle != null)
                         await throttle.ThrottleIfNeededAsync(copyprogress.Token).ConfigureAwait(false);
 
-                    int nextLength = await nextReadTask.ConfigureAwait(false);
-                    (currentBuffer, nextBuffer) = (nextBuffer, currentBuffer);
-                    currentLength = nextLength;
+                    // Swap buffers: next becomes current for the next iteration
+                    swap = !swap;
                 }
+
+                await CompleteWrites(writers).ConfigureAwait(false);
 
                 await FlushAllCommittedAsync(tempStreams, copyprogress.Token, true).ConfigureAwait(false);
 
