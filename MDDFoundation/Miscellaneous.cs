@@ -785,11 +785,6 @@ namespace MDDFoundation
             long FileSizeBytes = CopyBufferSize * FileSizeBlocks;
             int TotalFiles = (int)Math.Ceiling(Convert.ToDouble(file.Length) / Convert.ToDouble(FileSizeBytes));
         }
-        public static string LogFileFullName(string filename)
-        {
-            DirectoryInfo logfiledir = (new FileInfo(Assembly.GetExecutingAssembly().Location)).Directory;
-            return Path.Combine(logfiledir.FullName, filename);
-        }
         private class LogWorker
         {
             public readonly ConcurrentQueue<string> Queue = new ConcurrentQueue<string>();
@@ -802,9 +797,13 @@ namespace MDDFoundation
             }
         }
 
-        private static readonly ConcurrentDictionary<string, LogWorker> _logWorkers = new ConcurrentDictionary<string, LogWorker>();
+        private static readonly ConcurrentDictionary<string, LogWorker> _logWorkers = new ConcurrentDictionary<string, LogWorker>();        
         public static volatile string DefaultLogFileName = "Foundation_log.txt";    
-
+        public static string LogFileFullName(string filename)
+        {
+            DirectoryInfo logfiledir = (new FileInfo(Assembly.GetExecutingAssembly().Location)).Directory;
+            return Path.Combine(logfiledir.FullName, filename);
+        }
         public static void Log(string LogStr, bool Initialize = false, string filename = null)
         {
             var worker = _logWorkers.GetOrAdd(string.IsNullOrWhiteSpace(filename) ? DefaultLogFileName : filename, w => new LogWorker(LogFileFullName(w)));
