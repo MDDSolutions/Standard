@@ -801,8 +801,7 @@ namespace MDDFoundation
         public static volatile string DefaultLogFileName = "Foundation_log.txt";    
         public static string LogFileFullName(string filename)
         {
-            DirectoryInfo logfiledir = (new FileInfo(Assembly.GetExecutingAssembly().Location)).Directory;
-            return Path.Combine(logfiledir.FullName, filename);
+            return Path.Combine(AppContext.BaseDirectory, filename);
         }
         public static void Log(string LogStr, bool Initialize = false, string filename = null)
         {
