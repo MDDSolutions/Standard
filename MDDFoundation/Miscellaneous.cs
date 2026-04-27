@@ -1083,6 +1083,15 @@ namespace MDDFoundation
                 throw ex;
             }
         }
+        public static DateTime BuildTime() => BuildTime(Assembly.GetExecutingAssembly());
+
+        public static DateTime BuildTime(Assembly assembly)
+        {
+            Version? version = assembly.GetName().Version;
+            if (version == null)
+                throw new InvalidOperationException("Assembly version is null.");
+            return new DateTime(2000, 1, 1).AddDays(version.Build).AddSeconds(version.Revision * 2);
+        }
     }
     public class StringCIEqualityComparer : IEqualityComparer<string>
     {
