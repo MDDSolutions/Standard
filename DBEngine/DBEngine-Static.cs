@@ -233,14 +233,9 @@ namespace MDDDataAccess
             }
             return table;
         }
-        public static DateTime BuildTime()
-        {
-            Version version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
-            DateTime buildtime = new DateTime(2000, 1, 1).AddDays(version.Build).AddSeconds(version.Revision * 2);
-            if (buildtime.IsDaylightSavingTime())
-                buildtime = buildtime.AddHours(1);
-            return buildtime;
-        }
+        public static DateTime BuildTime() => MDDFoundation.Foundation.BuildTime(Assembly.GetExecutingAssembly());
+
+        public static DateTime BuildTime(Assembly assembly) => MDDFoundation.Foundation.BuildTime(assembly);
         //public static SqlParameter FixParameter(SqlParameter param)
         //{
         //    if (param.Value is IEnumerable && !(param.Value is string) && !(param.Value is byte[]))
