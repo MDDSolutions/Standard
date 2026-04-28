@@ -72,6 +72,7 @@ namespace MDDDataAccess
                 {
                     object v = item.GetValue(o, null);
                     if (v == null) v = DBNull.Value;
+                    if (v is DateTime dt && dt == DateTime.MinValue) v = DBNull.Value;
                     r.Add(new SqlParameter(string.Format("@{0}", item.Name), v));
                 }
             }
