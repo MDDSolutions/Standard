@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="FileRelay.Client/FileRelay.Client.csproj" />
+  <Project Path="FileRelay.Core/FileRelay.Core.csproj" />
+  <Project Path="FileRelay.Server/FileRelay.Server.csproj" />
+  <Project Path="FileRelay.TestClient/FileRelay.TestClient.csproj" />
+  <Project Path="FileRelay.TestServer/FileRelay.TestServer.csproj" />
+</Solution>

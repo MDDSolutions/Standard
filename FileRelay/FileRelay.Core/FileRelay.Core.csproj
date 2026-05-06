@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>netstandard2.0;net8.0</TargetFrameworks>
+    <LangVersion>latestMajor</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Required for [JsonPolymorphic] / [JsonDerivedType] on netstandard2.0 -->
+    <!-- Needed for [JsonPolymorphic]/[JsonDerivedType] on netstandard2.0; net8.0 gets it from the runtime -->
+    <PackageReference Include="System.Text.Json" Version="9.0.5" Condition="'$(TargetFramework)' == 'netstandard2.0'" />
+  </ItemGroup>
+
+</Project>

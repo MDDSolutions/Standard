@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dotnet build *)",
+      "Bash(dotnet run *)",
+      "Bash(dotnet script *)",
+      "Bash(curl -s -X POST http://localhost:61488/transfer/negotiate -H 'Content-Type: application/json' -d '{\"filename\":\"test.bin\",\"fileSizeBytes\":1048576,\"fileHash\":\"sha256:abc\",\"chunkSizeMB\":1}')",
+      "Bash(python -m json.tool)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:61488/transfer/00000000-0000-0000-0000-000000000001/status)",
+      "Bash(python -c \"import os; open\\('/tmp/test_upload.bin', 'wb'\\).write\\(os.urandom\\(2*1024*1024\\)\\)\")",
+      "Read(//tmp/**)",
+      "Bash(powershell -Command \"[System.IO.File]::WriteAllBytes\\('C:/Temp/test_upload.bin', \\(New-Object byte[] \\(2*1024*1024\\)\\)\\)\")",
+      "Read(//c/Temp/**)",
+      "Bash(pwsh -Command '$f = [System.IO.Path]::GetTempFileName\\(\\); $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create\\(\\); $buf = New-Object byte[] \\(2*1024*1024\\); $rng.GetBytes\\($buf\\); [System.IO.File]::WriteAllBytes\\($f, $buf\\); Write-Host $f')",
+      "Bash(powershell -NoProfile -Command '$f = [System.IO.Path]::GetTempFileName\\(\\); $buf = New-Object byte[] \\(2*1024*1024\\); [System.IO.File]::WriteAllBytes\\($f, $buf\\); Write-Host $f')",
+      "Bash(curl -s -X POST http://localhost:61488/transfer/0f076cd0-e3b3-4b20-8e18-94bb3b68fde7/chunk/1 -H 'X-Chunk-Hash: sha256:VkfwXsGJWJR9ModO63iPo5agXQurfBtx8RLOt+mzHu4=' -H 'Content-Type: application/octet-stream' --data-binary @/c/Temp/test_upload.bin)",
+      "Bash(curl -s http://localhost:61488/transfer/0f076cd0-e3b3-4b20-8e18-94bb3b68fde7/status)",
+      "Bash(kill %1)",
+      "Bash(powershell -NoProfile -Command 'Get-Process -Name '\\\\''dotnet'\\\\'' | Where-Object { $_.MainModule.FileName -like '\\\\''*dotnet*'\\\\'' } | Stop-Process -Force')",
+      "Bash(powershell -NoProfile -Command \"Stop-Process -Id 28508 -Force -ErrorAction SilentlyContinue\")",
+      "Bash(powershell -NoProfile -Command \"Get-Process dotnet -ErrorAction SilentlyContinue | Stop-Process -Force\")"
+    ]
+  }
+}
