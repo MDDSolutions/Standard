@@ -11,11 +11,15 @@ public class TransferService
 {
     private readonly ChunkedTransferOptions _options;
     private readonly ILogger<TransferService> _logger;
+    private readonly BandwidthLimiter? _serverThrottle;
 
     public TransferService(ChunkedTransferOptions options, ILogger<TransferService> logger)
     {
         _options = options;
         _logger = logger;
+        _serverThrottle = options.ServerReceiveMBps > 0
+            ? new BandwidthLimiter(options.ServerReceiveMBps)
+            : null;
     }
 
     public async Task<TransferNegotiateResponse> NegotiateAsync(TransferNegotiateRequest request, CancellationToken ct)
@@ -158,6 +162,8 @@ public class TransferService
         {
             var read = await source.ReadAsync(buffer, 0, (int)Math.Min(buffer.Length, remaining), ct);
             if (read == 0) break;
+            if (_serverThrottle != null)
+                await _serverThrottle.AcquireAsync(read, 50, ct);
             sha.TransformBlock(buffer, 0, read, null, 0);
             foreach (var dest in destinations)
                 await dest.WriteAsync(buffer, 0, read, ct);

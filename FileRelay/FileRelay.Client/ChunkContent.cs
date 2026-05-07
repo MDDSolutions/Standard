@@ -1,5 +1,6 @@
 using System.Net;
 using System.Security.Cryptography;
+using FileRelay.Core;
 
 namespace FileRelay.Client;
 
@@ -12,13 +13,18 @@ internal sealed class ChunkContent : HttpContent
     private readonly long _offset;
     private readonly long _length;
     private readonly Action<long>? _onBytesSent;
+    private readonly BandwidthLimiter? _throttle;
+    private readonly byte _priority;
 
-    public ChunkContent(string filePath, long offset, long length, Action<long>? onBytesSent = null)
+    public ChunkContent(string filePath, long offset, long length,
+        Action<long>? onBytesSent = null, BandwidthLimiter? throttle = null, byte priority = 50)
     {
-        _filePath = filePath;
-        _offset = offset;
-        _length = length;
+        _filePath   = filePath;
+        _offset     = offset;
+        _length     = length;
         _onBytesSent = onBytesSent;
+        _throttle   = throttle;
+        _priority   = priority;
     }
 
     protected override bool TryComputeLength(out long length)
@@ -43,6 +49,8 @@ internal sealed class ChunkContent : HttpContent
             var read = await fs.ReadAsync(buf, 0, (int)Math.Min(buf.Length, remaining), ct);
             if (read == 0) throw new EndOfStreamException("Unexpected end of file during chunk upload.");
             sha.TransformBlock(buf, 0, read, null, 0);
+            if (_throttle != null)
+                await _throttle.AcquireAsync(read, _priority, ct);
             await stream.WriteAsync(buf.AsMemory(0, read), ct);
             _onBytesSent?.Invoke(read);
             remaining -= read;

@@ -41,6 +41,7 @@ public class FileRelayClient : IDisposable
             try
             {
                 var negotiate = await NegotiateAsync(request, ct);
+                options.OnNegotiated?.Invoke(negotiate);
                 if (negotiate.ChunksNeeded.Count == 0) return;
 
                 var chunkSizeBytes = (long)negotiate.ChunkSizeMB * 1024 * 1024;
@@ -77,7 +78,7 @@ public class FileRelayClient : IDisposable
         long bytesConfirmed = 0;
         long bytesInFlight = 0;
         int chunksConfirmed = 0;
-        var semaphore = new SemaphoreSlim(options.ParallelConnections);
+        var semaphore = new SemaphoreSlim(options.EffectiveParallelConnections);
 
         void FireProgress()
         {
@@ -120,7 +121,7 @@ public class FileRelayClient : IDisposable
             {
                 var chunkBytes = ChunkMath.ChunkLength(chunkIndex, file.Length, chunkSizeBytes);
                 void onBytesSent(long n) => Interlocked.Add(ref bytesInFlight, n);
-                await UploadChunkAsync(file, negotiate.TransferId, chunkIndex, chunkSizeBytes, onBytesSent, ct);
+                await UploadChunkAsync(file, negotiate.TransferId, chunkIndex, chunkSizeBytes, onBytesSent, options, ct);
                 Interlocked.Add(ref bytesConfirmed, chunkBytes);
                 Interlocked.Add(ref bytesInFlight, -chunkBytes);
                 Interlocked.Increment(ref chunksConfirmed);
@@ -148,12 +149,12 @@ public class FileRelayClient : IDisposable
         });
     }
 
-    private async Task UploadChunkAsync(FileInfo file, Guid transferId, int chunkIndex, long chunkSizeBytes, Action<long> onBytesSent, CancellationToken ct)
+    private async Task UploadChunkAsync(FileInfo file, Guid transferId, int chunkIndex, long chunkSizeBytes, Action<long> onBytesSent, UploadOptions options, CancellationToken ct)
     {
         var offset = ChunkMath.ChunkOffset(chunkIndex, chunkSizeBytes);
         var length = ChunkMath.ChunkLength(chunkIndex, file.Length, chunkSizeBytes);
 
-        using var content = new ChunkContent(file.FullName, offset, length, onBytesSent);
+        using var content = new ChunkContent(file.FullName, offset, length, onBytesSent, options.Throttle, options.Priority);
         var response = await _http.PostAsync($"transfer/{transferId}/chunk/{chunkIndex}", content, ct);
         response.EnsureSuccessStatusCode();
     }
