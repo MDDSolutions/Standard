@@ -12,150 +12,146 @@ partial class MainForm
 
     private void InitializeComponent()
     {
-        pnlTop        = new Panel();
-        lblServer     = new Label();
-        txtServerUrl  = new TextBox();
-        lblFile       = new Label();
-        txtFilePath   = new TextBox();
-        btnBrowse     = new Button();
-        lblParallel   = new Label();
-        nudParallel   = new NumericUpDown();
-        lblBandwidth  = new Label();
-        nudBandwidth  = new NumericUpDown();
-        lblBwUnit     = new Label();
-        btnStart      = new Button();
-        lblOverall    = new Label();
-        rtbLog        = new RichTextBox();
-        ofd           = new OpenFileDialog();
-
-        pnlTop.SuspendLayout();
+        lblServer = new Label();
+        txtServerUrl = new TextBox();
+        lblParallel = new Label();
+        nudParallel = new NumericUpDown();
+        lblBandwidth = new Label();
+        nudBandwidth = new NumericUpDown();
+        lblBwUnit = new Label();
+        lblOverall = new Label();
+        btnNewTransfer = new Button();
         ((System.ComponentModel.ISupportInitialize)nudParallel).BeginInit();
         ((System.ComponentModel.ISupportInitialize)nudBandwidth).BeginInit();
         SuspendLayout();
-
-        // pnlTop
-        pnlTop.Dock    = DockStyle.Top;
-        pnlTop.Height  = 112;
-        pnlTop.Padding = new Padding(8, 8, 8, 4);
-        pnlTop.Controls.Add(lblServer);
-        pnlTop.Controls.Add(txtServerUrl);
-        pnlTop.Controls.Add(lblFile);
-        pnlTop.Controls.Add(txtFilePath);
-        pnlTop.Controls.Add(btnBrowse);
-        pnlTop.Controls.Add(lblParallel);
-        pnlTop.Controls.Add(nudParallel);
-        pnlTop.Controls.Add(lblBandwidth);
-        pnlTop.Controls.Add(nudBandwidth);
-        pnlTop.Controls.Add(lblBwUnit);
-        pnlTop.Controls.Add(btnStart);
-        pnlTop.Controls.Add(lblOverall);
-
-        // row 0 — server url
-        lblServer.Text     = "Server:";
-        lblServer.Location = new Point(8, 14);
-        lblServer.Size     = new Size(56, 23);
+        // 
+        // lblServer
+        // 
+        lblServer.Location = new Point(15, 22);
+        lblServer.Margin = new Padding(4, 0, 4, 0);
+        lblServer.Name = "lblServer";
+        lblServer.Size = new Size(80, 29);
+        lblServer.TabIndex = 0;
+        lblServer.Text = "Server:";
         lblServer.TextAlign = ContentAlignment.MiddleRight;
-
-        txtServerUrl.Location = new Point(68, 11);
-        txtServerUrl.Size     = new Size(730, 31);
-        txtServerUrl.Text     = "http://localhost:61488/";
-        txtServerUrl.Anchor   = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-
-        // row 1 — file picker
-        lblFile.Text     = "File:";
-        lblFile.Location = new Point(8, 50);
-        lblFile.Size     = new Size(56, 23);
-        lblFile.TextAlign = ContentAlignment.MiddleRight;
-
-        txtFilePath.Location = new Point(68, 47);
-        txtFilePath.Size     = new Size(630, 31);
-        txtFilePath.ReadOnly = true;
-        txtFilePath.Anchor   = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-
-        btnBrowse.Text     = "Browse...";
-        btnBrowse.Location = new Point(704, 44);
-        btnBrowse.Size     = new Size(94, 34);
-        btnBrowse.Anchor   = AnchorStyles.Top | AnchorStyles.Right;
-        btnBrowse.Click   += btnBrowse_Click;
-
-        // row 2 — knobs + start + overall rate
-        lblParallel.Text      = "Connections:";
-        lblParallel.Location  = new Point(8, 86);
-        lblParallel.Size      = new Size(88, 23);
+        // 
+        // txtServerUrl
+        // 
+        txtServerUrl.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+        txtServerUrl.Location = new Point(100, 19);
+        txtServerUrl.Margin = new Padding(4, 4, 4, 4);
+        txtServerUrl.Name = "txtServerUrl";
+        txtServerUrl.Size = new Size(853, 31);
+        txtServerUrl.TabIndex = 1;
+        txtServerUrl.Text = "https://localhost:61489/";
+        // 
+        // lblParallel
+        // 
+        lblParallel.Location = new Point(15, 70);
+        lblParallel.Margin = new Padding(4, 0, 4, 0);
+        lblParallel.Name = "lblParallel";
+        lblParallel.Size = new Size(128, 36);
+        lblParallel.TabIndex = 2;
+        lblParallel.Text = "Connections:";
         lblParallel.TextAlign = ContentAlignment.MiddleRight;
-
-        nudParallel.Location  = new Point(100, 84);
-        nudParallel.Size      = new Size(56, 31);
-        nudParallel.Minimum   = 1;
-        nudParallel.Maximum   = 32;
-        nudParallel.Value     = 4;
-
-        lblBandwidth.Text      = "Throttle:";
-        lblBandwidth.Location  = new Point(168, 86);
-        lblBandwidth.Size      = new Size(64, 23);
+        // 
+        // nudParallel
+        // 
+        nudParallel.Location = new Point(148, 70);
+        nudParallel.Margin = new Padding(4, 4, 4, 4);
+        nudParallel.Maximum = new decimal(new int[] { 32, 0, 0, 0 });
+        nudParallel.Minimum = new decimal(new int[] { 1, 0, 0, 0 });
+        nudParallel.Name = "nudParallel";
+        nudParallel.Size = new Size(70, 31);
+        nudParallel.TabIndex = 3;
+        nudParallel.Value = new decimal(new int[] { 4, 0, 0, 0 });
+        // 
+        // lblBandwidth
+        // 
+        lblBandwidth.Location = new Point(232, 70);
+        lblBandwidth.Margin = new Padding(4, 0, 4, 0);
+        lblBandwidth.Name = "lblBandwidth";
+        lblBandwidth.Size = new Size(85, 36);
+        lblBandwidth.TabIndex = 4;
+        lblBandwidth.Text = "Throttle:";
         lblBandwidth.TextAlign = ContentAlignment.MiddleRight;
-
-        nudBandwidth.Location  = new Point(236, 84);
-        nudBandwidth.Size      = new Size(72, 31);
-        nudBandwidth.Minimum   = 0;
-        nudBandwidth.Maximum   = 10000;
-        nudBandwidth.Value     = 0;
-
-        lblBwUnit.Text      = "MB/s (0=unlimited)";
-        lblBwUnit.Location  = new Point(312, 86);
-        lblBwUnit.Size      = new Size(148, 23);
+        // 
+        // nudBandwidth
+        // 
+        nudBandwidth.Location = new Point(322, 70);
+        nudBandwidth.Margin = new Padding(4, 4, 4, 4);
+        nudBandwidth.Maximum = new decimal(new int[] { 10000, 0, 0, 0 });
+        nudBandwidth.Name = "nudBandwidth";
+        nudBandwidth.Size = new Size(90, 31);
+        nudBandwidth.TabIndex = 5;
+        nudBandwidth.Value = new decimal(new int[] { 80, 0, 0, 0 });
+        // 
+        // lblBwUnit
+        // 
+        lblBwUnit.Location = new Point(418, 70);
+        lblBwUnit.Margin = new Padding(4, 0, 4, 0);
+        lblBwUnit.Name = "lblBwUnit";
+        lblBwUnit.Size = new Size(185, 36);
+        lblBwUnit.TabIndex = 6;
+        lblBwUnit.Text = "MB/s (0=unlimited)";
         lblBwUnit.TextAlign = ContentAlignment.MiddleLeft;
-
-        btnStart.Text     = "Upload";
-        btnStart.Location = new Point(466, 82);
-        btnStart.Size     = new Size(100, 34);
-        btnStart.Click   += btnStart_Click;
-
-        lblOverall.Text      = "";
-        lblOverall.Location  = new Point(576, 86);
-        lblOverall.Size      = new Size(222, 23);
-        lblOverall.TextAlign = ContentAlignment.MiddleLeft;
-        lblOverall.Anchor    = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        lblOverall.Font      = new Font(Font.FontFamily, Font.Size, FontStyle.Bold);
-
-        // rtbLog — fills remaining space
-        rtbLog.Dock      = DockStyle.Fill;
-        rtbLog.ReadOnly  = true;
-        rtbLog.BackColor = SystemColors.Window;
-        rtbLog.Font      = new Font("Consolas", 9f);
-        rtbLog.ScrollBars = RichTextBoxScrollBars.Vertical;
-        rtbLog.WordWrap  = false;
-
+        // 
+        // lblOverall
+        // 
+        lblOverall.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        lblOverall.Font = new Font("Segoe UI", 10F, FontStyle.Bold);
+        lblOverall.Location = new Point(611, 70);
+        lblOverall.Margin = new Padding(4, 0, 4, 0);
+        lblOverall.Name = "lblOverall";
+        lblOverall.Size = new Size(475, 36);
+        lblOverall.TabIndex = 7;
+        lblOverall.TextAlign = ContentAlignment.MiddleRight;
+        // 
+        // btnNewTransfer
+        // 
+        btnNewTransfer.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        btnNewTransfer.Location = new Point(961, 15);
+        btnNewTransfer.Margin = new Padding(4, 4, 4, 4);
+        btnNewTransfer.Name = "btnNewTransfer";
+        btnNewTransfer.Size = new Size(125, 42);
+        btnNewTransfer.TabIndex = 8;
+        btnNewTransfer.Text = "New Transfer";
+        btnNewTransfer.Click += btnNewTransfer_Click;
+        // 
         // MainForm
-        ClientSize = new Size(820, 500);
-        MinimumSize = new Size(640, 300);
-        Controls.Add(rtbLog);
-        Controls.Add(pnlTop);
+        // 
+        AutoScaleDimensions = new SizeF(10F, 25F);
+        AutoScaleMode = AutoScaleMode.Font;
+        ClientSize = new Size(1101, 125);
+        Controls.Add(lblServer);
+        Controls.Add(txtServerUrl);
+        Controls.Add(lblParallel);
+        Controls.Add(nudParallel);
+        Controls.Add(lblBandwidth);
+        Controls.Add(nudBandwidth);
+        Controls.Add(lblBwUnit);
+        Controls.Add(lblOverall);
+        Controls.Add(btnNewTransfer);
+        FormBorderStyle = FormBorderStyle.FixedSingle;
+        Margin = new Padding(4, 4, 4, 4);
+        MaximizeBox = false;
+        MinimumSize = new Size(620, 161);
         Name = "MainForm";
-        Text = "FileRelay Test Client";
+        Text = "FileRelay";
         FormClosing += MainForm_FormClosing;
-
-        pnlTop.ResumeLayout(false);
-        pnlTop.PerformLayout();
         ((System.ComponentModel.ISupportInitialize)nudParallel).EndInit();
         ((System.ComponentModel.ISupportInitialize)nudBandwidth).EndInit();
         ResumeLayout(false);
         PerformLayout();
     }
 
-    private Panel           pnlTop       = null!;
-    private Label           lblServer    = null!;
-    private TextBox         txtServerUrl = null!;
-    private Label           lblFile      = null!;
-    private TextBox         txtFilePath  = null!;
-    private Button          btnBrowse    = null!;
-    private Label           lblParallel  = null!;
-    private NumericUpDown   nudParallel  = null!;
-    private Label           lblBandwidth = null!;
-    private NumericUpDown   nudBandwidth = null!;
-    private Label           lblBwUnit    = null!;
-    private Button          btnStart     = null!;
-    private Label           lblOverall   = null!;
-    private RichTextBox     rtbLog       = null!;
-    private OpenFileDialog  ofd          = null!;
+    private Label           lblServer      = null!;
+    private TextBox         txtServerUrl   = null!;
+    private Label           lblParallel    = null!;
+    private NumericUpDown   nudParallel    = null!;
+    private Label           lblBandwidth   = null!;
+    private NumericUpDown   nudBandwidth   = null!;
+    private Label           lblBwUnit      = null!;
+    private Label           lblOverall     = null!;
+    private Button          btnNewTransfer = null!;
 }

@@ -11,7 +11,12 @@ public class FileRelayClient : IDisposable
 
     public FileRelayClient(Uri baseUri, string? apiKey = null)
     {
-        _http = new HttpClient { BaseAddress = baseUri };
+        _http = new HttpClient(new SocketsHttpHandler())
+        {
+            BaseAddress = baseUri,
+            DefaultRequestVersion = System.Net.HttpVersion.Version20,
+            DefaultVersionPolicy  = HttpVersionPolicy.RequestVersionOrLower,
+        };
         if (apiKey is { Length: > 0 })
             _http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
         _ownsHttp = true;
@@ -52,6 +57,10 @@ public class FileRelayClient : IDisposable
             {
                 throw new UnauthorizedAccessException("The server rejected the API key.", ex);
             }
+            catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.MisdirectedRequest)
+            {
+                throw new InvalidOperationException("The server requires HTTPS. Use an https:// URL.", ex);
+            }
             catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
             {
                 throw new InvalidOperationException("The server no longer has a record of this transfer. The partial file may have been deleted. Restart the transfer manually if intended.", ex);
@@ -74,6 +83,11 @@ public class FileRelayClient : IDisposable
 
     private async Task UploadChunksAsync(FileInfo file, TransferNegotiateResponse negotiate, long chunkSizeBytes, UploadOptions options, CancellationToken ct)
     {
+        // Bytes that actually need uploading this session (may be < file.Length on resume).
+        var sessionBytesTotal = negotiate.ChunksNeeded
+            .Sum(ci => ChunkMath.ChunkLength(ci, file.Length, chunkSizeBytes));
+        var alreadyConfirmedBytes = file.Length - sessionBytesTotal;
+
         var started = DateTime.UtcNow;
         long bytesConfirmed = 0;
         long bytesInFlight = 0;
@@ -82,18 +96,18 @@ public class FileRelayClient : IDisposable
 
         void FireProgress()
         {
-            var confirmed = Interlocked.Read(ref bytesConfirmed);
-            var inFlight = Interlocked.Read(ref bytesInFlight);
-            var totalSent = confirmed + inFlight;
-            var elapsed = (DateTime.UtcNow - started).TotalSeconds;
-            var rate = elapsed > 0.5 ? totalSent / 1_048_576.0 / elapsed : 0;
-            var remaining = file.Length - totalSent;
-            var eta = rate > 0 ? TimeSpan.FromSeconds(remaining / 1_048_576.0 / rate) : (TimeSpan?)null;
+            var confirmed   = Interlocked.Read(ref bytesConfirmed);
+            var inFlight    = Interlocked.Read(ref bytesInFlight);
+            var sessionSent = confirmed + inFlight;
+            var elapsed     = (DateTime.UtcNow - started).TotalSeconds;
+            var rate        = elapsed > 0.5 ? sessionSent / 1_048_576.0 / elapsed : 0;
+            var remaining   = sessionBytesTotal - sessionSent;
+            var eta         = rate > 0 ? TimeSpan.FromSeconds(remaining / 1_048_576.0 / rate) : (TimeSpan?)null;
             options.OnProgress!(new UploadProgress
             {
                 ChunksDone         = Volatile.Read(ref chunksConfirmed),
                 ChunksTotal        = negotiate.TotalChunks,
-                BytesConfirmed     = confirmed,
+                BytesConfirmed     = alreadyConfirmedBytes + confirmed,
                 BytesInFlight      = inFlight,
                 BytesTotal         = file.Length,
                 TransferRateMBps   = rate,
@@ -137,6 +151,7 @@ public class FileRelayClient : IDisposable
         await progressCts.CancelAsync();
         await progressTask;
 
+        var sessionElapsed = (DateTime.UtcNow - started).TotalSeconds;
         options.OnProgress?.Invoke(new UploadProgress
         {
             ChunksDone         = negotiate.TotalChunks,
@@ -144,7 +159,7 @@ public class FileRelayClient : IDisposable
             BytesConfirmed     = file.Length,
             BytesInFlight      = 0,
             BytesTotal         = file.Length,
-            TransferRateMBps   = (DateTime.UtcNow - started).TotalSeconds is > 0 and var s ? file.Length / 1_048_576.0 / s : 0,
+            TransferRateMBps   = sessionElapsed > 0 ? sessionBytesTotal / 1_048_576.0 / sessionElapsed : 0,
             EstimatedRemaining = TimeSpan.Zero
         });
     }

@@ -42,9 +42,4 @@ public class ChunkedTransferOptions
     /// </summary>
     public double ServerReceiveMBps { get; set; } = 0;
 
-    /// <summary>
-    /// Delay injected after each ~80 KB buffer read during chunk receipt.
-    /// 0 = disabled. Example: 10 ms ≈ 8 MB/s, 40 ms ≈ 2 MB/s.
-    /// </summary>
-    public int SimulatedWanDelayPerBufferMs { get; set; } = 0;
 }

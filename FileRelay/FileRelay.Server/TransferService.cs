@@ -27,8 +27,25 @@ public class TransferService
         var state = await _options.StateStore.GetOrCreateAsync(request, _options.ChunkSizeMB);
         var missing = await _options.StateStore.GetMissingChunksAsync(state.TransferId);
 
-        // Always call InitializeAsync — it's idempotent: registers the in-memory path mapping
-        // and creates the .partial file only if it doesn't already exist.
+        // If resuming, verify the .partial file is still intact on every target.
+        // A missing or wrong-size partial means confirmed chunk data is gone — we must restart
+        // rather than write only the remaining chunks into a fresh empty file and assemble garbage.
+        if (missing.Count < state.TotalChunks)
+        {
+            foreach (var target in _options.Targets)
+            {
+                if (!await target.IsPartialIntactAsync(state.TransferId, state.Filename, state.FileSizeBytes, state.Context, ct))
+                {
+                    _logger.LogWarning("Transfer {TransferId} ({Filename}): partial file missing or corrupt, restarting transfer.", state.TransferId, state.Filename);
+                    await _options.StateStore.DeleteTransferStateAsync(state.TransferId);
+                    state = await _options.StateStore.GetOrCreateAsync(request, _options.ChunkSizeMB);
+                    missing = await _options.StateStore.GetMissingChunksAsync(state.TransferId);
+                    break;
+                }
+            }
+        }
+
+        // Idempotent: registers the in-memory path mapping and creates the .partial only if absent.
         foreach (var target in _options.Targets)
             await target.InitializeAsync(state.TransferId, state.Filename, state.FileSizeBytes, state.Context, ct);
 
@@ -168,9 +185,6 @@ public class TransferService
             foreach (var dest in destinations)
                 await dest.WriteAsync(buffer, 0, read, ct);
             remaining -= read;
-
-            if (_options.SimulatedWanDelayPerBufferMs > 0)
-                await Task.Delay(_options.SimulatedWanDelayPerBufferMs, ct);
         }
         sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
         var actualHash = $"sha256:{Convert.ToBase64String(sha.Hash!)}";

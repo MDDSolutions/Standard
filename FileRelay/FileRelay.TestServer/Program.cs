@@ -4,6 +4,11 @@ using FileRelay.Server;
 using FileRelay.Storage.Sqlite;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.ListenLocalhost(61488);                                  // HTTP — kept open but server returns 421 for all requests
+    options.ListenLocalhost(61489, o => o.UseHttps());              // HTTPS — required by RequireHttps = true
+});
 builder.Services.AddChunkedTransfer(options =>
 {
     options.BasePath = "/transfer";
@@ -12,8 +17,8 @@ builder.Services.AddChunkedTransfer(options =>
     options.ApiKey = "test-key-abc123";
     options.Targets = [new LocalDirectoryTarget(Path.Combine(AppContext.BaseDirectory, "received"))];
     options.OnComplete = new ConsoleCompleteHandler();
-    options.SimulatedWanDelayPerBufferMs = 0; // ~8 MB/s; set to 0 to disable
     options.StateStore = new SqliteTransferStateStore("transfers.db");
+    options.ServerReceiveMBps = 0; // throttle server receive to 100 MB/s to better simulate real-world conditions and test client-side throttling; set to 0 to disable
 });
 
 var app = builder.Build();
