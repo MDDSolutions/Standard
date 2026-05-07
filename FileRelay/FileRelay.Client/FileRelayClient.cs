@@ -9,9 +9,11 @@ public class FileRelayClient : IDisposable
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
 
-    public FileRelayClient(Uri baseUri)
+    public FileRelayClient(Uri baseUri, string? apiKey = null)
     {
         _http = new HttpClient { BaseAddress = baseUri };
+        if (apiKey is { Length: > 0 })
+            _http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
         _ownsHttp = true;
     }
 
@@ -44,6 +46,14 @@ public class FileRelayClient : IDisposable
                 var chunkSizeBytes = (long)negotiate.ChunkSizeMB * 1024 * 1024;
                 await UploadChunksAsync(file, negotiate, chunkSizeBytes, options, ct);
                 return;
+            }
+            catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            {
+                throw new UnauthorizedAccessException("The server rejected the API key.", ex);
+            }
+            catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                throw new InvalidOperationException("The server no longer has a record of this transfer. The partial file may have been deleted. Restart the transfer manually if intended.", ex);
             }
             catch (HttpRequestException) when (attempt < options.MaxRetries && !ct.IsCancellationRequested)
             {

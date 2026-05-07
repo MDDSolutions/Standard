@@ -10,6 +10,7 @@ public static class ServiceCollectionExtensions
         configure(options);
         services.AddSingleton(options);
         services.AddSingleton<TransferService>();
+        services.AddHostedService<TransferReconciliationService>();
         return services;
     }
 }

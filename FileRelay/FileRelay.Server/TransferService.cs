@@ -23,12 +23,10 @@ public class TransferService
         var state = await _options.StateStore.GetOrCreateAsync(request, _options.ChunkSizeMB);
         var missing = await _options.StateStore.GetMissingChunksAsync(state.TransferId);
 
-        if (missing.Count == state.TotalChunks)
-        {
-            // New transfer — initialize targets
-            foreach (var target in _options.Targets)
-                await target.InitializeAsync(state.TransferId, state.Filename, state.FileSizeBytes, state.Context, ct);
-        }
+        // Always call InitializeAsync — it's idempotent: registers the in-memory path mapping
+        // and creates the .partial file only if it doesn't already exist.
+        foreach (var target in _options.Targets)
+            await target.InitializeAsync(state.TransferId, state.Filename, state.FileSizeBytes, state.Context, ct);
 
         return new TransferNegotiateResponse
         {
@@ -80,8 +78,17 @@ public class TransferService
         var writers = new List<Stream>(_options.Targets.Count);
         try
         {
-            foreach (var target in _options.Targets)
-                writers.Add(await target.OpenChunkWriterAsync(transferId, chunkIndex, offset, ct));
+            try
+            {
+                foreach (var target in _options.Targets)
+                    writers.Add(await target.OpenChunkWriterAsync(transferId, chunkIndex, offset, ct));
+            }
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+            {
+                _logger.LogWarning("Transfer {TransferId}: partial file missing, deleting state.", transferId);
+                await _options.StateStore.DeleteTransferStateAsync(transferId);
+                return ChunkUploadResult.NotFound();
+            }
 
             string actualHash;
             byte[] clientHash;
@@ -95,7 +102,7 @@ public class TransferService
             if (actualHash != expectedHash)
                 return ChunkUploadResult.BadRequest($"Hash mismatch: expected {expectedHash}, got {actualHash}.");
 
-            await _options.StateStore.ConfirmChunkAsync(transferId, chunkIndex);
+            await _options.StateStore.ConfirmChunkAsync(transferId, chunkIndex, actualHash);
 
             var remainingMissing = await _options.StateStore.GetMissingChunksAsync(transferId);
             if (remainingMissing.Count == 0)

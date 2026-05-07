@@ -24,8 +24,11 @@ public class LocalDirectoryTarget : ITransferTarget
         Directory.CreateDirectory(dir);
 
         var partialPath = PartialPath(transferId);
-        using var fs = new FileStream(partialPath, FileMode.Create, FileAccess.Write, FileShare.None);
-        fs.SetLength(fileSizeBytes);
+        if (!File.Exists(partialPath))
+        {
+            using var fs = new FileStream(partialPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            fs.SetLength(fileSizeBytes);
+        }
 
         return Task.CompletedTask;
     }
@@ -53,6 +56,14 @@ public class LocalDirectoryTarget : ITransferTarget
         if (File.Exists(partial)) File.Delete(partial);
         _transfers.TryRemove(transferId, out _);
         return Task.CompletedTask;
+    }
+
+    public Task<bool> IsPartialIntactAsync(Guid transferId, string filename, long expectedSizeBytes, TransferContext? context, CancellationToken ct)
+    {
+        var relativePath = context?.RelativePath ?? "";
+        var partialPath = Path.Combine(_rootPath, relativePath, filename + ".partial");
+        if (!File.Exists(partialPath)) return Task.FromResult(false);
+        return Task.FromResult(new FileInfo(partialPath).Length == expectedSizeBytes);
     }
 
     private string PartialPath(Guid transferId)

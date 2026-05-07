@@ -6,4 +6,5 @@ public interface ITransferTarget
     Task<Stream> OpenChunkWriterAsync(Guid transferId, int chunkIndex, long offset, CancellationToken ct);
     Task FinalizeAsync(Guid transferId, CancellationToken ct);
     Task AbortAsync(Guid transferId, CancellationToken ct);
+    Task<bool> IsPartialIntactAsync(Guid transferId, string filename, long expectedSizeBytes, TransferContext? context, CancellationToken ct);
 }

@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\FileRelay.Server\FileRelay.Server.csproj" />
+    <ProjectReference Include="..\FileRelay.Storage.Sqlite\FileRelay.Storage.Sqlite.csproj" />
   </ItemGroup>
 
 </Project>

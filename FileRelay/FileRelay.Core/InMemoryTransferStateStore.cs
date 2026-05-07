@@ -25,14 +25,15 @@ public class InMemoryTransferStateStore : ITransferStateStore
             var chunkSizeBytes = (long)serverChunkSizeMB * 1024 * 1024;
             var state = new TransferState
             {
-                TransferId = Guid.NewGuid(),
-                Filename = request.Filename,
-                FileSizeBytes = request.FileSizeBytes,
-                FileHash = request.FileHash,
-                Context = request.Context,
+                TransferId     = Guid.NewGuid(),
+                Filename       = request.Filename,
+                FileSizeBytes  = request.FileSizeBytes,
+                FileHash       = request.FileHash,
+                Context        = request.Context,
                 ChunkSizeBytes = chunkSizeBytes,
-                TotalChunks = ChunkMath.TotalChunks(request.FileSizeBytes, chunkSizeBytes),
-                CreatedAt = DateTime.UtcNow
+                TotalChunks    = ChunkMath.TotalChunks(request.FileSizeBytes, chunkSizeBytes),
+                CreatedAt      = DateTime.UtcNow,
+                LastActivityAt = DateTime.UtcNow
             };
             _states[state.TransferId] = state;
             return state;
@@ -46,11 +47,16 @@ public class InMemoryTransferStateStore : ITransferStateStore
     public Task<TransferState?> GetAsync(Guid transferId)
         => Task.FromResult(_states.TryGetValue(transferId, out var s) ? s : null);
 
-    public Task ConfirmChunkAsync(Guid transferId, int chunkIndex)
+    public Task ConfirmChunkAsync(Guid transferId, int chunkIndex, string chunkHash)
     {
         if (_states.TryGetValue(transferId, out var state))
+        {
             lock (state.ConfirmedChunks)
+            {
                 state.ConfirmedChunks.Add(chunkIndex);
+                state.LastActivityAt = DateTime.UtcNow;
+            }
+        }
         return Task.CompletedTask;
     }
 
@@ -72,6 +78,30 @@ public class InMemoryTransferStateStore : ITransferStateStore
     {
         if (_states.TryGetValue(transferId, out var state))
             state.IsComplete = true;
+        return Task.CompletedTask;
+    }
+
+    public Task PruneCompletedAsync(TimeSpan retention)
+    {
+        var cutoff = DateTime.UtcNow - retention;
+        foreach (var id in _states.Keys.ToList())
+            if (_states.TryGetValue(id, out var s) && s.IsComplete && s.CreatedAt < cutoff)
+                _states.TryRemove(id, out _);
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<TransferState>> GetInactiveIncompleteTransfersAsync(TimeSpan inactivityThreshold)
+    {
+        var cutoff = DateTime.UtcNow - inactivityThreshold;
+        var result = _states.Values
+            .Where(s => !s.IsComplete && s.LastActivityAt < cutoff)
+            .ToList();
+        return Task.FromResult<IReadOnlyList<TransferState>>(result);
+    }
+
+    public Task DeleteTransferStateAsync(Guid transferId)
+    {
+        _states.TryRemove(transferId, out _);
         return Task.CompletedTask;
     }
 

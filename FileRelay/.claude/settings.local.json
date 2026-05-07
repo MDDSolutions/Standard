@@ -18,7 +18,9 @@
       "Bash(kill %1)",
       "Bash(powershell -NoProfile -Command 'Get-Process -Name '\\\\''dotnet'\\\\'' | Where-Object { $_.MainModule.FileName -like '\\\\''*dotnet*'\\\\'' } | Stop-Process -Force')",
       "Bash(powershell -NoProfile -Command \"Stop-Process -Id 28508 -Force -ErrorAction SilentlyContinue\")",
-      "Bash(powershell -NoProfile -Command \"Get-Process dotnet -ErrorAction SilentlyContinue | Stop-Process -Force\")"
+      "Bash(powershell -NoProfile -Command \"Get-Process dotnet -ErrorAction SilentlyContinue | Stop-Process -Force\")",
+      "Bash(dotnet new *)",
+      "Bash(dotnet add *)"
     ]
   }
 }

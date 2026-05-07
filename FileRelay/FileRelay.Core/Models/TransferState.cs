@@ -12,4 +12,5 @@ public class TransferState
     public HashSet<int> ConfirmedChunks { get; set; } = new();
     public bool IsComplete { get; set; }
     public DateTime CreatedAt { get; set; }
+    public DateTime LastActivityAt { get; set; }
 }

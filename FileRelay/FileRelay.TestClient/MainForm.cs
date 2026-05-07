@@ -27,7 +27,7 @@ public partial class MainForm : Form
         {
             var file = new FileInfo(txtFilePath.Text);
             var started = DateTime.UtcNow;
-            using var client = new FileRelayClient(new Uri(txtServerUrl.Text));
+            using var client = new FileRelayClient(new Uri(txtServerUrl.Text), apiKey: "test-key-abc123");
             await client.UploadFileAsync(
                 file,
                 new UploadOptions
