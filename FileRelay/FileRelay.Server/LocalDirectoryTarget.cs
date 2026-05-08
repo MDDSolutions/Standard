@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
 using FileRelay.Core;
 using FileRelay.Core.Interfaces;
 
@@ -38,6 +39,16 @@ public class LocalDirectoryTarget : ITransferTarget
         var fs = new FileStream(PartialPath(transferId), FileMode.Open, FileAccess.Write, FileShare.ReadWrite, 4096, FileOptions.Asynchronous);
         fs.Seek(offset, SeekOrigin.Begin);
         return Task.FromResult<Stream>(fs);
+    }
+
+    public async Task VerifyAsync(Guid transferId, string expectedHash, CancellationToken ct)
+    {
+        using var sha = SHA256.Create();
+        await using var fs = new FileStream(PartialPath(transferId), FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, FileOptions.Asynchronous);
+        var hashBytes = await sha.ComputeHashAsync(fs, ct);
+        var actual = $"sha256:{Convert.ToBase64String(hashBytes)}";
+        if (!string.Equals(actual, expectedHash, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException($"Whole-file hash mismatch: expected {expectedHash}, got {actual}.");
     }
 
     public Task FinalizeAsync(Guid transferId, CancellationToken ct)

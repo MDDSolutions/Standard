@@ -40,5 +40,13 @@ public class UploadOptions
     /// </summary>
     public byte Priority { get; set; } = 50;
 
+    /// <summary>
+    /// When true, the client computes SHA-256 of the entire file before negotiating and
+    /// the server verifies the assembled file against it at completion. Adds one sequential
+    /// read of the file (~1-3 seconds per GB on typical SSDs). Default true.
+    /// Set to false only when pre-hashing latency is unacceptable for very large files.
+    /// </summary>
+    public bool ComputeFileHash { get; set; } = false;
+
     internal int EffectiveParallelConnections => Throttle?.ParallelConnections ?? ParallelConnections;
 }

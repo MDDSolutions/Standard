@@ -168,18 +168,19 @@ Some deployment targets (e.g. old ARM NAS hardware with no hardware AES) cannot 
 
 Split the security responsibilities across the two phases that already exist in the protocol:
 
-1. **Negotiate (HTTPS)** — authenticates the client with the API key over an encrypted channel, establishes the transfer, and returns per-chunk tokens alongside the chunk list.
-2. **Upload chunks (HTTP)** — each chunk request carries its chunk-specific token in a header. The token is unguessable to an attacker watching the HTTP stream because it was established over the encrypted negotiate.
+1. **Negotiate (HTTPS)** — authenticates the client with the API key over an encrypted channel and establishes the transfer.
+2. **Upload chunks (HTTP)** — each chunk request carries its chunk-specific token in a header. The token is unguessable to an attacker watching the HTTP stream because it is derived from the API key, which only traveled over HTTPS.
 
 ### Token Design
 
-Tokens are derived server-side using HMAC-SHA256 — no storage required:
+Tokens are derived using HMAC-SHA256 — no storage required, and no token list needs to be transmitted:
 
 ```
 token[i] = HMAC-SHA256(key: apiKey, data: transferId || chunkIndex)
 ```
 
-- Server computes all tokens during negotiate and includes them in the response
+- Both client and server independently compute the token from inputs they already have: `apiKey` (pre-shared), `transferId` (returned by negotiate), `chunkIndex` (known per-chunk)
+- The negotiate response does not need to include tokens — nothing changes in the protocol response
 - Client includes `X-Chunk-Token: <token>` on each HTTP chunk upload
 - Server recomputes the expected HMAC on arrival and rejects mismatches with 401
 - The API key is never transmitted over HTTP
@@ -194,18 +195,22 @@ An attacker on the HTTP path:
 
 ### Protocol Changes Required
 
-Negotiate response gains a token map:
+Negotiate response gains one optional field:
 ```
-Response: { transferId, chunkSizeMB, totalChunks, chunksNeeded: [1, 2, 3, ...], chunkTokens: { "1": "<hmac>", "2": "<hmac>", ... } }
+Response: { transferId, chunkSizeMB, totalChunks, chunksNeeded: [1, 2, 3, ...], httpDataPort: 61488 }
 ```
 
-Chunk upload gains a required header when tokens are in use:
+- `httpDataPort` is present only when the server has an HTTP data path configured; absent otherwise
+- Its presence is the client's signal to switch: upload chunks over HTTP to that port, and include `X-Chunk-Token`
+- No client-side flags or modes needed — the response is self-describing
+
+Chunk upload gains one required header when uploading over the HTTP data path:
 ```
 Headers: X-Chunk-Hash: sha256:<base64>
          X-Chunk-Token: <hmac>
 ```
 
-`ChunkedTransferOptions` would need an `AllowHttpDataPath: bool` flag (default false). When true, the server accepts HTTP chunk uploads provided a valid token is present, and skips the existing HTTPS enforcement filter for chunk routes only.
+`ChunkedTransferOptions` would need an `HttpDataPort: int?` property (default null = disabled). When set, the server accepts HTTP chunk uploads on that port provided a valid token is present, and skips the HTTPS enforcement filter for chunk routes only.
 
 ### When to Implement
 

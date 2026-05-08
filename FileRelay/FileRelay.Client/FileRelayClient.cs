@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Security.Cryptography;
 using FileRelay.Core;
 using FileRelay.Core.Models;
 
@@ -35,10 +36,20 @@ public class FileRelayClient : IDisposable
     {
         options ??= new UploadOptions();
 
+        string? fileHash = null;
+        if (options.ComputeFileHash)
+        {
+            using var sha = SHA256.Create();
+            await using var fs = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, FileOptions.Asynchronous);
+            var hashBytes = await sha.ComputeHashAsync(fs, ct);
+            fileHash = $"sha256:{Convert.ToBase64String(hashBytes)}";
+        }
+
         var request = new TransferNegotiateRequest
         {
             Filename = file.Name,
             FileSizeBytes = file.Length,
+            FileHash = fileHash,
             ChunkSizeMB = options.PreferredChunkSizeMB,
             Context = options.Context
         };

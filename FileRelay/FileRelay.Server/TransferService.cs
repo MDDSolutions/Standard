@@ -144,6 +144,12 @@ public class TransferService
     {
         try
         {
+            if (!string.IsNullOrEmpty(state.FileHash))
+            {
+                foreach (var target in _options.Targets)
+                    await target.VerifyAsync(state.TransferId, state.FileHash, ct);
+            }
+
             foreach (var target in _options.Targets)
                 await target.FinalizeAsync(state.TransferId, ct);
 
