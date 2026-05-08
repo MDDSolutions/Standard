@@ -60,6 +60,7 @@ public class ChunkedTransferOptions
     {
         options.Limits.Http2.InitialConnectionWindowSize = 16 * 1024 * 1024;
         options.Limits.Http2.InitialStreamWindowSize     =  4 * 1024 * 1024;
+        options.Limits.Http2.MaxFrameSize                =  1 * 1024 * 1024; // 1MB; tells client it can send large frames
         options.Limits.MaxRequestBodySize = (long)chunkSizeMB * 1024 * 1024 * 4;
     }
 

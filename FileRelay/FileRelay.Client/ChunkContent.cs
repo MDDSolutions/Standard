@@ -39,10 +39,11 @@ internal sealed class ChunkContent : HttpContent
     protected override async Task SerializeToStreamAsync(Stream stream, TransportContext? context, CancellationToken ct)
     {
         using var sha = SHA256.Create();
-        using var fs = new FileStream(_filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous);
+        const int bufSize = 1024 * 1024; // 1MB — fewer async iterations, larger HTTP/2 frames
+        using var fs = new FileStream(_filePath, FileMode.Open, FileAccess.Read, FileShare.Read, bufSize, FileOptions.Asynchronous);
         fs.Seek(_offset, SeekOrigin.Begin);
 
-        var buf = new byte[81920];
+        var buf = new byte[bufSize];
         var remaining = _length;
         while (remaining > 0)
         {
