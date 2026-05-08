@@ -7,8 +7,8 @@ using FileRelay.Storage.Sqlite;
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.ConfigureKestrel(options =>
 {
-    options.ListenLocalhost(61488);                                  // HTTP — kept open but server returns 421 for all requests
-    options.ListenLocalhost(61489, o => o.UseHttps());              // HTTPS — required by RequireHttps = true
+    options.ListenAnyIP(61488);                                      // HTTP — accepts from any interface
+    options.ListenAnyIP(61489, o => o.UseHttps());                  // HTTPS — accepts from any interface
 });
 builder.Services.AddChunkedTransfer(options =>
 {
