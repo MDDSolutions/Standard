@@ -158,6 +158,59 @@ await client.UploadFileAsync(
 - **The `ITransferCompleteHandler` is fire-and-forget from the protocol's perspective.** If it fails, that is the consuming application's problem to handle — do not fail the transfer or block the final chunk response on it.
 - **Chunk indices are 1-based integers.** `totalChunks` is derived from `ceil(fileSizeBytes / chunkSizeBytes)`. The last chunk may be smaller than `chunkSizeMB`.
 
+## Future Feature: HMAC Per-Chunk Tokens (HTTP Data Path for Constrained TLS Endpoints)
+
+### Problem
+
+Some deployment targets (e.g. old ARM NAS hardware with no hardware AES) cannot terminate TLS at meaningful throughput. The backup data itself may already be encrypted at rest, making TLS confidentiality redundant. However, simply running the data path over plain HTTP with a static API key is unacceptable because the key is long-lived and would be visible in every request.
+
+### Proposed Solution
+
+Split the security responsibilities across the two phases that already exist in the protocol:
+
+1. **Negotiate (HTTPS)** — authenticates the client with the API key over an encrypted channel, establishes the transfer, and returns per-chunk tokens alongside the chunk list.
+2. **Upload chunks (HTTP)** — each chunk request carries its chunk-specific token in a header. The token is unguessable to an attacker watching the HTTP stream because it was established over the encrypted negotiate.
+
+### Token Design
+
+Tokens are derived server-side using HMAC-SHA256 — no storage required:
+
+```
+token[i] = HMAC-SHA256(key: apiKey, data: transferId || chunkIndex)
+```
+
+- Server computes all tokens during negotiate and includes them in the response
+- Client includes `X-Chunk-Token: <token>` on each HTTP chunk upload
+- Server recomputes the expected HMAC on arrival and rejects mismatches with 401
+- The API key is never transmitted over HTTP
+
+### Why This Is Sufficient
+
+An attacker on the HTTP path:
+- **Cannot forge a token** — HMAC requires the API key, which only traveled over HTTPS
+- **Cannot replay a token** — each token is chunk-specific; seeing token for chunk 3 reveals nothing about chunk 7
+- **Cannot corrupt data silently** — the existing SHA-256 hash verification per chunk catches any in-transit corruption; the server rejects the chunk and the client retries
+- **Can cause retries** (denial of service) — this is true of any unencrypted protocol and is acceptable for a backup transfer use case
+
+### Protocol Changes Required
+
+Negotiate response gains a token map:
+```
+Response: { transferId, chunkSizeMB, totalChunks, chunksNeeded: [1, 2, 3, ...], chunkTokens: { "1": "<hmac>", "2": "<hmac>", ... } }
+```
+
+Chunk upload gains a required header when tokens are in use:
+```
+Headers: X-Chunk-Hash: sha256:<base64>
+         X-Chunk-Token: <hmac>
+```
+
+`ChunkedTransferOptions` would need an `AllowHttpDataPath: bool` flag (default false). When true, the server accepts HTTP chunk uploads provided a valid token is present, and skips the existing HTTPS enforcement filter for chunk routes only.
+
+### When to Implement
+
+Only worthwhile when TLS termination is genuinely impractical at the server endpoint — e.g. a constrained ARM device with software-only AES where the backup payload is already encrypted. For all other deployments, standard HTTPS for the full session is simpler, equally secure, and preferred.
+
 ## Deployment Notes
 
 - The server component runs on any ASP.NET Core host: Windows, Linux, Docker
