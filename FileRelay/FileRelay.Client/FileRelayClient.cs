@@ -9,9 +9,12 @@ public class FileRelayClient : IDisposable
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
 
-    public FileRelayClient(Uri baseUri, string? apiKey = null)
+    public FileRelayClient(Uri baseUri, string? apiKey = null, bool allowUntrustedCertificate = false)
     {
-        _http = new HttpClient(new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(10) })
+        var handler = new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(10) };
+        if (allowUntrustedCertificate)
+            handler.SslOptions.RemoteCertificateValidationCallback = (_, _, _, _) => true;
+        _http = new HttpClient(handler)
         {
             BaseAddress = baseUri,
             DefaultRequestVersion = System.Net.HttpVersion.Version20,
@@ -184,9 +187,12 @@ public class FileRelayClient : IDisposable
     }
 
     public static async Task<Core.Models.ServerInfoResponse> PingAsync(
-        Uri baseUri, string? apiKey, CancellationToken ct)
+        Uri baseUri, string? apiKey, CancellationToken ct, bool allowUntrustedCertificate = false)
     {
-        using var http = new HttpClient(new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(5) })
+        var handler = new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(5) };
+        if (allowUntrustedCertificate)
+            handler.SslOptions.RemoteCertificateValidationCallback = (_, _, _, _) => true;
+        using var http = new HttpClient(handler)
         {
             BaseAddress           = baseUri,
             Timeout               = TimeSpan.FromSeconds(5),

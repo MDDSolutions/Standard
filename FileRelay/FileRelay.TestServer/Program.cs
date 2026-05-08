@@ -7,8 +7,9 @@ using FileRelay.Storage.Sqlite;
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.ConfigureKestrel(options =>
 {
-    options.ListenAnyIP(61488);                                      // HTTP — accepts from any interface
-    options.ListenAnyIP(61489, o => o.UseHttps());                  // HTTPS — accepts from any interface
+    options.ListenAnyIP(61488);
+    options.ListenAnyIP(61489, o => o.UseHttps());
+    ChunkedTransferOptions.ConfigureKestrelLimits(options, chunkSizeMB: 50);
 });
 builder.Services.AddChunkedTransfer(options =>
 {

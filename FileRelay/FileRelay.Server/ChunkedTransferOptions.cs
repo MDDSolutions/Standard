@@ -44,8 +44,23 @@ public class ChunkedTransferOptions
 
     /// <summary>
     /// Build timestamp returned by the /ping endpoint.
-    /// Set from Miscellaneous.BuildTime(Assembly.GetExecutingAssembly()) in the host application.
+    /// Set from Foundation.BuildTime(Assembly.GetExecutingAssembly()) in the host application.
     /// </summary>
     public DateTime? ServerBuildTime { get; set; }
+
+    /// <summary>
+    /// Recommended Kestrel settings for bulk chunk uploads. Add to ConfigureKestrel() in the host:
+    ///   options.Limits.Http2.InitialConnectionWindowSize = 16 * 1024 * 1024;
+    ///   options.Limits.Http2.InitialStreamWindowSize     =  4 * 1024 * 1024;
+    ///   options.Limits.MaxRequestBodySize = (long)ChunkSizeMB * 1024 * 1024 * 4; // headroom
+    /// The default HTTP/2 connection window (128KB) caps throughput at ~128MB/s at 1ms RTT.
+    /// The default MaxRequestBodySize (30MB) will reject chunks larger than 30MB with HTTP 413.
+    /// </summary>
+    public static void ConfigureKestrelLimits(Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerOptions options, int chunkSizeMB)
+    {
+        options.Limits.Http2.InitialConnectionWindowSize = 16 * 1024 * 1024;
+        options.Limits.Http2.InitialStreamWindowSize     =  4 * 1024 * 1024;
+        options.Limits.MaxRequestBodySize = (long)chunkSizeMB * 1024 * 1024 * 4;
+    }
 
 }
