@@ -1,3 +1,4 @@
+using System.Reflection;
 using FileRelay.Core.Interfaces;
 using FileRelay.Core.Models;
 using FileRelay.Server;
@@ -19,6 +20,7 @@ builder.Services.AddChunkedTransfer(options =>
     options.OnComplete = new ConsoleCompleteHandler();
     options.StateStore = new SqliteTransferStateStore("transfers.db");
     options.ServerReceiveMBps = 0; // throttle server receive to 100 MB/s to better simulate real-world conditions and test client-side throttling; set to 0 to disable
+    options.ServerBuildTime = MDDFoundation.Foundation.BuildTime(Assembly.GetExecutingAssembly());
 });
 
 var app = builder.Build();

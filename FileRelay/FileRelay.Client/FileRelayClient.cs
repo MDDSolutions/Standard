@@ -11,7 +11,7 @@ public class FileRelayClient : IDisposable
 
     public FileRelayClient(Uri baseUri, string? apiKey = null)
     {
-        _http = new HttpClient(new SocketsHttpHandler())
+        _http = new HttpClient(new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(10) })
         {
             BaseAddress = baseUri,
             DefaultRequestVersion = System.Net.HttpVersion.Version20,
@@ -65,10 +65,19 @@ public class FileRelayClient : IDisposable
             {
                 throw new InvalidOperationException("The server no longer has a record of this transfer. The partial file may have been deleted. Restart the transfer manually if intended.", ex);
             }
-            catch (HttpRequestException) when (attempt < options.MaxRetries && !ct.IsCancellationRequested)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
+                throw; // user cancelled — propagate cleanly
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested && attempt < options.MaxRetries
+                && ex is HttpRequestException or OperationCanceledException)
+            {
+                // HttpRequestException = server error / network refused
+                // OperationCanceledException (not user ct) = ConnectTimeout fired
                 attempt++;
-                await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, attempt)), ct);
+                var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt));
+                options.OnRetry?.Invoke(ex, attempt, delay);
+                await Task.Delay(delay, ct);
             }
         }
     }
@@ -172,6 +181,26 @@ public class FileRelayClient : IDisposable
         using var content = new ChunkContent(file.FullName, offset, length, onBytesSent, options.Throttle, options.Priority);
         var response = await _http.PostAsync($"transfer/{transferId}/chunk/{chunkIndex}", content, ct);
         response.EnsureSuccessStatusCode();
+    }
+
+    public static async Task<Core.Models.ServerInfoResponse> PingAsync(
+        Uri baseUri, string? apiKey, CancellationToken ct)
+    {
+        using var http = new HttpClient(new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(5) })
+        {
+            BaseAddress           = baseUri,
+            Timeout               = TimeSpan.FromSeconds(5),
+            DefaultRequestVersion = System.Net.HttpVersion.Version20,
+            DefaultVersionPolicy  = HttpVersionPolicy.RequestVersionOrLower,
+        };
+        if (apiKey is { Length: > 0 })
+            http.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+
+        var response = await http.GetAsync("transfer/ping", ct);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<Core.Models.ServerInfoResponse>(ct)
+            ?? throw new InvalidOperationException("Empty ping response.");
     }
 
     public void Dispose()

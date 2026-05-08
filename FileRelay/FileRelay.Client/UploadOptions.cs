@@ -23,6 +23,12 @@ public class UploadOptions
     public Action<TransferNegotiateResponse>? OnNegotiated { get; set; }
 
     /// <summary>
+    /// Called before each retry delay. Parameters: the exception that triggered the
+    /// retry, the 1-based attempt number, and the delay before the next attempt.
+    /// </summary>
+    public Action<Exception, int, TimeSpan>? OnRetry { get; set; }
+
+    /// <summary>
     /// Shared bandwidth limiter. When set, all uploads using this limiter cooperate
     /// on a single throughput budget and ParallelConnections comes from the limiter.
     /// </summary>

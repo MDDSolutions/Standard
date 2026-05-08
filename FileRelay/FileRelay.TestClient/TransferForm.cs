@@ -35,7 +35,7 @@ public partial class TransferForm : Form
         if (string.IsNullOrWhiteSpace(txtFilePath.Text)) return;
 
         var filePath = txtFilePath.Text;
-        var (serverUrl, parallelConnections, throttleMBps) = _hub.GetSettings();
+        var (serverUrl, parallelConnections, throttleMBps, apiKey) = _hub.GetSettings();
 
         var throttle    = _hub.BeginUpload(throttleMBps, parallelConnections);
         var transferNum = Interlocked.Increment(ref MainForm.NextTransferNumber);
@@ -47,14 +47,21 @@ public partial class TransferForm : Form
         try
         {
             var file = new FileInfo(filePath);
-            using var client = new FileRelayClient(new Uri(serverUrl), apiKey: "test-key-abc123");
+            using var client = new FileRelayClient(new Uri(serverUrl), apiKey: apiKey);
 
+            var maxRetries = 5;
             await client.UploadFileAsync(file, new UploadOptions
             {
                 ParallelConnections = parallelConnections,
                 Throttle            = throttle,
-                OnNegotiated        = n => OnNegotiated(file, n, key),
-                OnProgress          = p => OnProgress(key, p),
+                MaxRetries          = maxRetries,
+                OnNegotiated        = n  => OnNegotiated(file, n, key),
+                OnProgress          = p  => OnProgress(key, p),
+                OnRetry             = (ex, attempt, delay) =>
+                {
+                    var reason = ex is OperationCanceledException ? "Connection timed out" : ex.Message;
+                    AppendLog($"[{key}] {reason} — retry {attempt}/{maxRetries} in {(int)delay.TotalSeconds}s");
+                },
             }, _cts.Token);
 
             AppendLog($"[{key}] Complete — {FormatBytes(file.Length)} transferred.");

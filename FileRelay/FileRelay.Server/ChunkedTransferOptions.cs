@@ -42,4 +42,10 @@ public class ChunkedTransferOptions
     /// </summary>
     public double ServerReceiveMBps { get; set; } = 0;
 
+    /// <summary>
+    /// Build timestamp returned by the /ping endpoint.
+    /// Set from Miscellaneous.BuildTime(Assembly.GetExecutingAssembly()) in the host application.
+    /// </summary>
+    public DateTime? ServerBuildTime { get; set; }
+
 }

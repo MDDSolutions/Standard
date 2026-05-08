@@ -5,11 +5,14 @@
     <LangVersion>latestMajor</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyVersion>1.0.*</AssemblyVersion>
+    <Deterministic>false</Deterministic>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\FileRelay.Server\FileRelay.Server.csproj" />
     <ProjectReference Include="..\FileRelay.Storage.Sqlite\FileRelay.Storage.Sqlite.csproj" />
+    <ProjectReference Include="..\..\MDDFoundation\MDDFoundation.csproj" />
   </ItemGroup>
 
 </Project>

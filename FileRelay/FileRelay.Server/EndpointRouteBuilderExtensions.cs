@@ -55,6 +55,13 @@ public static class EndpointRouteBuilderExtensions
             });
         }
 
+        group.MapGet("/ping", (ChunkedTransferOptions opts) =>
+            Results.Ok(new FileRelay.Core.Models.ServerInfoResponse
+            {
+                BuildTime       = opts.ServerBuildTime,
+                AssemblyVersion = typeof(TransferService).Assembly.GetName().Version?.ToString()
+            }));
+
         group.MapPost("/negotiate", async (TransferService svc, FileRelay.Core.Models.TransferNegotiateRequest req, CancellationToken ct) =>
         {
             var result = await svc.NegotiateAsync(req, ct);
