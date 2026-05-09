@@ -422,7 +422,7 @@ namespace MDDDataAccess
         }
 
 
-        public IList<T> ReadResultSet<T>(SqlDataReader rdr, Action<SqlDataReader, T> rowAction = null) where T : class, new()
+        public IList<T> ReadResultSet<T>(SqlDataReader rdr, Action<T> rowAction = null) where T : class, new()
         {
             var result = new List<T>();
             List<PropertyMapEntry> map = null;
@@ -433,7 +433,7 @@ namespace MDDDataAccess
             {
                 T r = null;
                 ObjectFromReader(rdr, ref map, ref key, ref r, ref tracker, true);
-                rowAction?.Invoke(rdr, r);
+                rowAction?.Invoke(r);
                 result.Add(r);
             }
 
