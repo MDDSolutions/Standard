@@ -422,6 +422,24 @@ namespace MDDDataAccess
         }
 
 
+        public IList<T> ReadResultSet<T>(SqlDataReader rdr, Action<SqlDataReader, T> rowAction = null) where T : class, new()
+        {
+            var result = new List<T>();
+            List<PropertyMapEntry> map = null;
+            PropertyInfo key = null;
+            Tracker<T> tracker = TrackedEntity<T>.IsTrackable && Tracking != ObjectTracking.None ? GetTracker<T>() : null;
+
+            while (rdr.Read())
+            {
+                T r = null;
+                ObjectFromReader(rdr, ref map, ref key, ref r, ref tracker, true);
+                rowAction?.Invoke(rdr, r);
+                result.Add(r);
+            }
+
+            return result;
+        }
+
         public IList<T> SqlRunQueryWithResultsWithMetrics<T>(string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T : class, new()
         {
             QueryExecutionMetrics metrics = new QueryExecutionMetrics();
