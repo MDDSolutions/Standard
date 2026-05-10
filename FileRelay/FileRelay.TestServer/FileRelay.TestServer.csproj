@@ -13,6 +13,7 @@
     <ProjectReference Include="..\FileRelay.Server\FileRelay.Server.csproj" />
     <ProjectReference Include="..\FileRelay.Storage.Sqlite\FileRelay.Storage.Sqlite.csproj" />
     <ProjectReference Include="..\..\MDDFoundation\MDDFoundation.csproj" />
+    <ProjectReference Include="..\FileRelay.Storage.SqlServer\FileRelay.Storage.SqlServer.csproj" />
   </ItemGroup>
 
 </Project>

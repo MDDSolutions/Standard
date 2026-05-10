@@ -171,6 +171,7 @@ partial class MainForm
         // lblOverall
         //
         lblOverall.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        lblOverall.AutoEllipsis = true;
         lblOverall.Font = new Font("Segoe UI", 10F, FontStyle.Bold);
         lblOverall.Location = new Point(734, 97);
         lblOverall.Margin = new Padding(4, 0, 4, 0);

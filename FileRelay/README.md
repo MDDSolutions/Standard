@@ -1,4 +1,4 @@
-# CLAUDE.md
+# FileRelay
 
 ## What This Project Does
 

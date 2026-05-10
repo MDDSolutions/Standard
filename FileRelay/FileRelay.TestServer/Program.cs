@@ -3,6 +3,7 @@ using FileRelay.Core.Interfaces;
 using FileRelay.Core.Models;
 using FileRelay.Server;
 using FileRelay.Storage.Sqlite;
+using FileRelay.Storage.SqlServer;
 
 var builder = WebApplication.CreateBuilder(args);
 var cfg = builder.Configuration.GetSection("FileRelay");
@@ -42,10 +43,15 @@ builder.Services.AddFileRelay(options =>
         Targets = u.Targets.Select(p => (ITransferTarget)new LocalDirectoryTarget(ResolvePath(p))).ToArray()
     }).ToArray();
 
-    var dbPath = Path.Combine(AppContext.BaseDirectory, "transfers.db");
     options.OnComplete = new ConsoleCompleteHandler();
-    options.StateStore = new SqliteTransferStateStore(dbPath);
-    options.KeyStore   = new SqliteKeyStore(dbPath);
+
+    //var dbPath = Path.Combine(AppContext.BaseDirectory, "transfers.db");
+    //options.StateStore = new SqliteTransferStateStore(dbPath);
+    //options.KeyStore   = new SqliteKeyStore(dbPath);
+
+    var dbConnStr = "Server=MDD-SQL2022;Database=DBA;Trusted_Connection=True;Encrypt=False;";
+    options.StateStore = new SqlServerTransferStateStore(dbConnStr);
+    options.KeyStore = new SqlServerKeyStore(dbConnStr);
 });
 
 var app = builder.Build();

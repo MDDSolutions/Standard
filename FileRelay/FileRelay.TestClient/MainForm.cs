@@ -13,6 +13,7 @@ public partial class MainForm : Form
     internal static readonly object ThrottleLock = new();
 
     private readonly ClientSettings _settings;
+    private readonly ToolTip _tip = new();
 
     public MainForm()
     {
@@ -98,12 +99,18 @@ public partial class MainForm : Form
                 chkAllowUntrustedCert.Checked);
     }
 
+    private void SetStatus(string text)
+    {
+        lblOverall.Text = text;
+        _tip.SetToolTip(lblOverall, text);
+    }
+
     private void RefreshOverallRate()
     {
         if (InvokeRequired) { Invoke(RefreshOverallRate); return; }
         double total;
         lock (GlobalRatesLock) total = GlobalRates.Values.Sum();
-        lblOverall.Text = total > 0 ? $"Overall: {total:F1} MB/s" : "";
+        SetStatus(total > 0 ? $"Overall: {total:F1} MB/s" : "");
     }
 
     private void UpdateControlState()
@@ -135,7 +142,7 @@ public partial class MainForm : Form
     {
         var (serverUrl, _, _, appId, seedKey, allowUntrustedCert) = GetSettings();
         btnRotateKey.Enabled = false;
-        lblOverall.Text = "Rotating key...";
+        SetStatus("Rotating key...");
         try
         {
             using var client = new FileRelayClient(new Uri(serverUrl), appId: appId, apiKey: seedKey,
@@ -145,12 +152,12 @@ public partial class MainForm : Form
             _settings.SeedKey = newKey;
             _settings.Save();
             txtApiKey.Text = newKey;
-            lblOverall.Text = "Key rotated.";
+            SetStatus("Key rotated.");
         }
         catch (Exception ex)
         {
             var msg = ex.InnerException?.Message ?? ex.Message;
-            lblOverall.Text = $"Rotate failed: {msg}";
+            SetStatus($"Rotate failed: {msg}");
         }
         finally
         {
@@ -162,19 +169,19 @@ public partial class MainForm : Form
     {
         var (serverUrl, _, _, appId, apiKey, allowUntrustedCert) = GetSettings();
         btnTest.Enabled = false;
-        lblOverall.Text = "Testing...";
+        SetStatus("Testing...");
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             var info = await FileRelayClient.PingAsync(new Uri(serverUrl), appId, apiKey, cts.Token, allowUntrustedCert);
             var build = info.BuildTime.HasValue ? info.BuildTime.Value.ToString("yyyy-MM-dd HH:mm") : "unknown";
             var ver   = info.AssemblyVersion ?? "?";
-            lblOverall.Text = $"Server build: {build}  v{ver}";
+            SetStatus($"Server build: {build}  v{ver}");
         }
         catch (Exception ex)
         {
             var msg = ex is OperationCanceledException ? "Timed out" : ex.Message;
-            lblOverall.Text = $"Connection failed: {msg}";
+            SetStatus($"Connection failed: {msg}");
         }
         finally
         {
