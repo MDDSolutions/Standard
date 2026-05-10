@@ -20,10 +20,10 @@ builder.WebHost.ConfigureKestrel(options =>
 {
     if (httpPort  > 0) options.ListenAnyIP(httpPort);
     if (httpsPort > 0) options.ListenAnyIP(httpsPort, o => o.UseHttps());
-    ChunkedTransferOptions.ConfigureKestrelLimits(options, chunkSizeMB);
+    FileRelayOptions.ConfigureKestrelLimits(options, chunkSizeMB);
 });
 
-builder.Services.AddChunkedTransfer(options =>
+builder.Services.AddFileRelay(options =>
 {
     options.BasePath          = "/transfer";
     options.ChunkSizeMB       = chunkSizeMB;
@@ -38,16 +38,18 @@ builder.Services.AddChunkedTransfer(options =>
     options.Users = userConfigs.Select(u => new AppUser
     {
         AppId   = u.AppId,
-        ApiKey  = u.ApiKey,
+        SeedKey = u.SeedKey,
         Targets = u.Targets.Select(p => (ITransferTarget)new LocalDirectoryTarget(ResolvePath(p))).ToArray()
     }).ToArray();
 
+    var dbPath = Path.Combine(AppContext.BaseDirectory, "transfers.db");
     options.OnComplete = new ConsoleCompleteHandler();
-    options.StateStore = new SqliteTransferStateStore(Path.Combine(AppContext.BaseDirectory, "transfers.db"));
+    options.StateStore = new SqliteTransferStateStore(dbPath);
+    options.KeyStore   = new SqliteKeyStore(dbPath);
 });
 
 var app = builder.Build();
-app.MapChunkedTransfer();
+app.MapFileRelay();
 app.Run();
 
 static string ResolvePath(string path) =>
@@ -56,7 +58,7 @@ static string ResolvePath(string path) =>
 class UserConfig
 {
     public string   AppId   { get; set; } = "";
-    public string   ApiKey  { get; set; } = "";
+    public string   SeedKey { get; set; } = "";
     public string[] Targets { get; set; } = [];
 }
 

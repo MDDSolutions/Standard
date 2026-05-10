@@ -4,9 +4,9 @@ namespace FileRelay.Server;
 
 public static class ServiceCollectionExtensions
 {
-    public static IServiceCollection AddChunkedTransfer(this IServiceCollection services, Action<ChunkedTransferOptions> configure)
+    public static IServiceCollection AddFileRelay(this IServiceCollection services, Action<FileRelayOptions> configure)
     {
-        var options = new ChunkedTransferOptions();
+        var options = new FileRelayOptions();
         configure(options);
         services.AddSingleton(options);
         services.AddSingleton<TransferService>();

@@ -29,6 +29,13 @@ public class UploadOptions
     public Action<Exception, int, TimeSpan>? OnRetry { get; set; }
 
     /// <summary>
+    /// Called when the server indicates the request was authenticated with the previous key.
+    /// Value is "previous-grace-pending" (new key not yet used) or "previous-grace-active"
+    /// (new key has been used; old key has a countdown).
+    /// </summary>
+    public Action<string>? OnKeyWarning { get; set; }
+
+    /// <summary>
     /// Shared bandwidth limiter. When set, all uploads using this limiter cooperate
     /// on a single throughput budget and ParallelConnections comes from the limiter.
     /// </summary>

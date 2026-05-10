@@ -6,17 +6,34 @@ namespace FileRelay.Server;
 public class AppUser
 {
     public string AppId { get; set; } = "";
-    public string ApiKey { get; set; } = "";
+
+    /// <summary>
+    /// Used only to seed the key store on first run. Ignored once a key store entry exists for this AppId.
+    /// </summary>
+    public string SeedKey { get; set; } = "";
+
     public IReadOnlyList<ITransferTarget> Targets { get; set; } = Array.Empty<ITransferTarget>();
 }
 
-public class ChunkedTransferOptions
+public class FileRelayOptions
 {
     public string BasePath { get; set; } = "/transfer";
     public int ChunkSizeMB { get; set; } = 50;
     public ITransferStateStore StateStore { get; set; } = new InMemoryTransferStateStore();
     public IReadOnlyList<AppUser> Users { get; set; } = Array.Empty<AppUser>();
     public ITransferCompleteHandler? OnComplete { get; set; }
+
+    /// <summary>
+    /// Enables key rotation. When set, all authentication goes through the key store;
+    /// AppUser.SeedKey is only used to bootstrap a new app on first run.
+    /// </summary>
+    public IKeyStore? KeyStore { get; set; }
+
+    /// <summary>
+    /// How long the previous key remains valid after the new key is first used.
+    /// Only applies when KeyStore is configured. Default 1 hour.
+    /// </summary>
+    public TimeSpan KeyGracePeriod { get; set; } = TimeSpan.FromHours(1);
 
     /// <summary>
     /// Reject any request that did not arrive over HTTPS. Default true.

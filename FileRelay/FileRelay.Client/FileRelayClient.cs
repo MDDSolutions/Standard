@@ -1,3 +1,4 @@
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
 using FileRelay.Core;
@@ -61,7 +62,7 @@ public class FileRelayClient : IDisposable
         {
             try
             {
-                var negotiate = await NegotiateAsync(request, ct);
+                var negotiate = await NegotiateAsync(request, options, ct);
                 options.OnNegotiated?.Invoke(negotiate);
                 if (negotiate.ChunksNeeded.Count == 0) return;
 
@@ -98,10 +99,31 @@ public class FileRelayClient : IDisposable
         }
     }
 
-    private async Task<TransferNegotiateResponse> NegotiateAsync(TransferNegotiateRequest request, CancellationToken ct)
+    /// <summary>
+    /// Requests a new API key from the server. Client entropy is generated automatically;
+    /// the server XORs it with its own randomness so neither side alone controls the output.
+    /// The client's Authorization header is updated in place — the caller must persist the
+    /// returned key for use in future sessions.
+    /// </summary>
+    public async Task<string> RotateKeyAsync(CancellationToken ct = default)
     {
-        var response = await _http.PostAsJsonAsync("transfer/negotiate", request, ct);
+        var clientEntropy = RandomNumberGenerator.GetBytes(32);
+        var request = new RotateKeyRequest { ClientEntropy = Convert.ToBase64String(clientEntropy) };
+        var response = await _http.PostAsJsonAsync("transfer/rotate-key", request, ct);
         response.EnsureSuccessStatusCode();
+        var result = await response.Content.ReadFromJsonAsync<RotateKeyResponse>(ct)
+            ?? throw new InvalidOperationException("Empty rotate-key response.");
+        _http.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", result.NewKey);
+        return result.NewKey;
+    }
+
+    private async Task<TransferNegotiateResponse> NegotiateAsync(
+        TransferNegotiateRequest request, UploadOptions options, CancellationToken ct)
+    {
+        using var response = await _http.PostAsJsonAsync("transfer/negotiate", request, ct);
+        response.EnsureSuccessStatusCode();
+        CheckKeyWarning(response, options.OnKeyWarning);
         return await response.Content.ReadFromJsonAsync<TransferNegotiateResponse>(ct)
             ?? throw new InvalidOperationException("Empty negotiate response.");
     }
@@ -200,7 +222,8 @@ public class FileRelayClient : IDisposable
     }
 
     public static async Task<Core.Models.ServerInfoResponse> PingAsync(
-        Uri baseUri, string? appId, string? apiKey, CancellationToken ct, bool allowUntrustedCertificate = false)
+        Uri baseUri, string? appId, string? apiKey, CancellationToken ct,
+        bool allowUntrustedCertificate = false, Action<string>? onKeyWarning = null)
     {
         var handler = new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(5) };
         if (allowUntrustedCertificate)
@@ -216,12 +239,24 @@ public class FileRelayClient : IDisposable
             http.DefaultRequestHeaders.Add("X-App-Id", appId);
         if (apiKey is { Length: > 0 })
             http.DefaultRequestHeaders.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+                new AuthenticationHeaderValue("Bearer", apiKey);
 
-        var response = await http.GetAsync("transfer/ping", ct);
+        using var response = await http.GetAsync("transfer/ping", ct);
         response.EnsureSuccessStatusCode();
+        CheckKeyWarning(response, onKeyWarning);
         return await response.Content.ReadFromJsonAsync<Core.Models.ServerInfoResponse>(ct)
             ?? throw new InvalidOperationException("Empty ping response.");
+    }
+
+    private static void CheckKeyWarning(HttpResponseMessage response, Action<string>? handler)
+    {
+        if (handler == null) return;
+        if (response.Headers.TryGetValues("X-Key-Status", out var values))
+        {
+            var status = values.FirstOrDefault();
+            if (!string.IsNullOrEmpty(status))
+                handler(status);
+        }
     }
 
     public void Dispose()

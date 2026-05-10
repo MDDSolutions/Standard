@@ -26,7 +26,7 @@ public partial class MainForm : Form
     {
         txtServerUrl.Text              = _settings.ServerUrl;
         txtAppId.Text                  = _settings.AppId;
-        txtApiKey.Text                 = _settings.ApiKey;
+        txtApiKey.Text                 = _settings.SeedKey;
         nudParallel.Value              = Math.Clamp(_settings.ParallelConnections, (int)nudParallel.Minimum, (int)nudParallel.Maximum);
         nudBandwidth.Value             = (decimal)Math.Clamp(_settings.ThrottleMBps, (double)nudBandwidth.Minimum, (double)nudBandwidth.Maximum);
         chkAllowUntrustedCert.Checked  = _settings.AllowUntrustedCert;
@@ -36,7 +36,7 @@ public partial class MainForm : Form
     {
         txtServerUrl.Validated += (_, _) => { _settings.ServerUrl          = txtServerUrl.Text;         _settings.Save(); };
         txtAppId.Validated     += (_, _) => { _settings.AppId              = txtAppId.Text;              _settings.Save(); };
-        txtApiKey.Validated    += (_, _) => { _settings.ApiKey             = txtApiKey.Text;             _settings.Save(); };
+        txtApiKey.Validated    += (_, _) => { _settings.SeedKey             = txtApiKey.Text;             _settings.Save(); };
         nudParallel.Validated  += (_, _) => { _settings.ParallelConnections = (int)nudParallel.Value;   _settings.Save(); };
         nudBandwidth.Validated += (_, _) => { _settings.ThrottleMBps        = (double)nudBandwidth.Value; _settings.Save(); };
     }
@@ -116,6 +116,7 @@ public partial class MainForm : Form
         nudBandwidth.Enabled          = !active;
         chkAllowUntrustedCert.Enabled = !active;
         btnTest.Enabled               = !active;
+        btnRotateKey.Enabled          = !active;
     }
 
     private void MainForm_FormClosing(object? sender, FormClosingEventArgs e)
@@ -128,6 +129,33 @@ public partial class MainForm : Form
             if (r == DialogResult.No) { e.Cancel = true; return; }
         }
         SharedThrottle?.Dispose();
+    }
+
+    private async void btnRotateKey_Click(object sender, EventArgs e)
+    {
+        var (serverUrl, _, _, appId, seedKey, allowUntrustedCert) = GetSettings();
+        btnRotateKey.Enabled = false;
+        lblOverall.Text = "Rotating key...";
+        try
+        {
+            using var client = new FileRelayClient(new Uri(serverUrl), appId: appId, apiKey: seedKey,
+                allowUntrustedCertificate: allowUntrustedCert);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var newKey = await client.RotateKeyAsync(cts.Token);
+            _settings.SeedKey = newKey;
+            _settings.Save();
+            txtApiKey.Text = newKey;
+            lblOverall.Text = "Key rotated.";
+        }
+        catch (Exception ex)
+        {
+            var msg = ex.InnerException?.Message ?? ex.Message;
+            lblOverall.Text = $"Rotate failed: {msg}";
+        }
+        finally
+        {
+            btnRotateKey.Enabled = true;
+        }
     }
 
     private async void btnTest_Click(object sender, EventArgs e)

@@ -5,10 +5,10 @@ namespace FileRelay.Server;
 
 internal sealed class TransferReconciliationService : BackgroundService
 {
-    private readonly ChunkedTransferOptions _options;
+    private readonly FileRelayOptions _options;
     private readonly ILogger<TransferReconciliationService> _logger;
 
-    public TransferReconciliationService(ChunkedTransferOptions options, ILogger<TransferReconciliationService> logger)
+    public TransferReconciliationService(FileRelayOptions options, ILogger<TransferReconciliationService> logger)
     {
         _options = options;
         _logger = logger;

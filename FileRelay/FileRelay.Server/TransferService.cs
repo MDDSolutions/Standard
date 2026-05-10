@@ -10,11 +10,11 @@ namespace FileRelay.Server;
 
 public class TransferService
 {
-    private readonly ChunkedTransferOptions _options;
+    private readonly FileRelayOptions _options;
     private readonly ILogger<TransferService> _logger;
     private readonly BandwidthLimiter? _serverThrottle;
 
-    public TransferService(ChunkedTransferOptions options, ILogger<TransferService> logger)
+    public TransferService(FileRelayOptions options, ILogger<TransferService> logger)
     {
         _options = options;
         _logger = logger;

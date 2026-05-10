@@ -62,6 +62,13 @@ public partial class TransferForm : Form
                     var reason = ex is OperationCanceledException ? "Connection timed out" : ex.Message;
                     AppendLog($"[{key}] {reason} — retry {attempt}/{maxRetries} in {(int)delay.TotalSeconds}s");
                 },
+                OnKeyWarning        = status =>
+                {
+                    var msg = status == "previous-grace-pending"
+                        ? "WARNING: authenticated with previous key — new key not yet used (dropped response?). Consider rotating."
+                        : "WARNING: authenticated with previous key — grace period active. Rotate key soon.";
+                    AppendLog($"[{key}] {msg}");
+                },
             }, _cts.Token);
 
             AppendLog($"[{key}] Complete — {FormatBytes(file.Length)} transferred.");

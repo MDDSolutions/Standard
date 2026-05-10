@@ -6,7 +6,7 @@ public class ClientSettings : CustomConfiguration
 {
     public string ServerUrl               { get; set; } = "https://mdd-trident1:61489/";
     public string AppId                   { get; set; } = "";
-    public string ApiKey                  { get; set; } = "";
+    public string SeedKey                  { get; set; } = "";
     public int    ParallelConnections     { get; set; } = 4;
     public double ThrottleMBps            { get; set; } = 0;
     public bool   AllowUntrustedCert      { get; set; } = false;
@@ -15,7 +15,7 @@ public class ClientSettings : CustomConfiguration
     {
         ServerUrl           = "https://mdd-trident1:61489/";
         AppId               = "";
-        ApiKey              = "";
+        SeedKey             = "";
         ParallelConnections = 4;
         ThrottleMBps        = 0;
         AllowUntrustedCert  = false;

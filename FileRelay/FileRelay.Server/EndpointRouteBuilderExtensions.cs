@@ -1,3 +1,5 @@
+using FileRelay.Core.Interfaces;
+using FileRelay.Core.Models;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -8,9 +10,9 @@ namespace FileRelay.Server;
 
 public static class EndpointRouteBuilderExtensions
 {
-    public static IEndpointRouteBuilder MapChunkedTransfer(this IEndpointRouteBuilder app)
+    public static IEndpointRouteBuilder MapFileRelay(this IEndpointRouteBuilder app)
     {
-        var options = app.ServiceProvider.GetRequiredService<ChunkedTransferOptions>();
+        var options = app.ServiceProvider.GetRequiredService<FileRelayOptions>();
         var base_ = options.BasePath.TrimEnd('/');
 
         var logger = app.ServiceProvider.GetRequiredService<ILoggerFactory>()
@@ -18,25 +20,32 @@ public static class EndpointRouteBuilderExtensions
 
         if (options.Users.Count == 0)
             throw new InvalidOperationException(
-                "ChunkedTransferOptions: at least one user must be configured. " +
+                "FileRelayOptions: at least one user must be configured. " +
                 "Users define the target paths where uploaded files are written. " +
-                "A user with no ApiKey is valid and makes that user's transfers unauthenticated.");
+                "A user with no SeedKey is valid and makes that user's transfers unauthenticated.");
 
-        var anyKeyless  = options.Users.Any(u => u.ApiKey.Length == 0);
-        var anyKeyed    = options.Users.Any(u => u.ApiKey.Length > 0);
+        var anyKeyless = options.Users.Any(u => u.SeedKey.Length == 0);
+        var anyKeyed   = options.Users.Any(u => u.SeedKey.Length > 0);
 
         if (options.RequireHttps && anyKeyless)
             throw new InvalidOperationException(
-                "ChunkedTransferOptions: all users must have an ApiKey when RequireHttps is true. " +
-                "A user with no ApiKey on an HTTPS-only endpoint allows any client to upload as that user.");
+                "FileRelayOptions: all users must have a SeedKey when RequireHttps is true. " +
+                "A user with no SeedKey on an HTTPS-only endpoint allows any client to upload as that user.");
 
         if (!options.RequireHttps && anyKeyed)
             logger.LogWarning("FileRelay: RequireHttps is disabled and API keys will be transmitted in cleartext. " +
                 "This is only safe if this server is behind a reverse proxy that terminates TLS.");
 
         if (!options.RequireHttps && !anyKeyed)
-            logger.LogWarning("FileRelay: no users have an ApiKey configured. " +
+            logger.LogWarning("FileRelay: no users have a SeedKey configured. " +
                 "Any client that sends a valid X-App-Id can upload files.");
+
+        // Seed the key store on startup — inserts only if no entry exists yet for each AppId.
+        if (options.KeyStore != null)
+        {
+            foreach (var user in options.Users)
+                options.KeyStore.SeedAsync(user.AppId, user.SeedKey).GetAwaiter().GetResult();
+        }
 
         var group = app.MapGroup(base_);
 
@@ -57,33 +66,49 @@ public static class EndpointRouteBuilderExtensions
         {
             var appId = ctx.HttpContext.Request.Headers["X-App-Id"].ToString();
             var user  = options.Users.FirstOrDefault(u => u.AppId == appId);
-            if (user == null)
-                return Results.Unauthorized();
+            if (user == null) return Results.Unauthorized();
 
-            if (user.ApiKey.Length > 0)
+            KeyAuthResult? keyResult = null;
+
+            if (options.KeyStore != null)
+            {
+                var bearer = ctx.HttpContext.Request.Headers.Authorization.ToString();
+                var key = bearer.StartsWith("Bearer ", StringComparison.Ordinal) ? bearer["Bearer ".Length..] : "";
+                keyResult = await options.KeyStore.AuthenticateAsync(appId, key, options.KeyGracePeriod);
+                if (keyResult == null) return Results.Unauthorized();
+
+                if (keyResult.Status != KeyStatus.Current)
+                    ctx.HttpContext.Response.Headers["X-Key-Status"] = keyResult.Status switch
+                    {
+                        KeyStatus.PreviousGracePending => "previous-grace-pending",
+                        KeyStatus.PreviousGraceActive  => "previous-grace-active",
+                        _                              => "previous"
+                    };
+            }
+            else if (user.SeedKey.Length > 0)
             {
                 var auth = ctx.HttpContext.Request.Headers.Authorization.ToString();
-                if (auth != $"Bearer {user.ApiKey}")
-                    return Results.Unauthorized();
+                if (auth != $"Bearer {user.SeedKey}") return Results.Unauthorized();
             }
 
-            ctx.HttpContext.Items["AppUser"] = user;
+            ctx.HttpContext.Items["AppUser"]   = user;
+            ctx.HttpContext.Items["KeyStatus"] = keyResult?.Status;
             return await next(ctx);
         });
 
-        group.MapGet("/ping", (ChunkedTransferOptions opts) =>
-            Results.Ok(new FileRelay.Core.Models.ServerInfoResponse
+        group.MapGet("/ping", (FileRelayOptions opts) =>
+            Results.Ok(new ServerInfoResponse
             {
                 BuildTime       = opts.ServerBuildTime,
                 AssemblyVersion = typeof(TransferService).Assembly.GetName().Version?.ToString()
             }));
 
-        group.MapPost("/negotiate", async (HttpContext context, TransferService svc, FileRelay.Core.Models.TransferNegotiateRequest req, CancellationToken ct) =>
+        group.MapPost("/negotiate", async (HttpContext context, TransferService svc, TransferNegotiateRequest req, CancellationToken ct) =>
         {
-            var user = context.Items["AppUser"] as AppUser;
-            req.AppId = user?.AppId ?? "";
-            var targets = user?.Targets ?? Array.Empty<FileRelay.Core.Interfaces.ITransferTarget>();
-            var result = await svc.NegotiateAsync(req, targets, ct);
+            var user    = (AppUser)context.Items["AppUser"]!;
+            req.AppId   = user.AppId;
+            var targets = user.Targets;
+            var result  = await svc.NegotiateAsync(req, targets, ct);
             return Results.Ok(result);
         });
 
@@ -94,14 +119,14 @@ public static class EndpointRouteBuilderExtensions
             int chunkIndex,
             CancellationToken ct) =>
         {
-            var user = context.Items["AppUser"] as AppUser;
-            var result = await svc.UploadChunkAsync(context, transferId, chunkIndex, user?.AppId ?? "", ct);
+            var user   = (AppUser)context.Items["AppUser"]!;
+            var result = await svc.UploadChunkAsync(context, transferId, chunkIndex, user.AppId, ct);
             return result.StatusCode switch
             {
                 200 => Results.Ok(new { result.IsComplete }),
                 409 => Results.Conflict(new { result.Error }),
                 404 => Results.NotFound(new { result.Error }),
-                _ => Results.BadRequest(new { result.Error })
+                _   => Results.BadRequest(new { result.Error })
             };
         });
 
@@ -116,6 +141,31 @@ public static class EndpointRouteBuilderExtensions
             {
                 return Results.NotFound();
             }
+        });
+
+        group.MapPost("/rotate-key", async (HttpContext context, FileRelayOptions opts, RotateKeyRequest req, CancellationToken ct) =>
+        {
+            if (opts.KeyStore == null)
+                return Results.Problem(statusCode: 501, title: "Key rotation not configured",
+                    detail: "No key store is configured on this server.");
+
+            var keyStatus = context.Items["KeyStatus"] as KeyStatus?;
+            if (keyStatus == KeyStatus.PreviousGraceActive)
+                return Results.Problem(statusCode: 403, title: "Rotation not permitted",
+                    detail: "The new key has already been used. Use the current key to rotate.");
+
+            if (await opts.KeyStore.HasActiveGracePeriodAsync(((AppUser)context.Items["AppUser"]!).AppId))
+                return Results.Problem(statusCode: 403, title: "Rotation not permitted",
+                    detail: "A grace period is currently active. Wait for it to expire before rotating again.");
+
+            var user = (AppUser)context.Items["AppUser"]!;
+
+            byte[] clientEntropy;
+            try   { clientEntropy = Convert.FromBase64String(req.ClientEntropy ?? ""); }
+            catch { clientEntropy = Array.Empty<byte>(); }
+
+            var newKey = await opts.KeyStore.RotateAsync(user.AppId, clientEntropy);
+            return Results.Ok(new RotateKeyResponse { NewKey = newKey });
         });
 
         return app;
