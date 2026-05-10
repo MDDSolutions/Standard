@@ -16,18 +16,27 @@ public static class EndpointRouteBuilderExtensions
         var logger = app.ServiceProvider.GetRequiredService<ILoggerFactory>()
             .CreateLogger("FileRelay.Server");
 
-        if (options.RequireHttps && string.IsNullOrEmpty(options.ApiKey))
+        if (options.Users.Count == 0)
             throw new InvalidOperationException(
-                "ChunkedTransferOptions: ApiKey must be set when RequireHttps is true. " +
-                "An HTTPS-only endpoint with no API key allows any client to upload files.");
+                "ChunkedTransferOptions: at least one user must be configured. " +
+                "Users define the target paths where uploaded files are written. " +
+                "A user with no ApiKey is valid and makes that user's transfers unauthenticated.");
 
-        if (!options.RequireHttps && string.IsNullOrEmpty(options.ApiKey))
-            logger.LogWarning("FileRelay: RequireHttps and ApiKey are both disabled. " +
-                "The transfer endpoint is completely open — any client can upload files.");
+        var anyKeyless  = options.Users.Any(u => u.ApiKey.Length == 0);
+        var anyKeyed    = options.Users.Any(u => u.ApiKey.Length > 0);
 
-        if (!options.RequireHttps && !string.IsNullOrEmpty(options.ApiKey))
-            logger.LogWarning("FileRelay: RequireHttps is disabled and the API key will be transmitted in cleartext. " +
+        if (options.RequireHttps && anyKeyless)
+            throw new InvalidOperationException(
+                "ChunkedTransferOptions: all users must have an ApiKey when RequireHttps is true. " +
+                "A user with no ApiKey on an HTTPS-only endpoint allows any client to upload as that user.");
+
+        if (!options.RequireHttps && anyKeyed)
+            logger.LogWarning("FileRelay: RequireHttps is disabled and API keys will be transmitted in cleartext. " +
                 "This is only safe if this server is behind a reverse proxy that terminates TLS.");
+
+        if (!options.RequireHttps && !anyKeyed)
+            logger.LogWarning("FileRelay: no users have an ApiKey configured. " +
+                "Any client that sends a valid X-App-Id can upload files.");
 
         var group = app.MapGroup(base_);
 
@@ -44,16 +53,23 @@ public static class EndpointRouteBuilderExtensions
             });
         }
 
-        if (options.ApiKey is { Length: > 0 } expectedKey)
+        group.AddEndpointFilter(async (ctx, next) =>
         {
-            group.AddEndpointFilter(async (ctx, next) =>
+            var appId = ctx.HttpContext.Request.Headers["X-App-Id"].ToString();
+            var user  = options.Users.FirstOrDefault(u => u.AppId == appId);
+            if (user == null)
+                return Results.Unauthorized();
+
+            if (user.ApiKey.Length > 0)
             {
                 var auth = ctx.HttpContext.Request.Headers.Authorization.ToString();
-                if (auth != $"Bearer {expectedKey}")
+                if (auth != $"Bearer {user.ApiKey}")
                     return Results.Unauthorized();
-                return await next(ctx);
-            });
-        }
+            }
+
+            ctx.HttpContext.Items["AppUser"] = user;
+            return await next(ctx);
+        });
 
         group.MapGet("/ping", (ChunkedTransferOptions opts) =>
             Results.Ok(new FileRelay.Core.Models.ServerInfoResponse
@@ -62,9 +78,12 @@ public static class EndpointRouteBuilderExtensions
                 AssemblyVersion = typeof(TransferService).Assembly.GetName().Version?.ToString()
             }));
 
-        group.MapPost("/negotiate", async (TransferService svc, FileRelay.Core.Models.TransferNegotiateRequest req, CancellationToken ct) =>
+        group.MapPost("/negotiate", async (HttpContext context, TransferService svc, FileRelay.Core.Models.TransferNegotiateRequest req, CancellationToken ct) =>
         {
-            var result = await svc.NegotiateAsync(req, ct);
+            var user = context.Items["AppUser"] as AppUser;
+            req.AppId = user?.AppId ?? "";
+            var targets = user?.Targets ?? Array.Empty<FileRelay.Core.Interfaces.ITransferTarget>();
+            var result = await svc.NegotiateAsync(req, targets, ct);
             return Results.Ok(result);
         });
 
@@ -75,7 +94,8 @@ public static class EndpointRouteBuilderExtensions
             int chunkIndex,
             CancellationToken ct) =>
         {
-            var result = await svc.UploadChunkAsync(context, transferId, chunkIndex, ct);
+            var user = context.Items["AppUser"] as AppUser;
+            var result = await svc.UploadChunkAsync(context, transferId, chunkIndex, user?.AppId ?? "", ct);
             return result.StatusCode switch
             {
                 200 => Results.Ok(new { result.IsComplete }),

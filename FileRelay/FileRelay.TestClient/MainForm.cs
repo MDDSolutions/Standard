@@ -25,6 +25,7 @@ public partial class MainForm : Form
     private void ApplySettings()
     {
         txtServerUrl.Text              = _settings.ServerUrl;
+        txtAppId.Text                  = _settings.AppId;
         txtApiKey.Text                 = _settings.ApiKey;
         nudParallel.Value              = Math.Clamp(_settings.ParallelConnections, (int)nudParallel.Minimum, (int)nudParallel.Maximum);
         nudBandwidth.Value             = (decimal)Math.Clamp(_settings.ThrottleMBps, (double)nudBandwidth.Minimum, (double)nudBandwidth.Maximum);
@@ -33,10 +34,11 @@ public partial class MainForm : Form
 
     private void WireSettingsEvents()
     {
-        txtServerUrl.Validated           += (_, _) => { _settings.ServerUrl           = txtServerUrl.Text;              _settings.Save(); };
-        txtApiKey.Validated              += (_, _) => { _settings.ApiKey              = txtApiKey.Text;                 _settings.Save(); };
-        nudParallel.Validated            += (_, _) => { _settings.ParallelConnections  = (int)nudParallel.Value;        _settings.Save(); };
-        nudBandwidth.Validated           += (_, _) => { _settings.ThrottleMBps         = (double)nudBandwidth.Value;   _settings.Save(); };
+        txtServerUrl.Validated += (_, _) => { _settings.ServerUrl          = txtServerUrl.Text;         _settings.Save(); };
+        txtAppId.Validated     += (_, _) => { _settings.AppId              = txtAppId.Text;              _settings.Save(); };
+        txtApiKey.Validated    += (_, _) => { _settings.ApiKey             = txtApiKey.Text;             _settings.Save(); };
+        nudParallel.Validated  += (_, _) => { _settings.ParallelConnections = (int)nudParallel.Value;   _settings.Save(); };
+        nudBandwidth.Validated += (_, _) => { _settings.ThrottleMBps        = (double)nudBandwidth.Value; _settings.Save(); };
     }
 
     private void chkAllowUntrustedCert_CheckedChanged(object? sender, EventArgs e)
@@ -86,11 +88,14 @@ public partial class MainForm : Form
         RefreshOverallRate();
     }
 
-    internal (string ServerUrl, int ParallelConnections, double ThrottleMBps, string? ApiKey, bool AllowUntrustedCert) GetSettings()
+    internal (string ServerUrl, int ParallelConnections, double ThrottleMBps, string? AppId, string? ApiKey, bool AllowUntrustedCert) GetSettings()
     {
-        var key = txtApiKey.Text.Trim();
+        var appId = txtAppId.Text.Trim();
+        var key   = txtApiKey.Text.Trim();
         return (txtServerUrl.Text, (int)nudParallel.Value, (double)nudBandwidth.Value,
-                key.Length > 0 ? key : null, chkAllowUntrustedCert.Checked);
+                appId.Length > 0 ? appId : null,
+                key.Length   > 0 ? key   : null,
+                chkAllowUntrustedCert.Checked);
     }
 
     private void RefreshOverallRate()
@@ -105,6 +110,7 @@ public partial class MainForm : Form
     {
         var active = Interlocked.CompareExchange(ref GlobalActiveCount, 0, 0) > 0;
         txtServerUrl.Enabled          = !active;
+        txtAppId.Enabled              = !active;
         txtApiKey.Enabled             = !active;
         nudParallel.Enabled           = !active;
         nudBandwidth.Enabled          = !active;
@@ -126,13 +132,13 @@ public partial class MainForm : Form
 
     private async void btnTest_Click(object sender, EventArgs e)
     {
-        var (serverUrl, _, _, apiKey, allowUntrustedCert) = GetSettings();
+        var (serverUrl, _, _, appId, apiKey, allowUntrustedCert) = GetSettings();
         btnTest.Enabled = false;
         lblOverall.Text = "Testing...";
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            var info = await FileRelayClient.PingAsync(new Uri(serverUrl), apiKey, cts.Token, allowUntrustedCert);
+            var info = await FileRelayClient.PingAsync(new Uri(serverUrl), appId, apiKey, cts.Token, allowUntrustedCert);
             var build = info.BuildTime.HasValue ? info.BuildTime.Value.ToString("yyyy-MM-dd HH:mm") : "unknown";
             var ver   = info.AssemblyVersion ?? "?";
             lblOverall.Text = $"Server build: {build}  v{ver}";

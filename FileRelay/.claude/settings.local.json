@@ -20,7 +20,9 @@
       "Bash(powershell -NoProfile -Command \"Stop-Process -Id 28508 -Force -ErrorAction SilentlyContinue\")",
       "Bash(powershell -NoProfile -Command \"Get-Process dotnet -ErrorAction SilentlyContinue | Stop-Process -Force\")",
       "Bash(dotnet new *)",
-      "Bash(dotnet add *)"
+      "Bash(dotnet add *)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Dev\\\\Standard\\\\FileRelay\" -Recurse -Name)",
+      "PowerShell(head -100)"
     ]
   }
 }

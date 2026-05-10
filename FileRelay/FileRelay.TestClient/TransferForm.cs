@@ -35,7 +35,7 @@ public partial class TransferForm : Form
         if (string.IsNullOrWhiteSpace(txtFilePath.Text)) return;
 
         var filePath = txtFilePath.Text;
-        var (serverUrl, parallelConnections, throttleMBps, apiKey, allowUntrustedCert) = _hub.GetSettings();
+        var (serverUrl, parallelConnections, throttleMBps, appId, apiKey, allowUntrustedCert) = _hub.GetSettings();
 
         var throttle    = _hub.BeginUpload(throttleMBps, parallelConnections);
         var transferNum = Interlocked.Increment(ref MainForm.NextTransferNumber);
@@ -47,7 +47,7 @@ public partial class TransferForm : Form
         try
         {
             var file = new FileInfo(filePath);
-            using var client = new FileRelayClient(new Uri(serverUrl), apiKey: apiKey, allowUntrustedCertificate: allowUntrustedCert);
+            using var client = new FileRelayClient(new Uri(serverUrl), appId: appId, apiKey: apiKey, allowUntrustedCertificate: allowUntrustedCert);
 
             var maxRetries = 5;
             await client.UploadFileAsync(file, new UploadOptions

@@ -8,7 +8,7 @@ namespace FileRelay.Storage.Sqlite;
 
 public class SqliteTransferStateStore : ITransferStateStore
 {
-    private const int SchemaVersion = 1;
+    private const int SchemaVersion = 2;
 
     private readonly string _connectionString;
 
@@ -33,6 +33,11 @@ public class SqliteTransferStateStore : ITransferStateStore
             CreateSchema(conn);
             ExecuteNonQuery(conn, $"PRAGMA user_version = {SchemaVersion}");
         }
+        else if (version == 1)
+        {
+            ExecuteNonQuery(conn, "ALTER TABLE Transfers ADD COLUMN AppId TEXT NOT NULL DEFAULT ''");
+            ExecuteNonQuery(conn, $"PRAGMA user_version = {SchemaVersion}");
+        }
         else if (version != SchemaVersion)
         {
             throw new InvalidOperationException(
@@ -46,6 +51,7 @@ public class SqliteTransferStateStore : ITransferStateStore
         ExecuteNonQuery(conn, """
             CREATE TABLE Transfers (
                 TransferId      TEXT    NOT NULL PRIMARY KEY,
+                AppId           TEXT    NOT NULL DEFAULT '',
                 Filename        TEXT    NOT NULL,
                 FileSizeBytes   INTEGER NOT NULL,
                 FileHash        TEXT,
@@ -77,13 +83,15 @@ public class SqliteTransferStateStore : ITransferStateStore
         {
             cmd.CommandText = """
                 SELECT TransferId, Filename, FileSizeBytes, FileHash, Context,
-                       ChunkSizeBytes, TotalChunks, IsComplete, CreatedAt, LastActivityAt
+                       ChunkSizeBytes, TotalChunks, IsComplete, CreatedAt, LastActivityAt, AppId
                 FROM Transfers
                 WHERE IsComplete = 0
+                  AND AppId        = @AppId
                   AND Filename      = @Filename
                   AND FileSizeBytes = @FileSizeBytes
                   AND (Context = @Context OR (Context IS NULL AND @Context IS NULL))
                 """;
+            cmd.Parameters.AddWithValue("@AppId", request.AppId);
             cmd.Parameters.AddWithValue("@Filename", request.Filename);
             cmd.Parameters.AddWithValue("@FileSizeBytes", request.FileSizeBytes);
             cmd.Parameters.AddWithValue("@Context", (object?)contextJson ?? DBNull.Value);
@@ -98,6 +106,7 @@ public class SqliteTransferStateStore : ITransferStateStore
         var state = new TransferState
         {
             TransferId     = Guid.NewGuid(),
+            AppId          = request.AppId,
             Filename       = request.Filename,
             FileSizeBytes  = request.FileSizeBytes,
             FileHash       = request.FileHash,
@@ -112,13 +121,14 @@ public class SqliteTransferStateStore : ITransferStateStore
         {
             cmd.CommandText = """
                 INSERT INTO Transfers
-                    (TransferId, Filename, FileSizeBytes, FileHash, Context,
+                    (TransferId, AppId, Filename, FileSizeBytes, FileHash, Context,
                      ChunkSizeBytes, TotalChunks, IsComplete, CreatedAt, LastActivityAt)
                 VALUES
-                    (@TransferId, @Filename, @FileSizeBytes, @FileHash, @Context,
+                    (@TransferId, @AppId, @Filename, @FileSizeBytes, @FileHash, @Context,
                      @ChunkSizeBytes, @TotalChunks, 0, @CreatedAt, @LastActivityAt)
                 """;
             cmd.Parameters.AddWithValue("@TransferId",     state.TransferId.ToString());
+            cmd.Parameters.AddWithValue("@AppId",          state.AppId);
             cmd.Parameters.AddWithValue("@Filename",       state.Filename);
             cmd.Parameters.AddWithValue("@FileSizeBytes",  state.FileSizeBytes);
             cmd.Parameters.AddWithValue("@FileHash",       (object?)state.FileHash ?? DBNull.Value);
@@ -139,7 +149,7 @@ public class SqliteTransferStateStore : ITransferStateStore
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             SELECT TransferId, Filename, FileSizeBytes, FileHash, Context,
-                   ChunkSizeBytes, TotalChunks, IsComplete, CreatedAt, LastActivityAt
+                   ChunkSizeBytes, TotalChunks, IsComplete, CreatedAt, LastActivityAt, AppId
             FROM Transfers
             WHERE TransferId = @TransferId
             """;
@@ -255,7 +265,7 @@ public class SqliteTransferStateStore : ITransferStateStore
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             SELECT TransferId, Filename, FileSizeBytes, FileHash, Context,
-                   ChunkSizeBytes, TotalChunks, IsComplete, CreatedAt, LastActivityAt
+                   ChunkSizeBytes, TotalChunks, IsComplete, CreatedAt, LastActivityAt, AppId
             FROM Transfers
             WHERE IsComplete = 0 AND LastActivityAt < @Cutoff
             """;
@@ -301,6 +311,7 @@ public class SqliteTransferStateStore : ITransferStateStore
         var state = new TransferState
         {
             TransferId     = transferId,
+            AppId          = reader.IsDBNull(10) ? "" : reader.GetString(10),
             Filename       = reader.GetString(1),
             FileSizeBytes  = reader.GetInt64(2),
             FileHash       = reader.IsDBNull(3) ? null : reader.GetString(3),

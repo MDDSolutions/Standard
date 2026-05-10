@@ -10,7 +10,7 @@ public class FileRelayClient : IDisposable
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
 
-    public FileRelayClient(Uri baseUri, string? apiKey = null, bool allowUntrustedCertificate = false)
+    public FileRelayClient(Uri baseUri, string? appId = null, string? apiKey = null, bool allowUntrustedCertificate = false)
     {
         var handler = new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(10) };
         if (allowUntrustedCertificate)
@@ -21,6 +21,8 @@ public class FileRelayClient : IDisposable
             DefaultRequestVersion = System.Net.HttpVersion.Version20,
             DefaultVersionPolicy  = HttpVersionPolicy.RequestVersionOrLower,
         };
+        if (appId is { Length: > 0 })
+            _http.DefaultRequestHeaders.Add("X-App-Id", appId);
         if (apiKey is { Length: > 0 })
             _http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
         _ownsHttp = true;
@@ -198,7 +200,7 @@ public class FileRelayClient : IDisposable
     }
 
     public static async Task<Core.Models.ServerInfoResponse> PingAsync(
-        Uri baseUri, string? apiKey, CancellationToken ct, bool allowUntrustedCertificate = false)
+        Uri baseUri, string? appId, string? apiKey, CancellationToken ct, bool allowUntrustedCertificate = false)
     {
         var handler = new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(5) };
         if (allowUntrustedCertificate)
@@ -210,6 +212,8 @@ public class FileRelayClient : IDisposable
             DefaultRequestVersion = System.Net.HttpVersion.Version20,
             DefaultVersionPolicy  = HttpVersionPolicy.RequestVersionOrLower,
         };
+        if (appId is { Length: > 0 })
+            http.DefaultRequestHeaders.Add("X-App-Id", appId);
         if (apiKey is { Length: > 0 })
             http.DefaultRequestHeaders.Authorization =
                 new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);

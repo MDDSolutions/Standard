@@ -3,12 +3,19 @@ using FileRelay.Core.Interfaces;
 
 namespace FileRelay.Server;
 
+public class AppUser
+{
+    public string AppId { get; set; } = "";
+    public string ApiKey { get; set; } = "";
+    public IReadOnlyList<ITransferTarget> Targets { get; set; } = Array.Empty<ITransferTarget>();
+}
+
 public class ChunkedTransferOptions
 {
     public string BasePath { get; set; } = "/transfer";
     public int ChunkSizeMB { get; set; } = 50;
     public ITransferStateStore StateStore { get; set; } = new InMemoryTransferStateStore();
-    public IReadOnlyList<ITransferTarget> Targets { get; set; } = Array.Empty<ITransferTarget>();
+    public IReadOnlyList<AppUser> Users { get; set; } = Array.Empty<AppUser>();
     public ITransferCompleteHandler? OnComplete { get; set; }
 
     /// <summary>
@@ -16,13 +23,6 @@ public class ChunkedTransferOptions
     /// Set to false only for local/test deployments where TLS is not available.
     /// </summary>
     public bool RequireHttps { get; set; } = true;
-
-
-    /// <summary>
-    /// Pre-shared API key. When set, all transfer endpoints require
-    /// Authorization: Bearer {ApiKey}. Null disables authentication.
-    /// </summary>
-    public string? ApiKey { get; set; }
 
     /// <summary>
     /// How long to retain completed transfer records before pruning. Default 30 days.
@@ -60,8 +60,7 @@ public class ChunkedTransferOptions
     {
         options.Limits.Http2.InitialConnectionWindowSize = 16 * 1024 * 1024;
         options.Limits.Http2.InitialStreamWindowSize     =  4 * 1024 * 1024;
-        options.Limits.Http2.MaxFrameSize                =  1 * 1024 * 1024; // 1MB; tells client it can send large frames
+        options.Limits.Http2.MaxFrameSize                =  1 * 1024 * 1024;
         options.Limits.MaxRequestBodySize = (long)chunkSizeMB * 1024 * 1024 * 4;
     }
-
 }

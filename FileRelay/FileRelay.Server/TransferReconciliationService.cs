@@ -59,8 +59,11 @@ internal sealed class TransferReconciliationService : BackgroundService
         {
             ct.ThrowIfCancellationRequested();
 
+            var targets = _options.Users.FirstOrDefault(u => u.AppId == state.AppId)?.Targets
+                ?? Array.Empty<FileRelay.Core.Interfaces.ITransferTarget>();
+
             var intact = true;
-            foreach (var target in _options.Targets)
+            foreach (var target in targets)
             {
                 if (!await target.IsPartialIntactAsync(state.TransferId, state.Filename, state.FileSizeBytes, state.Context, ct))
                 {

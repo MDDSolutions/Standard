@@ -28,15 +28,20 @@ builder.Services.AddChunkedTransfer(options =>
     options.BasePath          = "/transfer";
     options.ChunkSizeMB       = chunkSizeMB;
     options.RequireHttps      = cfg.GetValue<bool>("RequireHttps", true);
-    options.ApiKey            = cfg.GetValue<string>("ApiKey");
     options.ServerReceiveMBps = cfg.GetValue<double>("ServerReceiveMBps", 0);
     options.ServerBuildTime   = MDDFoundation.Foundation.BuildTime(Assembly.GetExecutingAssembly());
 
-    var targetPaths = cfg.GetSection("Targets").Get<string[]>() ?? [];
-    if (targetPaths.Length == 0)
-        throw new InvalidOperationException("FileRelay config: Targets must contain at least one path.");
+    var userConfigs = cfg.GetSection("Users").Get<UserConfig[]>() ?? [];
+    if (userConfigs.Length == 0)
+        throw new InvalidOperationException("FileRelay config: Users must contain at least one entry.");
 
-    options.Targets   = targetPaths.Select(p => (ITransferTarget)new LocalDirectoryTarget(ResolvePath(p))).ToArray();
+    options.Users = userConfigs.Select(u => new AppUser
+    {
+        AppId   = u.AppId,
+        ApiKey  = u.ApiKey,
+        Targets = u.Targets.Select(p => (ITransferTarget)new LocalDirectoryTarget(ResolvePath(p))).ToArray()
+    }).ToArray();
+
     options.OnComplete = new ConsoleCompleteHandler();
     options.StateStore = new SqliteTransferStateStore(Path.Combine(AppContext.BaseDirectory, "transfers.db"));
 });
@@ -48,11 +53,18 @@ app.Run();
 static string ResolvePath(string path) =>
     Path.IsPathRooted(path) ? path : Path.Combine(AppContext.BaseDirectory, path);
 
+class UserConfig
+{
+    public string   AppId   { get; set; } = "";
+    public string   ApiKey  { get; set; } = "";
+    public string[] Targets { get; set; } = [];
+}
+
 class ConsoleCompleteHandler : ITransferCompleteHandler
 {
     public Task OnCompleteAsync(CompletedTransfer transfer, CancellationToken ct)
     {
-        Console.WriteLine($"[Complete] {transfer.Filename}  {transfer.FileSizeBytes:N0} bytes  id={transfer.TransferId}");
+        Console.WriteLine($"[Complete] [{transfer.AppId}] {transfer.Filename}  {transfer.FileSizeBytes:N0} bytes  id={transfer.TransferId}");
         return Task.CompletedTask;
     }
 }

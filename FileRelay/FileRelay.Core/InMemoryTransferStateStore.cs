@@ -16,6 +16,7 @@ public class InMemoryTransferStateStore : ITransferStateStore
         {
             var existing = _states.Values.FirstOrDefault(s =>
                 !s.IsComplete &&
+                s.AppId == request.AppId &&
                 s.Filename == request.Filename &&
                 s.FileSizeBytes == request.FileSizeBytes &&
                 ContextEquals(s.Context, request.Context));
@@ -26,6 +27,7 @@ public class InMemoryTransferStateStore : ITransferStateStore
             var state = new TransferState
             {
                 TransferId     = Guid.NewGuid(),
+                AppId          = request.AppId,
                 Filename       = request.Filename,
                 FileSizeBytes  = request.FileSizeBytes,
                 FileHash       = request.FileHash,

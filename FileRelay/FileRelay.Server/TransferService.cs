@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using FileRelay.Core;
+using FileRelay.Core.Interfaces;
 using FileRelay.Core.Models;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
@@ -22,7 +23,8 @@ public class TransferService
             : null;
     }
 
-    public async Task<TransferNegotiateResponse> NegotiateAsync(TransferNegotiateRequest request, CancellationToken ct)
+    public async Task<TransferNegotiateResponse> NegotiateAsync(
+        TransferNegotiateRequest request, IReadOnlyList<ITransferTarget> targets, CancellationToken ct)
     {
         var state = await _options.StateStore.GetOrCreateAsync(request, _options.ChunkSizeMB);
         var missing = await _options.StateStore.GetMissingChunksAsync(state.TransferId);
@@ -32,7 +34,7 @@ public class TransferService
         // rather than write only the remaining chunks into a fresh empty file and assemble garbage.
         if (missing.Count < state.TotalChunks)
         {
-            foreach (var target in _options.Targets)
+            foreach (var target in targets)
             {
                 if (!await target.IsPartialIntactAsync(state.TransferId, state.Filename, state.FileSizeBytes, state.Context, ct))
                 {
@@ -46,7 +48,7 @@ public class TransferService
         }
 
         // Idempotent: registers the in-memory path mapping and creates the .partial only if absent.
-        foreach (var target in _options.Targets)
+        foreach (var target in targets)
             await target.InitializeAsync(state.TransferId, state.Filename, state.FileSizeBytes, state.Context, ct);
 
         return new TransferNegotiateResponse
@@ -76,7 +78,8 @@ public class TransferService
         };
     }
 
-    public async Task<ChunkUploadResult> UploadChunkAsync(HttpContext context, Guid transferId, int chunkIndex, CancellationToken ct)
+    public async Task<ChunkUploadResult> UploadChunkAsync(
+        HttpContext context, Guid transferId, int chunkIndex, string appId, CancellationToken ct)
     {
         var sizeFeature = context.Features.Get<IHttpMaxRequestBodySizeFeature>();
         if (sizeFeature != null && !sizeFeature.IsReadOnly)
@@ -84,7 +87,10 @@ public class TransferService
 
         var state = await _options.StateStore.GetAsync(transferId);
         if (state == null) return ChunkUploadResult.NotFound();
+        if (state.AppId != appId) return ChunkUploadResult.NotFound();
         if (state.IsComplete) return ChunkUploadResult.AlreadyConfirmed();
+
+        var targets = GetTargets(state.AppId);
 
         var missing = await _options.StateStore.GetMissingChunksAsync(transferId);
         if (!missing.Contains(chunkIndex)) return ChunkUploadResult.AlreadyConfirmed();
@@ -96,12 +102,12 @@ public class TransferService
         var dataLength = contentLength.Value - 32;
         var offset = ChunkMath.ChunkOffset(chunkIndex, state.ChunkSizeBytes);
 
-        var writers = new List<Stream>(_options.Targets.Count);
+        var writers = new List<Stream>(targets.Count);
         try
         {
             try
             {
-                foreach (var target in _options.Targets)
+                foreach (var target in targets)
                     writers.Add(await target.OpenChunkWriterAsync(transferId, chunkIndex, offset, ct));
             }
             catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
@@ -128,7 +134,7 @@ public class TransferService
             var remainingMissing = await _options.StateStore.GetMissingChunksAsync(transferId);
             if (remainingMissing.Count == 0)
             {
-                _ = Task.Run(() => CompleteTransferAsync(state, CancellationToken.None), CancellationToken.None);
+                _ = Task.Run(() => CompleteTransferAsync(state, targets, CancellationToken.None), CancellationToken.None);
                 return ChunkUploadResult.Ok(isComplete: true);
             }
 
@@ -140,17 +146,22 @@ public class TransferService
         }
     }
 
-    private async Task CompleteTransferAsync(TransferState state, CancellationToken ct)
+    private IReadOnlyList<ITransferTarget> GetTargets(string appId)
+        => _options.Users.FirstOrDefault(u => u.AppId == appId)?.Targets
+            ?? Array.Empty<ITransferTarget>();
+
+    private async Task CompleteTransferAsync(
+        TransferState state, IReadOnlyList<ITransferTarget> targets, CancellationToken ct)
     {
         try
         {
             if (!string.IsNullOrEmpty(state.FileHash))
             {
-                foreach (var target in _options.Targets)
+                foreach (var target in targets)
                     await target.VerifyAsync(state.TransferId, state.FileHash, ct);
             }
 
-            foreach (var target in _options.Targets)
+            foreach (var target in targets)
                 await target.FinalizeAsync(state.TransferId, ct);
 
             await _options.StateStore.MarkCompleteAsync(state.TransferId);
@@ -159,16 +170,17 @@ public class TransferService
             {
                 var completed = new CompletedTransfer
                 {
-                    TransferId = state.TransferId,
-                    Filename = state.Filename,
+                    TransferId    = state.TransferId,
+                    AppId         = state.AppId,
+                    Filename      = state.Filename,
                     FileSizeBytes = state.FileSizeBytes,
-                    FileHash = state.FileHash,
-                    CompletedAt = DateTime.UtcNow
+                    FileHash      = state.FileHash,
+                    CompletedAt   = DateTime.UtcNow
                 };
                 await _options.OnComplete.OnCompleteAsync(completed, ct);
             }
 
-            _logger.LogInformation("Transfer {TransferId} ({Filename}) complete.", state.TransferId, state.Filename);
+            _logger.LogInformation("Transfer {TransferId} ({Filename}, app={AppId}) complete.", state.TransferId, state.Filename, state.AppId);
         }
         catch (Exception ex)
         {

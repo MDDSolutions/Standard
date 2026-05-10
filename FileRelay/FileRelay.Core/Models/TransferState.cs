@@ -3,6 +3,7 @@ namespace FileRelay.Core.Models;
 public class TransferState
 {
     public Guid TransferId { get; set; }
+    public string AppId { get; set; } = "";
     public string Filename { get; set; } = "";
     public long FileSizeBytes { get; set; }
     public string? FileHash { get; set; }
