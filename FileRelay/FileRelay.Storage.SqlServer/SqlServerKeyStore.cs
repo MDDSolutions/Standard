@@ -128,11 +128,17 @@ public class SqlServerKeyStore : IKeyStore
     {
         using var conn = Open();
         using var cmd  = conn.CreateCommand();
-        cmd.CommandText = "SELECT CurrentKey, PreviousKey FROM FileRelay.AppKeys WHERE AppId = @AppId";
+        cmd.CommandText = "SELECT CurrentKey, PreviousKey, GracePeriodEnd FROM FileRelay.AppKeys WHERE AppId = @AppId";
         cmd.Parameters.AddWithValue("@AppId", appId);
         using var reader = await cmd.ExecuteReaderAsync();
         if (!await reader.ReadAsync()) return null;
-        return (reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1));
+
+        var previous = reader.IsDBNull(1) ? null : reader.GetString(1);
+        var gracePeriodEnd = reader.IsDBNull(2) ? (DateTime?)null : reader.GetDateTime(2);
+        if (previous != null && gracePeriodEnd.HasValue && DateTime.UtcNow >= gracePeriodEnd.Value)
+            previous = null;
+
+        return (reader.GetString(0), previous);
     }
 
     public async Task<bool> HasActiveGracePeriodAsync(string appId)

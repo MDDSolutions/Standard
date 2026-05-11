@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using FileRelay.Core;
 using FileRelay.Core.Interfaces;
@@ -13,6 +14,7 @@ public class TransferService
     private readonly FileRelayOptions _options;
     private readonly ILogger<TransferService> _logger;
     private readonly BandwidthLimiter? _serverThrottle;
+    private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _completionLocks = new();
 
     public TransferService(FileRelayOptions options, ILogger<TransferService> logger)
     {
@@ -26,6 +28,8 @@ public class TransferService
     public async Task<TransferNegotiateResponse> NegotiateAsync(
         TransferNegotiateRequest request, IReadOnlyList<ITransferTarget> targets, CancellationToken ct)
     {
+        TransferPathValidator.ThrowIfInvalid(request.Filename, request.Context);
+
         var state = await _options.StateStore.GetOrCreateAsync(request, _options.ChunkSizeMB);
         var missing = await _options.StateStore.GetMissingChunksAsync(state.TransferId);
 
@@ -51,30 +55,48 @@ public class TransferService
         foreach (var target in targets)
             await target.InitializeAsync(state.TransferId, state.Filename, state.FileSizeBytes, state.Context, ct);
 
+        // Build sparse ChunkRunIndexes — only chunks where the next expected run is > 1 (i.e., a prior
+        // attempt was made). Omitted chunks are implicitly run index 1.
+        var claimedRunIndexes = await _options.StateStore.GetClaimedRunIndexesAsync(state.TransferId);
+        IReadOnlyDictionary<int, int>? chunkRunIndexes = null;
+        if (claimedRunIndexes.Count > 0)
+        {
+            var d = new Dictionary<int, int>();
+            foreach (var kvp in claimedRunIndexes)
+                if (kvp.Value >= 1)
+                    d[kvp.Key] = kvp.Value + 1; // next expected = claimed + 1
+            if (d.Count > 0) chunkRunIndexes = d;
+        }
+
         return new TransferNegotiateResponse
         {
-            TransferId = state.TransferId,
-            ChunkSizeMB = _options.ChunkSizeMB,
-            TotalChunks = state.TotalChunks,
-            ChunksNeeded = missing
+            TransferId      = state.TransferId,
+            ChunkSizeMB     = _options.ChunkSizeMB,
+            TotalChunks     = state.TotalChunks,
+            ChunksNeeded    = missing,
+            ChunkRunIndexes = chunkRunIndexes,
+            HttpChunkPort   = _options.AllowHttpChunks && _options.HttpPort > 0
+                                  ? _options.HttpPort : null
         };
     }
 
-    public async Task<TransferStatusResponse> GetStatusAsync(Guid transferId, CancellationToken ct)
+    public async Task<TransferStatusResponse> GetStatusAsync(Guid transferId, string appId, CancellationToken ct)
     {
         var state = await _options.StateStore.GetAsync(transferId)
             ?? throw new KeyNotFoundException($"Transfer {transferId} not found.");
+        if (state.AppId != appId)
+            throw new KeyNotFoundException($"Transfer {transferId} not found.");
 
         var missing = await _options.StateStore.GetMissingChunksAsync(transferId);
 
         return new TransferStatusResponse
         {
-            TransferId = state.TransferId,
-            Filename = state.Filename,
-            ChunksTotal = state.TotalChunks,
+            TransferId      = state.TransferId,
+            Filename        = state.Filename,
+            ChunksTotal     = state.TotalChunks,
             ChunksConfirmed = state.TotalChunks - missing.Count,
-            ChunksNeeded = missing,
-            IsComplete = state.IsComplete
+            ChunksNeeded    = missing,
+            IsComplete      = state.IsComplete
         };
     }
 
@@ -92,14 +114,36 @@ public class TransferService
 
         var targets = GetTargets(state.AppId);
 
-        var missing = await _options.StateStore.GetMissingChunksAsync(transferId);
-        if (!missing.Contains(chunkIndex)) return ChunkUploadResult.AlreadyConfirmed();
+        if (state.ConfirmedChunks.Contains(chunkIndex)) return ChunkUploadResult.AlreadyConfirmed();
+
+        long expectedDataLength;
+        try
+        {
+            expectedDataLength = ChunkMath.ChunkLength(chunkIndex, state.FileSizeBytes, state.ChunkSizeBytes);
+        }
+        catch (ArgumentOutOfRangeException ex)
+        {
+            return ChunkUploadResult.BadRequest(ex.Message);
+        }
+        catch (OverflowException ex)
+        {
+            return ChunkUploadResult.BadRequest(ex.Message);
+        }
 
         var contentLength = context.Request.ContentLength;
         if (contentLength == null || contentLength < 32)
             return ChunkUploadResult.BadRequest("Content-Length required and must be at least 32.");
 
-        var dataLength = contentLength.Value - 32;
+        var expectedContentLength = expectedDataLength + 32;
+        if (contentLength.Value != expectedContentLength)
+            return ChunkUploadResult.BadRequest(
+                $"Invalid chunk length: expected {expectedDataLength} data bytes plus 32 hash bytes, got {contentLength.Value} total bytes.");
+
+        var runIndex = context.Items.TryGetValue("RunIndex", out var ri) && ri is int r ? r : 1;
+        if (!await _options.StateStore.TryClaimChunkAsync(transferId, chunkIndex, runIndex))
+            return ChunkUploadResult.ChunkClaimConflict();
+
+        var dataLength = expectedDataLength;
         var offset = ChunkMath.ChunkOffset(chunkIndex, state.ChunkSizeBytes);
 
         var writers = new List<Stream>(targets.Count);
@@ -132,13 +176,56 @@ public class TransferService
             await _options.StateStore.ConfirmChunkAsync(transferId, chunkIndex, actualHash);
 
             var remainingMissing = await _options.StateStore.GetMissingChunksAsync(transferId);
-            if (remainingMissing.Count == 0)
+            if (remainingMissing.Count > 0)
+                return ChunkUploadResult.Ok(isComplete: false);
+
+            // --- Last chunk: all completion work blocks the response from here ---
+
+            bool finalized;
+            try
             {
-                _ = Task.Run(() => CompleteTransferAsync(state, targets, CancellationToken.None), CancellationToken.None);
-                return ChunkUploadResult.Ok(isComplete: true);
+                finalized = await FinalizeTransferAsync(state, targets, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Transfer {TransferId} ({Filename}): finalization failed.", state.TransferId, state.Filename);
+                return ChunkUploadResult.InternalError("Transfer finalization failed.");
             }
 
-            return ChunkUploadResult.Ok(isComplete: false);
+            if (!finalized)
+                return ChunkUploadResult.Ok(isComplete: true); // concurrent request finalized it
+
+            var completed = new CompletedTransfer
+            {
+                TransferId    = state.TransferId,
+                AppId         = state.AppId,
+                Filename      = state.Filename,
+                FileSizeBytes = state.FileSizeBytes,
+                FileHash      = state.FileHash,
+                CompletedAt   = DateTime.UtcNow
+            };
+
+            if (_options.OnComplete != null)
+            {
+                bool valid;
+                try { valid = await _options.OnComplete.OnValidateAsync(completed, ct); }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Transfer {TransferId}: OnValidateAsync threw.", state.TransferId);
+                    return ChunkUploadResult.InternalError("Transfer validation failed.");
+                }
+                if (!valid)
+                {
+                    _logger.LogWarning("Transfer {TransferId} ({Filename}): rejected by OnValidateAsync.", state.TransferId, state.Filename);
+                    return ChunkUploadResult.ValidationFailed();
+                }
+
+                // Fire-and-forget — runs after the 200 is sent.
+                _ = Task.Run(() => FireAndForgetCompleteAsync(completed), CancellationToken.None);
+            }
+
+            _logger.LogInformation("Transfer {TransferId} ({Filename}, app={AppId}) complete.", state.TransferId, state.Filename, state.AppId);
+            return ChunkUploadResult.Ok(isComplete: true);
         }
         finally
         {
@@ -150,48 +237,45 @@ public class TransferService
         => _options.Users.FirstOrDefault(u => u.AppId == appId)?.Targets
             ?? Array.Empty<ITransferTarget>();
 
-    private async Task CompleteTransferAsync(
+    private async Task<bool> FinalizeTransferAsync(
         TransferState state, IReadOnlyList<ITransferTarget> targets, CancellationToken ct)
     {
+        var gate = _completionLocks.GetOrAdd(state.TransferId, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
         try
         {
+            var latestState = await _options.StateStore.GetAsync(state.TransferId)
+                ?? throw new KeyNotFoundException($"Transfer {state.TransferId} not found.");
+            if (latestState.IsComplete)
+                return false;
+
             if (!string.IsNullOrEmpty(state.FileHash))
-            {
                 foreach (var target in targets)
                     await target.VerifyAsync(state.TransferId, state.FileHash, ct);
-            }
 
             foreach (var target in targets)
                 await target.FinalizeAsync(state.TransferId, ct);
 
-            await _options.StateStore.MarkCompleteAsync(state.TransferId);
-
-            if (_options.OnComplete != null)
-            {
-                var completed = new CompletedTransfer
-                {
-                    TransferId    = state.TransferId,
-                    AppId         = state.AppId,
-                    Filename      = state.Filename,
-                    FileSizeBytes = state.FileSizeBytes,
-                    FileHash      = state.FileHash,
-                    CompletedAt   = DateTime.UtcNow
-                };
-                await _options.OnComplete.OnCompleteAsync(completed, ct);
-            }
-
-            _logger.LogInformation("Transfer {TransferId} ({Filename}, app={AppId}) complete.", state.TransferId, state.Filename, state.AppId);
+            return await _options.StateStore.MarkCompleteAsync(state.TransferId);
         }
-        catch (Exception ex)
+        finally
         {
-            _logger.LogError(ex, "Error completing transfer {TransferId}.", state.TransferId);
+            gate.Release();
+            if (gate.CurrentCount == 1)
+                _completionLocks.TryRemove(state.TransferId, out _);
         }
+    }
+
+    private async Task FireAndForgetCompleteAsync(CompletedTransfer completed)
+    {
+        try { await _options.OnComplete!.OnCompleteAsync(completed, CancellationToken.None); }
+        catch (Exception ex) { _logger.LogError(ex, "OnCompleteAsync failed for transfer {TransferId}.", completed.TransferId); }
     }
 
     private async Task<(string ActualHash, byte[] ClientHash)> TeeWithHash(
         Stream source, List<Stream> destinations, SHA256 sha, long dataLength, CancellationToken ct)
     {
-        var buffer = new byte[81920];
+        var buffer = new byte[1024 * 1024]; // match Kestrel MaxFrameSize
         var remaining = dataLength;
         while (remaining > 0)
         {
@@ -219,8 +303,11 @@ public class ChunkUploadResult
     public string? Error { get; private init; }
     public bool IsComplete { get; private init; }
 
-    public static ChunkUploadResult Ok(bool isComplete) => new() { StatusCode = 200, IsComplete = isComplete };
-    public static ChunkUploadResult AlreadyConfirmed() => new() { StatusCode = 409, Error = "Chunk already confirmed." };
-    public static ChunkUploadResult NotFound() => new() { StatusCode = 404, Error = "Transfer not found." };
-    public static ChunkUploadResult BadRequest(string error) => new() { StatusCode = 400, Error = error };
+    public static ChunkUploadResult Ok(bool isComplete)       => new() { StatusCode = 200, IsComplete = isComplete };
+    public static ChunkUploadResult AlreadyConfirmed()        => new() { StatusCode = 409, Error = "Chunk already confirmed." };
+    public static ChunkUploadResult ChunkClaimConflict()      => new() { StatusCode = 409, Error = "Chunk run index conflict. Another request owns this run." };
+    public static ChunkUploadResult NotFound()                => new() { StatusCode = 404, Error = "Transfer not found." };
+    public static ChunkUploadResult BadRequest(string err)    => new() { StatusCode = 400, Error = err };
+    public static ChunkUploadResult ValidationFailed()        => new() { StatusCode = 422, Error = "Transfer rejected by server." };
+    public static ChunkUploadResult InternalError(string err) => new() { StatusCode = 500, Error = err };
 }

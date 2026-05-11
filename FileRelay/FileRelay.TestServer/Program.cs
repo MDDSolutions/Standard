@@ -8,7 +8,7 @@ using FileRelay.Storage.SqlServer;
 var builder = WebApplication.CreateBuilder(args);
 var cfg = builder.Configuration.GetSection("FileRelay");
 
-var httpPort  = cfg.GetValue<int>("HttpPort");
+var httpPort  = cfg.GetValue<int>("HttpPort",0);
 var httpsPort = cfg.GetValue<int>("HttpsPort");
 
 if (httpPort <= 0 && httpsPort <= 0)
@@ -29,6 +29,8 @@ builder.Services.AddFileRelay(options =>
     options.BasePath          = "/transfer";
     options.ChunkSizeMB       = chunkSizeMB;
     options.RequireHttps      = cfg.GetValue<bool>("RequireHttps", true);
+    options.AllowHttpChunks   = cfg.GetValue<bool>("AllowHttpChunks", false);
+    options.HttpPort          = httpPort;
     options.ServerReceiveMBps = cfg.GetValue<double>("ServerReceiveMBps", 0);
     options.ServerBuildTime   = MDDFoundation.Foundation.BuildTime(Assembly.GetExecutingAssembly());
 
@@ -70,6 +72,9 @@ class UserConfig
 
 class ConsoleCompleteHandler : ITransferCompleteHandler
 {
+    public Task<bool> OnValidateAsync(CompletedTransfer transfer, CancellationToken ct)
+        => Task.FromResult(true);
+
     public Task OnCompleteAsync(CompletedTransfer transfer, CancellationToken ct)
     {
         Console.WriteLine($"[Complete] [{transfer.AppId}] {transfer.Filename}  {transfer.FileSizeBytes:N0} bytes  id={transfer.TransferId}");

@@ -123,11 +123,17 @@ public class SqliteKeyStore : IKeyStore
     {
         using var conn = Open();
         using var cmd  = conn.CreateCommand();
-        cmd.CommandText = "SELECT CurrentKey, PreviousKey FROM AppKeys WHERE AppId = @AppId";
+        cmd.CommandText = "SELECT CurrentKey, PreviousKey, GracePeriodEnd FROM AppKeys WHERE AppId = @AppId";
         cmd.Parameters.AddWithValue("@AppId", appId);
         using var reader = await cmd.ExecuteReaderAsync();
         if (!await reader.ReadAsync()) return null;
-        return (reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1));
+
+        var previous = reader.IsDBNull(1) ? null : reader.GetString(1);
+        var gracePeriodEnd = reader.IsDBNull(2) ? null : reader.GetString(2);
+        if (previous != null && gracePeriodEnd != null && DateTime.UtcNow >= DateTime.Parse(gracePeriodEnd))
+            previous = null;
+
+        return (reader.GetString(0), previous);
     }
 
     public async Task<bool> HasActiveGracePeriodAsync(string appId)

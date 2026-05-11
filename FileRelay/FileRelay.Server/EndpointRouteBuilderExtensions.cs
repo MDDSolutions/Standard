@@ -55,10 +55,20 @@ public static class EndpointRouteBuilderExtensions
             group.AddEndpointFilter(async (ctx, next) =>
             {
                 if (!ctx.HttpContext.Request.IsHttps)
+                {
+                    // Chunk endpoints authenticate via per-chunk HMAC — API key never on the wire.
+                    // When AllowHttpChunks is enabled, HTTP is safe for the data path.
+                    if (options.AllowHttpChunks)
+                    {
+                        var rv = ctx.HttpContext.Request.RouteValues;
+                        if (rv.ContainsKey("transferId") && rv.ContainsKey("chunkIndex"))
+                            return await next(ctx);
+                    }
                     return Results.Problem(
                         statusCode: 421,
                         title: "HTTPS Required",
                         detail: "This endpoint does not accept plaintext HTTP connections.");
+                }
                 return await next(ctx);
             });
         }
@@ -82,18 +92,21 @@ public static class EndpointRouteBuilderExtensions
                 try { tokenBytes = Convert.FromBase64String(rawToken); } catch { }
                 if (tokenBytes == null) return Results.Unauthorized();
 
+                var runIndexStr = ctx.HttpContext.Request.Headers["X-Run-Index"].ToString();
+                var runIndex = int.TryParse(runIndexStr, out var ri) && ri >= 1 ? ri : 1;
+
                 bool valid;
                 if (options.KeyStore != null)
                 {
                     var keys = await options.KeyStore.GetKeysAsync(appId);
                     if (keys == null) return Results.Unauthorized();
-                    valid = ChunkToken.Validate(tokenBytes, keys.Value.Current, appId, transferId, chunkIndex)
+                    valid = ChunkToken.Validate(tokenBytes, keys.Value.Current, appId, transferId, chunkIndex, runIndex)
                          || (keys.Value.Previous != null &&
-                             ChunkToken.Validate(tokenBytes, keys.Value.Previous, appId, transferId, chunkIndex));
+                             ChunkToken.Validate(tokenBytes, keys.Value.Previous, appId, transferId, chunkIndex, runIndex));
                 }
                 else if (user.SeedKey.Length > 0)
                 {
-                    valid = ChunkToken.Validate(tokenBytes, user.SeedKey, appId, transferId, chunkIndex);
+                    valid = ChunkToken.Validate(tokenBytes, user.SeedKey, appId, transferId, chunkIndex, runIndex);
                 }
                 else
                 {
@@ -101,7 +114,8 @@ public static class EndpointRouteBuilderExtensions
                 }
 
                 if (!valid) return Results.Unauthorized();
-                ctx.HttpContext.Items["AppUser"] = user;
+                ctx.HttpContext.Items["AppUser"]  = user;
+                ctx.HttpContext.Items["RunIndex"] = runIndex;
                 return await next(ctx);
             }
 
@@ -143,10 +157,25 @@ public static class EndpointRouteBuilderExtensions
 
         group.MapPost("/negotiate", async (HttpContext context, TransferService svc, TransferNegotiateRequest req, CancellationToken ct) =>
         {
+            if (!TransferPathValidator.TryValidate(req.Filename, req.Context, out var validationError))
+                return Results.BadRequest(new { Error = validationError });
+
             var user    = (AppUser)context.Items["AppUser"]!;
             req.AppId   = user.AppId;
             var targets = user.Targets;
-            var result  = await svc.NegotiateAsync(req, targets, ct);
+            TransferNegotiateResponse result;
+            try
+            {
+                result = await svc.NegotiateAsync(req, targets, ct);
+            }
+            catch (ArgumentOutOfRangeException ex)
+            {
+                return Results.BadRequest(new { Error = ex.Message });
+            }
+            catch (OverflowException ex)
+            {
+                return Results.BadRequest(new { Error = ex.Message });
+            }
             return Results.Ok(result);
         });
 
@@ -164,15 +193,18 @@ public static class EndpointRouteBuilderExtensions
                 200 => Results.Ok(new { result.IsComplete }),
                 409 => Results.Conflict(new { result.Error }),
                 404 => Results.NotFound(new { result.Error }),
+                422 => Results.UnprocessableEntity(new { result.Error }),
+                500 => Results.Problem(statusCode: 500, detail: result.Error),
                 _   => Results.BadRequest(new { result.Error })
             };
         });
 
-        group.MapGet("/{transferId:guid}/status", async (TransferService svc, Guid transferId, CancellationToken ct) =>
+        group.MapGet("/{transferId:guid}/status", async (HttpContext context, TransferService svc, Guid transferId, CancellationToken ct) =>
         {
             try
             {
-                var status = await svc.GetStatusAsync(transferId, ct);
+                var user = (AppUser)context.Items["AppUser"]!;
+                var status = await svc.GetStatusAsync(transferId, user.AppId, ct);
                 return Results.Ok(status);
             }
             catch (KeyNotFoundException)

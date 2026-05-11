@@ -42,6 +42,22 @@ public class FileRelayOptions
     public bool RequireHttps { get; set; } = true;
 
     /// <summary>
+    /// Allow chunk upload requests over plain HTTP even when RequireHttps is true.
+    /// Safe to enable when the payload is pre-encrypted: chunk endpoints authenticate via a
+    /// per-chunk HMAC token bound to the app ID, transfer ID, chunk index, and run index —
+    /// the API key is never sent on these requests. Control-plane endpoints (negotiate,
+    /// rotate-key, ping) continue to require HTTPS.
+    /// </summary>
+    public bool AllowHttpChunks { get; set; } = false;
+
+    /// <summary>
+    /// The plain-HTTP port this server listens on. When AllowHttpChunks is true and this
+    /// is non-zero, the server advertises this port in negotiate responses so clients can
+    /// automatically route chunk data over HTTP without any client-side configuration.
+    /// </summary>
+    public int HttpPort { get; set; }
+
+    /// <summary>
     /// How long to retain completed transfer records before pruning. Default 30 days.
     /// </summary>
     public TimeSpan CompletedTransferRetention { get; set; } = TimeSpan.FromDays(30);

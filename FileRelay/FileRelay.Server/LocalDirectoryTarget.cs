@@ -12,16 +12,18 @@ public class LocalDirectoryTarget : ITransferTarget
 
     public LocalDirectoryTarget(string rootPath)
     {
-        _rootPath = rootPath;
-        Directory.CreateDirectory(rootPath);
+        _rootPath = Path.GetFullPath(rootPath);
+        Directory.CreateDirectory(_rootPath);
     }
 
     public Task InitializeAsync(Guid transferId, string filename, long fileSizeBytes, TransferContext? context, CancellationToken ct)
     {
+        TransferPathValidator.ThrowIfInvalid(filename, context);
+
         var relativePath = context?.RelativePath ?? "";
         _transfers[transferId] = (relativePath, filename);
 
-        var dir = Path.Combine(_rootPath, relativePath);
+        var dir = TransferPathValidator.ResolveDirectory(_rootPath, relativePath);
         Directory.CreateDirectory(dir);
 
         var partialPath = PartialPath(transferId);
@@ -71,21 +73,28 @@ public class LocalDirectoryTarget : ITransferTarget
 
     public Task<bool> IsPartialIntactAsync(Guid transferId, string filename, long expectedSizeBytes, TransferContext? context, CancellationToken ct)
     {
+        TransferPathValidator.ThrowIfInvalid(filename, context);
+
         var relativePath = context?.RelativePath ?? "";
-        var partialPath = Path.Combine(_rootPath, relativePath, filename + ".partial");
-        if (!File.Exists(partialPath)) return Task.FromResult(false);
-        return Task.FromResult(new FileInfo(partialPath).Length == expectedSizeBytes);
+        var partialFile = new FileInfo(TransferPathValidator.ResolveFile(_rootPath, relativePath, filename + ".partial"));
+        if (!partialFile.Exists) return Task.FromResult(false);
+        if (partialFile.Length != expectedSizeBytes)
+        {
+            partialFile.Delete();
+            return Task.FromResult(false);
+        }
+        return Task.FromResult(true);
     }
 
     private string PartialPath(Guid transferId)
     {
         var (relativePath, filename) = _transfers[transferId];
-        return Path.Combine(_rootPath, relativePath, filename + ".partial");
+        return TransferPathValidator.ResolveFile(_rootPath, relativePath, filename + ".partial");
     }
 
     private string FinalPath(Guid transferId)
     {
         var (relativePath, filename) = _transfers[transferId];
-        return Path.Combine(_rootPath, relativePath, filename);
+        return TransferPathValidator.ResolveFile(_rootPath, relativePath, filename);
     }
 }

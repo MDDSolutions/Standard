@@ -8,7 +8,7 @@ namespace FileRelay.Storage.Sqlite;
 
 public class SqliteTransferStateStore : ITransferStateStore
 {
-    private const int SchemaVersion = 2;
+    private const int SchemaVersion = 3;
 
     private readonly string _connectionString;
 
@@ -36,6 +36,12 @@ public class SqliteTransferStateStore : ITransferStateStore
         else if (version == 1)
         {
             ExecuteNonQuery(conn, "ALTER TABLE Transfers ADD COLUMN AppId TEXT NOT NULL DEFAULT ''");
+            CreateChunkClaimsTable(conn);
+            ExecuteNonQuery(conn, $"PRAGMA user_version = {SchemaVersion}");
+        }
+        else if (version == 2)
+        {
+            CreateChunkClaimsTable(conn);
             ExecuteNonQuery(conn, $"PRAGMA user_version = {SchemaVersion}");
         }
         else if (version != SchemaVersion)
@@ -71,7 +77,18 @@ public class SqliteTransferStateStore : ITransferStateStore
                 FOREIGN KEY (TransferId) REFERENCES Transfers(TransferId)
             );
             """);
+        CreateChunkClaimsTable(conn);
     }
+
+    private static void CreateChunkClaimsTable(SqliteConnection conn) =>
+        ExecuteNonQuery(conn, """
+            CREATE TABLE IF NOT EXISTS ChunkClaims (
+                TransferId  TEXT    NOT NULL,
+                ChunkIndex  INTEGER NOT NULL,
+                RunIndex    INTEGER NOT NULL,
+                PRIMARY KEY (TransferId, ChunkIndex)
+            )
+            """);
 
     public async Task<TransferState> GetOrCreateAsync(TransferNegotiateRequest request, int serverChunkSizeMB)
     {
@@ -219,13 +236,54 @@ public class SqliteTransferStateStore : ITransferStateStore
             .ToList();
     }
 
-    public async Task MarkCompleteAsync(Guid transferId)
+    public async Task<bool> TryClaimChunkAsync(Guid transferId, int chunkIndex, int runIndex)
     {
         using var conn = Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "UPDATE Transfers SET IsComplete = 1 WHERE TransferId = @TransferId";
+
+        if (runIndex == 1)
+        {
+            // No prior claim — attempt a plain INSERT OR IGNORE. Returns 1 on success, 0 if the PK
+            // already exists (another request beat us to it).
+            cmd.CommandText = "INSERT OR IGNORE INTO ChunkClaims (TransferId, ChunkIndex, RunIndex) VALUES (@TransferId, @ChunkIndex, 1)";
+            cmd.Parameters.AddWithValue("@TransferId", transferId.ToString());
+            cmd.Parameters.AddWithValue("@ChunkIndex", chunkIndex);
+            return await cmd.ExecuteNonQueryAsync() == 1;
+        }
+        else
+        {
+            // Retry path — advance the run index only if the stored value is exactly runIndex - 1.
+            cmd.CommandText = """
+                UPDATE ChunkClaims SET RunIndex = @RunIndex
+                WHERE TransferId = @TransferId AND ChunkIndex = @ChunkIndex AND RunIndex = @RunIndex - 1
+                """;
+            cmd.Parameters.AddWithValue("@TransferId", transferId.ToString());
+            cmd.Parameters.AddWithValue("@ChunkIndex", chunkIndex);
+            cmd.Parameters.AddWithValue("@RunIndex", runIndex);
+            return await cmd.ExecuteNonQueryAsync() == 1;
+        }
+    }
+
+    public async Task<IReadOnlyDictionary<int, int>> GetClaimedRunIndexesAsync(Guid transferId)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT ChunkIndex, RunIndex FROM ChunkClaims WHERE TransferId = @TransferId";
         cmd.Parameters.AddWithValue("@TransferId", transferId.ToString());
-        await cmd.ExecuteNonQueryAsync();
+        var result = new Dictionary<int, int>();
+        using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+            result[reader.GetInt32(0)] = reader.GetInt32(1);
+        return result;
+    }
+
+    public async Task<bool> MarkCompleteAsync(Guid transferId)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE Transfers SET IsComplete = 1 WHERE TransferId = @TransferId AND IsComplete = 0";
+        cmd.Parameters.AddWithValue("@TransferId", transferId.ToString());
+        return await cmd.ExecuteNonQueryAsync() == 1;
     }
 
     public async Task PruneCompletedAsync(TimeSpan retention)
@@ -238,9 +296,20 @@ public class SqliteTransferStateStore : ITransferStateStore
         {
             cmd.Transaction = tx;
             cmd.CommandText = """
+                DELETE FROM ChunkClaims WHERE TransferId IN (
+                    SELECT TransferId FROM Transfers WHERE IsComplete = 1 AND CreatedAt < @Cutoff
+                )
+                """;
+            cmd.Parameters.AddWithValue("@Cutoff", cutoff.ToString("O"));
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = """
                 DELETE FROM ConfirmedChunks WHERE TransferId IN (
-                    SELECT TransferId FROM Transfers
-                    WHERE IsComplete = 1 AND CreatedAt < @Cutoff
+                    SELECT TransferId FROM Transfers WHERE IsComplete = 1 AND CreatedAt < @Cutoff
                 )
                 """;
             cmd.Parameters.AddWithValue("@Cutoff", cutoff.ToString("O"));
@@ -284,18 +353,11 @@ public class SqliteTransferStateStore : ITransferStateStore
         using var conn = Open();
         using var tx = conn.BeginTransaction();
 
-        using (var cmd = conn.CreateCommand())
+        foreach (var table in new[] { "ChunkClaims", "ConfirmedChunks", "Transfers" })
         {
+            using var cmd = conn.CreateCommand();
             cmd.Transaction = tx;
-            cmd.CommandText = "DELETE FROM ConfirmedChunks WHERE TransferId = @TransferId";
-            cmd.Parameters.AddWithValue("@TransferId", transferId.ToString());
-            await cmd.ExecuteNonQueryAsync();
-        }
-
-        using (var cmd = conn.CreateCommand())
-        {
-            cmd.Transaction = tx;
-            cmd.CommandText = "DELETE FROM Transfers WHERE TransferId = @TransferId";
+            cmd.CommandText = $"DELETE FROM {table} WHERE TransferId = @TransferId";
             cmd.Parameters.AddWithValue("@TransferId", transferId.ToString());
             await cmd.ExecuteNonQueryAsync();
         }

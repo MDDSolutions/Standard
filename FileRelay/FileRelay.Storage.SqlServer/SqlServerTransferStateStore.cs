@@ -8,7 +8,7 @@ namespace FileRelay.Storage.SqlServer;
 
 public class SqlServerTransferStateStore : ITransferStateStore
 {
-    private const int SchemaVersion = 2;
+    private const int SchemaVersion = 3;
 
     private readonly string _connectionString;
 
@@ -45,6 +45,12 @@ public class SqlServerTransferStateStore : ITransferStateStore
         else if (version == 1)
         {
             ExecuteNonQuery(conn, "ALTER TABLE FileRelay.Transfers ADD AppId NVARCHAR(256) NOT NULL DEFAULT ''");
+            CreateChunkClaimsTable(conn);
+            ExecuteNonQuery(conn, $"UPDATE FileRelay.SchemaVersion SET Version = {SchemaVersion}");
+        }
+        else if (version == 2)
+        {
+            CreateChunkClaimsTable(conn);
             ExecuteNonQuery(conn, $"UPDATE FileRelay.SchemaVersion SET Version = {SchemaVersion}");
         }
         else if (version != SchemaVersion)
@@ -80,7 +86,20 @@ public class SqlServerTransferStateStore : ITransferStateStore
                 FOREIGN KEY (TransferId) REFERENCES FileRelay.Transfers(TransferId)
             );
             """);
+        CreateChunkClaimsTable(conn);
     }
+
+    private static void CreateChunkClaimsTable(SqlConnection conn) =>
+        ExecuteNonQuery(conn, """
+            IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'FileRelay' AND TABLE_NAME = 'ChunkClaims')
+            CREATE TABLE FileRelay.ChunkClaims (
+                TransferId  UNIQUEIDENTIFIER NOT NULL,
+                ChunkIndex  INT              NOT NULL,
+                RunIndex    INT              NOT NULL,
+                PRIMARY KEY (TransferId, ChunkIndex),
+                FOREIGN KEY (TransferId) REFERENCES FileRelay.Transfers(TransferId)
+            )
+            """);
 
     public async Task<TransferState> GetOrCreateAsync(TransferNegotiateRequest request, int serverChunkSizeMB)
     {
@@ -246,13 +265,62 @@ public class SqlServerTransferStateStore : ITransferStateStore
             .ToList();
     }
 
-    public async Task MarkCompleteAsync(Guid transferId)
+    public async Task<bool> TryClaimChunkAsync(Guid transferId, int chunkIndex, int runIndex)
     {
         using var conn = Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "UPDATE FileRelay.Transfers SET IsComplete = 1 WHERE TransferId = @TransferId";
+
+        if (runIndex == 1)
+        {
+            // No prior claim exists — attempt a plain INSERT. The PK rejects concurrent duplicates.
+            cmd.CommandText = "INSERT INTO FileRelay.ChunkClaims (TransferId, ChunkIndex, RunIndex) VALUES (@TransferId, @ChunkIndex, 1)";
+            cmd.Parameters.AddWithValue("@TransferId", transferId);
+            cmd.Parameters.AddWithValue("@ChunkIndex", chunkIndex);
+            try
+            {
+                await cmd.ExecuteNonQueryAsync();
+                return true;
+            }
+            catch (SqlException ex) when (ex.Number is 2627 or 2601) // unique/pk violation
+            {
+                return false;
+            }
+        }
+        else
+        {
+            // Retry path — advance the run index only if the stored value is exactly runIndex - 1.
+            // UPDATE with a WHERE predicate is atomic at the row level; no explicit transaction needed.
+            cmd.CommandText = """
+                UPDATE FileRelay.ChunkClaims SET RunIndex = @RunIndex
+                WHERE TransferId = @TransferId AND ChunkIndex = @ChunkIndex AND RunIndex = @RunIndex - 1
+                """;
+            cmd.Parameters.AddWithValue("@TransferId", transferId);
+            cmd.Parameters.AddWithValue("@ChunkIndex", chunkIndex);
+            cmd.Parameters.AddWithValue("@RunIndex", runIndex);
+            return await cmd.ExecuteNonQueryAsync() == 1;
+        }
+    }
+
+    public async Task<IReadOnlyDictionary<int, int>> GetClaimedRunIndexesAsync(Guid transferId)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT ChunkIndex, RunIndex FROM FileRelay.ChunkClaims WHERE TransferId = @TransferId";
         cmd.Parameters.AddWithValue("@TransferId", transferId);
-        await cmd.ExecuteNonQueryAsync();
+        var result = new Dictionary<int, int>();
+        using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+            result[reader.GetInt32(0)] = reader.GetInt32(1);
+        return result;
+    }
+
+    public async Task<bool> MarkCompleteAsync(Guid transferId)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE FileRelay.Transfers SET IsComplete = 1 WHERE TransferId = @TransferId AND IsComplete = 0";
+        cmd.Parameters.AddWithValue("@TransferId", transferId);
+        return await cmd.ExecuteNonQueryAsync() == 1;
     }
 
     public async Task PruneCompletedAsync(TimeSpan retention)
@@ -261,13 +329,13 @@ public class SqlServerTransferStateStore : ITransferStateStore
         using var conn = Open();
         using var tx = conn.BeginTransaction();
 
-        using (var cmd = conn.CreateCommand())
+        foreach (var table in new[] { "FileRelay.ChunkClaims", "FileRelay.ConfirmedChunks" })
         {
+            using var cmd = conn.CreateCommand();
             cmd.Transaction = tx;
-            cmd.CommandText = """
-                DELETE FROM FileRelay.ConfirmedChunks WHERE TransferId IN (
-                    SELECT TransferId FROM FileRelay.Transfers
-                    WHERE IsComplete = 1 AND CreatedAt < @Cutoff
+            cmd.CommandText = $"""
+                DELETE FROM {table} WHERE TransferId IN (
+                    SELECT TransferId FROM FileRelay.Transfers WHERE IsComplete = 1 AND CreatedAt < @Cutoff
                 )
                 """;
             cmd.Parameters.AddWithValue("@Cutoff", cutoff);
@@ -317,18 +385,11 @@ public class SqlServerTransferStateStore : ITransferStateStore
         using var conn = Open();
         using var tx = conn.BeginTransaction();
 
-        using (var cmd = conn.CreateCommand())
+        foreach (var table in new[] { "FileRelay.ChunkClaims", "FileRelay.ConfirmedChunks", "FileRelay.Transfers" })
         {
+            using var cmd = conn.CreateCommand();
             cmd.Transaction = tx;
-            cmd.CommandText = "DELETE FROM FileRelay.ConfirmedChunks WHERE TransferId = @TransferId";
-            cmd.Parameters.AddWithValue("@TransferId", transferId);
-            await cmd.ExecuteNonQueryAsync();
-        }
-
-        using (var cmd = conn.CreateCommand())
-        {
-            cmd.Transaction = tx;
-            cmd.CommandText = "DELETE FROM FileRelay.Transfers WHERE TransferId = @TransferId";
+            cmd.CommandText = $"DELETE FROM {table} WHERE TransferId = @TransferId";
             cmd.Parameters.AddWithValue("@TransferId", transferId);
             await cmd.ExecuteNonQueryAsync();
         }

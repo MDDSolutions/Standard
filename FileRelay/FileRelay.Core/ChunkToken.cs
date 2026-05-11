@@ -5,18 +5,18 @@ namespace FileRelay.Core;
 
 public static class ChunkToken
 {
-    public static string Compute(string apiKey, string appId, Guid transferId, int chunkIndex)
+    public static string Compute(string apiKey, string appId, Guid transferId, int chunkIndex, int runIndex)
     {
         var keyBytes   = Encoding.UTF8.GetBytes(apiKey);
-        var inputBytes = Encoding.UTF8.GetBytes($"{appId}|{transferId:N}|{chunkIndex}");
+        var inputBytes = Encoding.UTF8.GetBytes($"{appId}|{transferId:N}|{chunkIndex}|{runIndex}");
         using var hmac = new HMACSHA256(keyBytes);
         return Convert.ToBase64String(hmac.ComputeHash(inputBytes));
     }
 
-    public static bool Validate(byte[] token, string apiKey, string appId, Guid transferId, int chunkIndex)
+    public static bool Validate(byte[] token, string apiKey, string appId, Guid transferId, int chunkIndex, int runIndex)
     {
         var keyBytes   = Encoding.UTF8.GetBytes(apiKey);
-        var inputBytes = Encoding.UTF8.GetBytes($"{appId}|{transferId:N}|{chunkIndex}");
+        var inputBytes = Encoding.UTF8.GetBytes($"{appId}|{transferId:N}|{chunkIndex}|{runIndex}");
         using var hmac = new HMACSHA256(keyBytes);
         var expected   = hmac.ComputeHash(inputBytes);
         return FixedTimeEquals(token, expected);

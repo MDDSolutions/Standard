@@ -50,10 +50,18 @@ public class UploadOptions
     /// <summary>
     /// When true, the client computes SHA-256 of the entire file before negotiating and
     /// the server verifies the assembled file against it at completion. Adds one sequential
-    /// read of the file (~1-3 seconds per GB on typical SSDs). Default true.
-    /// Set to false only when pre-hashing latency is unacceptable for very large files.
+    /// read of the file (~1-3 seconds per GB on typical SSDs) on each side. Default false.
+    /// Set to true only when hashing latency is acceptable for expected file sizes
+    /// Per-chunk hashing is always performed regardless of this setting, to ensure integrity of each chunk during upload.
     /// </summary>
     public bool ComputeFileHash { get; set; } = false;
+
+    /// <summary>
+    /// When true (default) and the server advertises an HTTP chunk port in the negotiate
+    /// response, chunk data is sent over plain HTTP while control traffic stays on HTTPS.
+    /// Set to false to force all traffic through the control-plane URI regardless.
+    /// </summary>
+    public bool UseHttpDataPath { get; set; } = true;
 
     internal int EffectiveParallelConnections => Throttle?.ParallelConnections ?? ParallelConnections;
 }

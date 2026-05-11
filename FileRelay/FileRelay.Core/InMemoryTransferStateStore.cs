@@ -9,6 +9,10 @@ public class InMemoryTransferStateStore : ITransferStateStore
     private readonly ConcurrentDictionary<Guid, TransferState> _states = new();
     private readonly SemaphoreSlim _createLock = new(1, 1);
 
+    // (transferId, chunkIndex) → highest claimed run index
+    private readonly Dictionary<(Guid, int), int> _claimedRunIndexes = new();
+    private readonly object _claimLock = new();
+
     public async Task<TransferState> GetOrCreateAsync(TransferNegotiateRequest request, int serverChunkSizeMB)
     {
         await _createLock.WaitAsync();
@@ -76,11 +80,38 @@ public class InMemoryTransferStateStore : ITransferStateStore
         return Task.FromResult<IReadOnlyList<int>>(missing);
     }
 
-    public Task MarkCompleteAsync(Guid transferId)
+    public Task<bool> TryClaimChunkAsync(Guid transferId, int chunkIndex, int runIndex)
     {
-        if (_states.TryGetValue(transferId, out var state))
+        lock (_claimLock)
+        {
+            var key = (transferId, chunkIndex);
+            _claimedRunIndexes.TryGetValue(key, out var current); // 0 if not present
+            if (runIndex != current + 1) return Task.FromResult(false);
+            _claimedRunIndexes[key] = runIndex;
+            return Task.FromResult(true);
+        }
+    }
+
+    public Task<IReadOnlyDictionary<int, int>> GetClaimedRunIndexesAsync(Guid transferId)
+    {
+        lock (_claimLock)
+        {
+            var result = _claimedRunIndexes
+                .Where(kvp => kvp.Key.Item1 == transferId)
+                .ToDictionary(kvp => kvp.Key.Item2, kvp => kvp.Value);
+            return Task.FromResult<IReadOnlyDictionary<int, int>>(result);
+        }
+    }
+
+    public Task<bool> MarkCompleteAsync(Guid transferId)
+    {
+        if (!_states.TryGetValue(transferId, out var state)) return Task.FromResult(false);
+        lock (state)
+        {
+            if (state.IsComplete) return Task.FromResult(false);
             state.IsComplete = true;
-        return Task.CompletedTask;
+            return Task.FromResult(true);
+        }
     }
 
     public Task PruneCompletedAsync(TimeSpan retention)
@@ -104,6 +135,11 @@ public class InMemoryTransferStateStore : ITransferStateStore
     public Task DeleteTransferStateAsync(Guid transferId)
     {
         _states.TryRemove(transferId, out _);
+        lock (_claimLock)
+        {
+            foreach (var key in _claimedRunIndexes.Keys.Where(k => k.Item1 == transferId).ToList())
+                _claimedRunIndexes.Remove(key);
+        }
         return Task.CompletedTask;
     }
 

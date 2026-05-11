@@ -28,7 +28,8 @@ public interface IKeyStore
     Task<KeyAuthResult?> AuthenticateAsync(string appId, string providedKey, TimeSpan gracePeriod);
 
     /// <summary>
-    /// Returns the current (and, if one exists, previous) key for the given app.
+    /// Returns the current key and the previous key when it is still valid for grace
+    /// recovery (pending or active, but not expired) for the given app.
     /// Used by the server to compute and validate per-chunk HMAC tokens without
     /// requiring the client to send the raw API key on chunk requests.
     /// Returns null if the appId is not found.

@@ -11,9 +11,15 @@ public class FileRelayClient : IDisposable
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
     private readonly ChunkTokenHandler? _chunkTokenHandler;
+    private readonly string? _appId;
+    private volatile string? _currentApiKey;
 
-    public FileRelayClient(Uri baseUri, string? appId = null, string? apiKey = null, bool allowUntrustedCertificate = false)
+    public FileRelayClient(Uri baseUri, string? appId = null, string? apiKey = null,
+        bool allowUntrustedCertificate = false)
     {
+        _appId          = appId;
+        _currentApiKey  = apiKey;
+
         var inner = new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(10) };
         if (allowUntrustedCertificate)
             inner.SslOptions.RemoteCertificateValidationCallback = (_, _, _, _) => true;
@@ -64,44 +70,58 @@ public class FileRelayClient : IDisposable
         };
 
         int attempt = 0;
-        while (true)
+        HttpClient? ownedChunkHttp = null;
+        try
         {
-            try
+            while (true)
             {
-                var negotiate = await NegotiateAsync(request, options, ct);
-                options.OnNegotiated?.Invoke(negotiate);
-                if (negotiate.ChunksNeeded.Count == 0) return;
+                try
+                {
+                    var negotiate = await NegotiateAsync(request, options, ct);
+                    options.OnNegotiated?.Invoke(negotiate);
+                    if (negotiate.ChunksNeeded.Count == 0) return;
 
-                var chunkSizeBytes = (long)negotiate.ChunkSizeMB * 1024 * 1024;
-                await UploadChunksAsync(file, negotiate, chunkSizeBytes, options, ct);
-                return;
+                    // On first negotiate response that advertises an HTTP chunk port, create a
+                    // separate plain-HTTP client for the data path. Reused on retries.
+                    if (ownedChunkHttp == null && options.UseHttpDataPath
+                        && negotiate.HttpChunkPort is { } port)
+                    {
+                        ownedChunkHttp = CreateHttpChunkClient(port);
+                    }
+
+                    var chunkSizeBytes = (long)negotiate.ChunkSizeMB * 1024 * 1024;
+                    await UploadChunksAsync(file, negotiate, chunkSizeBytes, ownedChunkHttp ?? _http, options, ct);
+                    return;
+                }
+                catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                {
+                    throw new UnauthorizedAccessException("The server rejected the API key.", ex);
+                }
+                catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.MisdirectedRequest)
+                {
+                    throw new InvalidOperationException("The server requires HTTPS. Use an https:// URL.", ex);
+                }
+                catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    throw new InvalidOperationException("The server no longer has a record of this transfer. The partial file may have been deleted. Restart the transfer manually if intended.", ex);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex) when (!ct.IsCancellationRequested && attempt < options.MaxRetries
+                    && ex is HttpRequestException or OperationCanceledException)
+                {
+                    attempt++;
+                    var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt));
+                    options.OnRetry?.Invoke(ex, attempt, delay);
+                    await Task.Delay(delay, ct);
+                }
             }
-            catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
-            {
-                throw new UnauthorizedAccessException("The server rejected the API key.", ex);
-            }
-            catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.MisdirectedRequest)
-            {
-                throw new InvalidOperationException("The server requires HTTPS. Use an https:// URL.", ex);
-            }
-            catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
-            {
-                throw new InvalidOperationException("The server no longer has a record of this transfer. The partial file may have been deleted. Restart the transfer manually if intended.", ex);
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw; // user cancelled — propagate cleanly
-            }
-            catch (Exception ex) when (!ct.IsCancellationRequested && attempt < options.MaxRetries
-                && ex is HttpRequestException or OperationCanceledException)
-            {
-                // HttpRequestException = server error / network refused
-                // OperationCanceledException (not user ct) = ConnectTimeout fired
-                attempt++;
-                var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt));
-                options.OnRetry?.Invoke(ex, attempt, delay);
-                await Task.Delay(delay, ct);
-            }
+        }
+        finally
+        {
+            ownedChunkHttp?.Dispose();
         }
     }
 
@@ -121,7 +141,30 @@ public class FileRelayClient : IDisposable
             ?? throw new InvalidOperationException("Empty rotate-key response.");
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", result.NewKey);
         _chunkTokenHandler?.UpdateApiKey(result.NewKey);
+        _currentApiKey = result.NewKey;
         return result.NewKey;
+    }
+
+    private HttpClient CreateHttpChunkClient(int httpPort)
+    {
+        var inner = new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(10) };
+        var apiKey = _currentApiKey;
+        var handler = _appId is { Length: > 0 } && apiKey is { Length: > 0 }
+            ? new ChunkTokenHandler(_appId, apiKey, inner)
+            : null;
+
+        var host = _http.BaseAddress!.Host;
+        var basePath = _http.BaseAddress.AbsolutePath.TrimEnd('/') + "/";
+        var client = new HttpClient(handler ?? (HttpMessageHandler)inner)
+        {
+            BaseAddress           = new Uri($"http://{host}:{httpPort}{basePath}"),
+            DefaultRequestVersion = System.Net.HttpVersion.Version20,
+            DefaultVersionPolicy  = HttpVersionPolicy.RequestVersionOrLower,
+        };
+        if (_appId is { Length: > 0 })
+            client.DefaultRequestHeaders.Add("X-App-Id", _appId);
+        // No Authorization header — chunks authenticate via per-chunk HMAC token.
+        return client;
     }
 
     private async Task<TransferNegotiateResponse> NegotiateAsync(
@@ -134,9 +177,9 @@ public class FileRelayClient : IDisposable
             ?? throw new InvalidOperationException("Empty negotiate response.");
     }
 
-    private async Task UploadChunksAsync(FileInfo file, TransferNegotiateResponse negotiate, long chunkSizeBytes, UploadOptions options, CancellationToken ct)
+    private async Task UploadChunksAsync(FileInfo file, TransferNegotiateResponse negotiate,
+        long chunkSizeBytes, HttpClient httpChunks, UploadOptions options, CancellationToken ct)
     {
-        // Bytes that actually need uploading this session (may be < file.Length on resume).
         var sessionBytesTotal = negotiate.ChunksNeeded
             .Sum(ci => ChunkMath.ChunkLength(ci, file.Length, chunkSizeBytes));
         var alreadyConfirmedBytes = file.Length - sessionBytesTotal;
@@ -187,8 +230,9 @@ public class FileRelayClient : IDisposable
             try
             {
                 var chunkBytes = ChunkMath.ChunkLength(chunkIndex, file.Length, chunkSizeBytes);
+                var runIndex   = negotiate.ChunkRunIndexes?.GetValueOrDefault(chunkIndex, 1) ?? 1;
                 void onBytesSent(long n) => Interlocked.Add(ref bytesInFlight, n);
-                await UploadChunkAsync(file, negotiate.TransferId, chunkIndex, chunkSizeBytes, onBytesSent, options, ct);
+                await UploadChunkAsync(file, negotiate.TransferId, chunkIndex, runIndex, chunkSizeBytes, httpChunks, onBytesSent, options, ct);
                 Interlocked.Add(ref bytesConfirmed, chunkBytes);
                 Interlocked.Add(ref bytesInFlight, -chunkBytes);
                 Interlocked.Increment(ref chunksConfirmed);
@@ -217,13 +261,21 @@ public class FileRelayClient : IDisposable
         });
     }
 
-    private async Task UploadChunkAsync(FileInfo file, Guid transferId, int chunkIndex, long chunkSizeBytes, Action<long> onBytesSent, UploadOptions options, CancellationToken ct)
+    private static async Task UploadChunkAsync(FileInfo file, Guid transferId, int chunkIndex,
+        int runIndex, long chunkSizeBytes, HttpClient httpChunks,
+        Action<long> onBytesSent, UploadOptions options, CancellationToken ct)
     {
         var offset = ChunkMath.ChunkOffset(chunkIndex, chunkSizeBytes);
         var length = ChunkMath.ChunkLength(chunkIndex, file.Length, chunkSizeBytes);
 
         using var content = new ChunkContent(file.FullName, offset, length, onBytesSent, options.Throttle, options.Priority);
-        var response = await _http.PostAsync($"transfer/{transferId}/chunk/{chunkIndex}", content, ct);
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"transfer/{transferId}/chunk/{chunkIndex}")
+        {
+            Content = content
+        };
+        if (runIndex != 1)
+            request.Headers.Add("X-Run-Index", runIndex.ToString());
+        var response = await httpChunks.SendAsync(request, ct);
         response.EnsureSuccessStatusCode();
     }
 
@@ -283,8 +335,10 @@ public class FileRelayClient : IDisposable
         {
             if (TryParseChunkRequest(request.RequestUri, out var transferId, out var chunkIndex))
             {
+                var runIndex = request.Headers.TryGetValues("X-Run-Index", out var vals)
+                    && int.TryParse(vals.FirstOrDefault(), out var ri) ? ri : 1;
                 request.Headers.Remove("Authorization");
-                request.Headers.Add("X-Chunk-Token", ChunkToken.Compute(_apiKey, appId, transferId, chunkIndex));
+                request.Headers.Add("X-Chunk-Token", ChunkToken.Compute(_apiKey, appId, transferId, chunkIndex, runIndex));
             }
             return base.SendAsync(request, ct);
         }
