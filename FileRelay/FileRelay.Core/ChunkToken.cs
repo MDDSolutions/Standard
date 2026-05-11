@@ -22,6 +22,38 @@ public static class ChunkToken
         return FixedTimeEquals(token, expected);
     }
 
+    public static byte[] ComputeHashMac(
+        string apiKey,
+        string appId,
+        Guid transferId,
+        int chunkIndex,
+        int runIndex,
+        long dataLength,
+        byte[] chunkHash)
+    {
+        var keyBytes = Encoding.UTF8.GetBytes(apiKey);
+        var hashText = Convert.ToBase64String(chunkHash);
+        var inputBytes = Encoding.UTF8.GetBytes(
+            $"{appId}|{transferId:N}|{chunkIndex}|{runIndex}|{dataLength}|{hashText}");
+
+        using var hmac = new HMACSHA256(keyBytes);
+        return hmac.ComputeHash(inputBytes);
+    }
+
+    public static bool ValidateHashMac(
+        byte[] providedMac,
+        string apiKey,
+        string appId,
+        Guid transferId,
+        int chunkIndex,
+        int runIndex,
+        long dataLength,
+        byte[] chunkHash)
+    {
+        var expected = ComputeHashMac(apiKey, appId, transferId, chunkIndex, runIndex, dataLength, chunkHash);
+        return FixedTimeEquals(providedMac, expected);
+    }
+
     // Constant-time comparison to prevent timing attacks.
     private static bool FixedTimeEquals(byte[] a, byte[] b)
     {

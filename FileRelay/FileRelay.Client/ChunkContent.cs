@@ -6,7 +6,7 @@ namespace FileRelay.Client;
 
 // Streams a byte range from a file directly into an HTTP request body,
 // computing SHA-256 incrementally as bytes are sent, then appends the
-// 32 raw hash bytes at the end. Single disk read, no per-chunk allocation.
+// raw hash and keyed hash MAC at the end. Single disk read, no per-chunk allocation.
 internal sealed class ChunkContent : HttpContent
 {
     private readonly string _filePath;
@@ -15,9 +15,16 @@ internal sealed class ChunkContent : HttpContent
     private readonly Action<long>? _onBytesSent;
     private readonly BandwidthLimiter? _throttle;
     private readonly byte _priority;
+    private readonly string? _appId;
+    private readonly string? _apiKey;
+    private readonly Guid _transferId;
+    private readonly int _chunkIndex;
+    private readonly int _runIndex;
 
     public ChunkContent(string filePath, long offset, long length,
-        Action<long>? onBytesSent = null, BandwidthLimiter? throttle = null, byte priority = 50)
+        Action<long>? onBytesSent = null, BandwidthLimiter? throttle = null, byte priority = 50,
+        string? appId = null, string? apiKey = null, Guid transferId = default,
+        int chunkIndex = 0, int runIndex = 1)
     {
         _filePath   = filePath;
         _offset     = offset;
@@ -25,11 +32,16 @@ internal sealed class ChunkContent : HttpContent
         _onBytesSent = onBytesSent;
         _throttle   = throttle;
         _priority   = priority;
+        _appId      = appId;
+        _apiKey     = apiKey;
+        _transferId = transferId;
+        _chunkIndex = chunkIndex;
+        _runIndex   = runIndex;
     }
 
     protected override bool TryComputeLength(out long length)
     {
-        length = _length + 32; // data bytes + SHA-256 hash bytes
+        length = _length + 32 + (HasMac ? 32 : 0); // data bytes + SHA-256 hash + optional HMAC
         return true;
     }
 
@@ -58,6 +70,20 @@ internal sealed class ChunkContent : HttpContent
         }
 
         sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
-        await stream.WriteAsync(sha.Hash!.AsMemory(), ct);
+        var hash = sha.Hash!;
+        await stream.WriteAsync(hash.AsMemory(), ct);
+
+        if (HasMac)
+        {
+            var mac = ChunkToken.ComputeHashMac(_apiKey!, _appId!, _transferId, _chunkIndex, _runIndex, _length, hash);
+            await stream.WriteAsync(mac.AsMemory(), ct);
+        }
     }
+
+    private bool HasMac
+        => _appId is { Length: > 0 }
+           && _apiKey is { Length: > 0 }
+           && _transferId != default
+           && _chunkIndex > 0
+           && _runIndex > 0;
 }

@@ -162,12 +162,13 @@ Response: { transferId, chunkSizeMB, totalChunks, chunksNeeded: [1, 2, 3, ...] }
 ### 2. Upload Chunk
 ```
 POST /transfer/{transferId}/chunk/{chunkIndex}
-Headers:  X-Chunk-Hash: sha256:<base64>
-Body:     raw bytes (the chunk)
+Headers:  X-Chunk-Token: <hmac over appId + transferId + chunkIndex + runIndex>
+Body:     raw bytes (the chunk) + 32-byte SHA-256 + 32-byte HMAC-SHA256
 Response: 200 OK on success, 409 if already confirmed, 4xx on hash mismatch
 ```
 - Server verifies the transfer belongs to the authenticating AppId (returns 404 otherwise)
-- Server verifies hash before acknowledging
+- Server verifies the streamed chunk hash before acknowledging
+- Server verifies the appended hash HMAC before acknowledging, so an HTTP-path attacker cannot replace both the chunk bytes and hash
 - Server writes to the user's configured targets before acknowledging
 - Server updates state store before returning 200
 - Client only removes a chunk from its send queue when it receives 200
@@ -291,21 +292,25 @@ Split the security responsibilities across the two phases that already exist in 
 Tokens are derived using HMAC-SHA256 — no storage required, and no token list needs to be transmitted:
 
 ```
-token[i] = HMAC-SHA256(key: apiKey, data: transferId || chunkIndex)
+token[i] = HMAC-SHA256(key: apiKey, data: appId || transferId || chunkIndex || runIndex)
+hashMac[i] = HMAC-SHA256(key: apiKey, data: appId || transferId || chunkIndex || runIndex || length || chunkHash)
 ```
 
 - Both client and server independently compute the token from inputs they already have: `apiKey` (the current live key from `IKeyStore`), `transferId` (returned by negotiate), `chunkIndex` (known per-chunk)
 - The negotiate response does not need to include tokens — nothing changes in the protocol response
 - Client includes `X-Chunk-Token: <token>` on each HTTP chunk upload
-- Server recomputes the expected HMAC on arrival and rejects mismatches with 401
+- Client appends `chunkHash` and `hashMac` to the streamed request body after reading the chunk once
+- Server recomputes the expected request token on arrival and rejects mismatches with 401
+- Server recomputes the chunk hash while streaming the body, then verifies the appended `hashMac` before confirming the chunk
 - The API key is never transmitted over HTTP
 
 ### Why This Is Sufficient
 
 An attacker on the HTTP path:
 - **Cannot forge a token** — HMAC requires the API key, which only traveled over HTTPS
-- **Cannot replay a token** — each token is chunk-specific; seeing token for chunk 3 reveals nothing about chunk 7
-- **Cannot corrupt data silently** — the existing SHA-256 hash verification per chunk catches any in-transit corruption; the server rejects the chunk and the client retries
+- **Cannot replay a token usefully** — each token is bound to a chunk and run index, and claimed runs are rejected on duplicate use
+- **Cannot corrupt data silently** — changing the bytes requires changing the chunk hash, but the attacker cannot forge the hash HMAC
+- **Can read plaintext payload bytes** unless the payload is already encrypted before FileRelay sees it
 - **Can cause retries** (denial of service) — this is true of any unencrypted protocol and is acceptable for a backup transfer use case
 
 ### Protocol Changes Required
@@ -319,10 +324,10 @@ Response: { transferId, chunkSizeMB, totalChunks, chunksNeeded: [1, 2, 3, ...], 
 - Its presence is the client's signal to switch: upload chunks over HTTP to that port, and include `X-Chunk-Token`
 - No client-side flags or modes needed — the response is self-describing
 
-Chunk upload gains one required header when uploading over the HTTP data path:
+Chunk upload gains one required header and a keyed trailer when uploading over the HTTP data path:
 ```
-Headers: X-Chunk-Hash: sha256:<base64>
-         X-Chunk-Token: <hmac>
+Headers: X-Chunk-Token: <hmac>
+Body:    raw chunk bytes || sha256(chunk bytes) || hmac(metadata + chunk hash)
 ```
 
 `FileRelayOptions` would need an `HttpDataPort: int?` property (default null = disabled). When set, the server accepts HTTP chunk uploads on that port provided a valid token is present, and skips the HTTPS enforcement filter for chunk routes only.

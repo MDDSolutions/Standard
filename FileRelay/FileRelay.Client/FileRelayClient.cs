@@ -232,7 +232,8 @@ public class FileRelayClient : IDisposable
                 var chunkBytes = ChunkMath.ChunkLength(chunkIndex, file.Length, chunkSizeBytes);
                 var runIndex   = negotiate.ChunkRunIndexes?.GetValueOrDefault(chunkIndex, 1) ?? 1;
                 void onBytesSent(long n) => Interlocked.Add(ref bytesInFlight, n);
-                await UploadChunkAsync(file, negotiate.TransferId, chunkIndex, runIndex, chunkSizeBytes, httpChunks, onBytesSent, options, ct);
+                await UploadChunkAsync(file, negotiate.TransferId, chunkIndex, runIndex, chunkSizeBytes,
+                    httpChunks, _appId, _currentApiKey, onBytesSent, options, ct);
                 Interlocked.Add(ref bytesConfirmed, chunkBytes);
                 Interlocked.Add(ref bytesInFlight, -chunkBytes);
                 Interlocked.Increment(ref chunksConfirmed);
@@ -263,12 +264,13 @@ public class FileRelayClient : IDisposable
 
     private static async Task UploadChunkAsync(FileInfo file, Guid transferId, int chunkIndex,
         int runIndex, long chunkSizeBytes, HttpClient httpChunks,
-        Action<long> onBytesSent, UploadOptions options, CancellationToken ct)
+        string? appId, string? apiKey, Action<long> onBytesSent, UploadOptions options, CancellationToken ct)
     {
         var offset = ChunkMath.ChunkOffset(chunkIndex, chunkSizeBytes);
         var length = ChunkMath.ChunkLength(chunkIndex, file.Length, chunkSizeBytes);
 
-        using var content = new ChunkContent(file.FullName, offset, length, onBytesSent, options.Throttle, options.Priority);
+        using var content = new ChunkContent(file.FullName, offset, length, onBytesSent,
+            options.Throttle, options.Priority, appId, apiKey, transferId, chunkIndex, runIndex);
         using var request = new HttpRequestMessage(HttpMethod.Post, $"transfer/{transferId}/chunk/{chunkIndex}")
         {
             Content = content

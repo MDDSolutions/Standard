@@ -96,16 +96,21 @@ public static class EndpointRouteBuilderExtensions
                 var runIndex = int.TryParse(runIndexStr, out var ri) && ri >= 1 ? ri : 1;
 
                 bool valid;
+                var chunkMacKeys = Array.Empty<string>();
                 if (options.KeyStore != null)
                 {
                     var keys = await options.KeyStore.GetKeysAsync(appId);
                     if (keys == null) return Results.Unauthorized();
+                    chunkMacKeys = keys.Value.Previous != null
+                        ? [keys.Value.Current, keys.Value.Previous]
+                        : [keys.Value.Current];
                     valid = ChunkToken.Validate(tokenBytes, keys.Value.Current, appId, transferId, chunkIndex, runIndex)
                          || (keys.Value.Previous != null &&
                              ChunkToken.Validate(tokenBytes, keys.Value.Previous, appId, transferId, chunkIndex, runIndex));
                 }
                 else if (user.SeedKey.Length > 0)
                 {
+                    chunkMacKeys = [user.SeedKey];
                     valid = ChunkToken.Validate(tokenBytes, user.SeedKey, appId, transferId, chunkIndex, runIndex);
                 }
                 else
@@ -114,8 +119,9 @@ public static class EndpointRouteBuilderExtensions
                 }
 
                 if (!valid) return Results.Unauthorized();
-                ctx.HttpContext.Items["AppUser"]  = user;
-                ctx.HttpContext.Items["RunIndex"] = runIndex;
+                ctx.HttpContext.Items["AppUser"]      = user;
+                ctx.HttpContext.Items["RunIndex"]     = runIndex;
+                ctx.HttpContext.Items["ChunkMacKeys"] = chunkMacKeys;
                 return await next(ctx);
             }
 

@@ -130,14 +130,19 @@ public class TransferService
             return ChunkUploadResult.BadRequest(ex.Message);
         }
 
-        var contentLength = context.Request.ContentLength;
-        if (contentLength == null || contentLength < 32)
-            return ChunkUploadResult.BadRequest("Content-Length required and must be at least 32.");
+        var macKeys = context.Items.TryGetValue("ChunkMacKeys", out var mk) && mk is string[] keys
+            ? keys
+            : Array.Empty<string>();
+        var macLength = macKeys.Length > 0 ? 32 : 0;
 
-        var expectedContentLength = expectedDataLength + 32;
+        var contentLength = context.Request.ContentLength;
+        if (contentLength == null || contentLength < 32 + macLength)
+            return ChunkUploadResult.BadRequest($"Content-Length required and must be at least {32 + macLength}.");
+
+        var expectedContentLength = expectedDataLength + 32 + macLength;
         if (contentLength.Value != expectedContentLength)
             return ChunkUploadResult.BadRequest(
-                $"Invalid chunk length: expected {expectedDataLength} data bytes plus 32 hash bytes, got {contentLength.Value} total bytes.");
+                $"Invalid chunk length: expected {expectedDataLength} data bytes plus {32 + macLength} trailer bytes, got {contentLength.Value} total bytes.");
 
         var runIndex = context.Items.TryGetValue("RunIndex", out var ri) && ri is int r ? r : 1;
         if (!await _options.StateStore.TryClaimChunkAsync(transferId, chunkIndex, runIndex))
@@ -163,8 +168,10 @@ public class TransferService
 
             string actualHash;
             byte[] clientHash;
+            byte[]? clientHashMac;
             using (var sha = SHA256.Create())
-                (actualHash, clientHash) = await TeeWithHash(context.Request.Body, writers, sha, dataLength, ct);
+                (actualHash, clientHash, clientHashMac) = await TeeWithHash(
+                    context.Request.Body, writers, sha, dataLength, macLength > 0, ct);
 
             foreach (var w in writers) await w.DisposeAsync();
             writers.Clear();
@@ -172,6 +179,13 @@ public class TransferService
             var expectedHash = $"sha256:{Convert.ToBase64String(clientHash)}";
             if (actualHash != expectedHash)
                 return ChunkUploadResult.BadRequest($"Hash mismatch: expected {expectedHash}, got {actualHash}.");
+
+            if (macKeys.Length > 0 &&
+                (clientHashMac == null || !macKeys.Any(key => ChunkToken.ValidateHashMac(
+                    clientHashMac, key, appId, transferId, chunkIndex, runIndex, dataLength, clientHash))))
+            {
+                return ChunkUploadResult.BadRequest("Chunk hash HMAC mismatch.");
+            }
 
             await _options.StateStore.ConfirmChunkAsync(transferId, chunkIndex, actualHash);
 
@@ -272,8 +286,8 @@ public class TransferService
         catch (Exception ex) { _logger.LogError(ex, "OnCompleteAsync failed for transfer {TransferId}.", completed.TransferId); }
     }
 
-    private async Task<(string ActualHash, byte[] ClientHash)> TeeWithHash(
-        Stream source, List<Stream> destinations, SHA256 sha, long dataLength, CancellationToken ct)
+    private async Task<(string ActualHash, byte[] ClientHash, byte[]? ClientHashMac)> TeeWithHash(
+        Stream source, List<Stream> destinations, SHA256 sha, long dataLength, bool readHashMac, CancellationToken ct)
     {
         var buffer = new byte[1024 * 1024]; // match Kestrel MaxFrameSize
         var remaining = dataLength;
@@ -293,7 +307,15 @@ public class TransferService
 
         var clientHash = new byte[32];
         await source.ReadExactlyAsync(clientHash, ct);
-        return (actualHash, clientHash);
+
+        byte[]? clientHashMac = null;
+        if (readHashMac)
+        {
+            clientHashMac = new byte[32];
+            await source.ReadExactlyAsync(clientHashMac, ct);
+        }
+
+        return (actualHash, clientHash, clientHashMac);
     }
 }
 
