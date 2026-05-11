@@ -12,12 +12,16 @@ partial class TransferForm
 
     private void InitializeComponent()
     {
-        lblFile   = new Label();
-        txtFilePath = new TextBox();
-        btnBrowse = new Button();
-        btnStart  = new Button();
-        rtbLog    = new RichTextBox();
-        ofd       = new OpenFileDialog();
+        lblFile       = new Label();
+        txtFilePath   = new TextBox();
+        btnBrowse     = new Button();
+        btnStart      = new Button();
+        rtbLog        = new RichTextBox();
+        ofd           = new OpenFileDialog();
+        lblFaultChunk = new Label();
+        nudFaultChunk = new NumericUpDown();
+        btnFault      = new Button();
+        ((System.ComponentModel.ISupportInitialize)nudFaultChunk).BeginInit();
 
         SuspendLayout();
 
@@ -46,6 +50,24 @@ partial class TransferForm
         btnStart.Text     = "Upload";
         btnStart.Click   += btnStart_Click;
 
+        // lblFaultChunk
+        lblFaultChunk.Location  = new Point(124, 57);
+        lblFaultChunk.Size      = new Size(70, 23);
+        lblFaultChunk.Text      = "Fault chunk:";
+        lblFaultChunk.TextAlign = ContentAlignment.MiddleRight;
+
+        // nudFaultChunk
+        nudFaultChunk.Location = new Point(198, 54);
+        nudFaultChunk.Size     = new Size(60, 31);
+        nudFaultChunk.Minimum  = 0;
+        nudFaultChunk.Maximum  = 9999;
+
+        // btnFault
+        btnFault.Location = new Point(264, 50);
+        btnFault.Size     = new Size(110, 34);
+        btnFault.Text     = "Inject Fault";
+        btnFault.Click   += btnFault_Click;
+
         // rtbLog
         rtbLog.Anchor      = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
         rtbLog.BackColor   = SystemColors.Window;
@@ -66,19 +88,26 @@ partial class TransferForm
         Controls.Add(txtFilePath);
         Controls.Add(btnBrowse);
         Controls.Add(btnStart);
+        Controls.Add(lblFaultChunk);
+        Controls.Add(nudFaultChunk);
+        Controls.Add(btnFault);
         Controls.Add(rtbLog);
         Name         = "TransferForm";
         Text         = "Transfer";
         FormClosing += TransferForm_FormClosing;
 
+        ((System.ComponentModel.ISupportInitialize)nudFaultChunk).EndInit();
         ResumeLayout(false);
         PerformLayout();
     }
 
-    private Label          lblFile     = null!;
-    private TextBox        txtFilePath = null!;
-    private Button         btnBrowse   = null!;
-    private Button         btnStart    = null!;
-    private RichTextBox    rtbLog      = null!;
-    private OpenFileDialog ofd         = null!;
+    private Label          lblFile       = null!;
+    private TextBox        txtFilePath   = null!;
+    private Button         btnBrowse     = null!;
+    private Button         btnStart      = null!;
+    private RichTextBox    rtbLog        = null!;
+    private OpenFileDialog ofd           = null!;
+    private Label          lblFaultChunk = null!;
+    private NumericUpDown  nudFaultChunk = null!;
+    private Button         btnFault      = null!;
 }

@@ -24,6 +24,8 @@ builder.WebHost.ConfigureKestrel(options =>
     FileRelayOptions.ConfigureKestrelLimits(options, chunkSizeMB);
 });
 
+builder.Services.AddSingleton<FaultInjector>();
+
 builder.Services.AddFileRelay(options =>
 {
     options.BasePath          = "/transfer";
@@ -57,6 +59,38 @@ builder.Services.AddFileRelay(options =>
 });
 
 var app = builder.Build();
+
+// Fault injection — intercepts chunk uploads before auth and returns 400 to trigger client retry.
+// Arm via:  POST /test/inject-fault  { "chunkIndex": N }
+var faultInjector = app.Services.GetRequiredService<FaultInjector>();
+var faultLogger   = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("FaultInjector");
+
+app.Use(async (ctx, next) =>
+{
+    if (ctx.Request.Method == "POST")
+    {
+        // Match .../{guid}/chunk/{int} from the end — works with any base path depth.
+        var segs = (ctx.Request.Path.Value ?? "").Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segs.Length >= 3 &&
+            segs[^2] == "chunk" &&
+            Guid.TryParse(segs[^3], out var tid) &&
+            int.TryParse(segs[^1], out var cidx) &&
+            faultInjector.TryConsume(tid, cidx))
+        {
+            faultLogger.LogWarning("[FaultInjector] Flipping bit 0 of chunk body — transfer {TransferId} chunk {ChunkIndex} will fail hash validation", tid, cidx);
+            ctx.Request.Body = new CorruptingStream(ctx.Request.Body);
+        }
+    }
+    await next(ctx);
+});
+
+app.MapPost("/test/inject-fault", (InjectFaultRequest req, FaultInjector faults) =>
+{
+    faults.Enqueue(req.ChunkIndex, req.TransferId);
+    var target = req.TransferId.HasValue ? $"transfer {req.TransferId}" : "any transfer";
+    return Results.Ok(new { Message = $"Fault queued: chunk {req.ChunkIndex} on {target}" });
+});
+
 app.MapFileRelay();
 app.Run();
 
@@ -69,6 +103,8 @@ class UserConfig
     public string   SeedKey { get; set; } = "";
     public string[] Targets { get; set; } = [];
 }
+
+record InjectFaultRequest(int ChunkIndex, Guid? TransferId = null);
 
 class ConsoleCompleteHandler : ITransferCompleteHandler
 {

@@ -1,3 +1,4 @@
+using System.Net.Http.Json;
 using FileRelay.Client;
 using FileRelay.Core.Models;
 
@@ -171,6 +172,31 @@ public partial class TransferForm : Form
         if (InvokeRequired) { Invoke(() => SetUploading(uploading)); return; }
         btnStart.Text     = uploading ? "Cancel" : "Upload";
         btnBrowse.Enabled = !uploading;
+    }
+
+    private async void btnFault_Click(object sender, EventArgs e)
+    {
+        var (serverUrl, _, _, _, _, allowUntrustedCert) = _hub.GetSettings();
+        var chunkIndex = (int)nudFaultChunk.Value;
+
+        try
+        {
+            var handler = new HttpClientHandler();
+            if (allowUntrustedCert)
+                handler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
+
+            using var http = new HttpClient(handler);
+            var url = serverUrl.TrimEnd('/') + "/test/inject-fault";
+            var resp = await http.PostAsJsonAsync(url, new { chunkIndex });
+            if (resp.IsSuccessStatusCode)
+                AppendLog($"[Fault] Queued: next upload of chunk {chunkIndex} will receive 400.");
+            else
+                AppendLog($"[Fault] Server returned {(int)resp.StatusCode} — is the test server running?");
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"[Fault] Failed: {ex.Message}");
+        }
     }
 
     private void TransferForm_FormClosing(object? sender, FormClosingEventArgs e)

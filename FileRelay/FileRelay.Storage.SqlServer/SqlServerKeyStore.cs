@@ -66,15 +66,24 @@ public class SqlServerKeyStore : IKeyStore
 
         if (providedKey == currentKey)
         {
-            // Stamp GracePeriodEnd the first time the new key is used after a rotation.
-            if (previousKey != null && gracePeriodEnd == null)
+            if (previousKey != null)
             {
-                var end = DateTime.UtcNow.Add(gracePeriod);
                 using var cmd = conn.CreateCommand();
                 cmd.Transaction = tx;
-                cmd.CommandText = "UPDATE FileRelay.AppKeys SET GracePeriodEnd = @End WHERE AppId = @AppId";
-                cmd.Parameters.AddWithValue("@End",   end);
-                cmd.Parameters.AddWithValue("@AppId", appId);
+                if (gracePeriodEnd == null)
+                {
+                    // Stamp GracePeriodEnd the first time the new key is used after a rotation.
+                    var end = DateTime.UtcNow.Add(gracePeriod);
+                    cmd.CommandText = "UPDATE FileRelay.AppKeys SET GracePeriodEnd = @End WHERE AppId = @AppId";
+                    cmd.Parameters.AddWithValue("@End",   end);
+                    cmd.Parameters.AddWithValue("@AppId", appId);
+                }
+                else if (DateTime.UtcNow >= gracePeriodEnd.Value)
+                {
+                    // Grace period has elapsed — purge the old key so it can never be used again.
+                    cmd.CommandText = "UPDATE FileRelay.AppKeys SET PreviousKey = NULL, GracePeriodEnd = NULL WHERE AppId = @AppId";
+                    cmd.Parameters.AddWithValue("@AppId", appId);
+                }
                 await cmd.ExecuteNonQueryAsync();
             }
             await tx.CommitAsync();

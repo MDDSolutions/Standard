@@ -60,15 +60,24 @@ public class SqliteKeyStore : IKeyStore
 
         if (providedKey == currentKey)
         {
-            // Stamp GracePeriodEnd the first time the new key is used after a rotation.
-            if (previousKey != null && gracePeriodEnd == null)
+            if (previousKey != null)
             {
-                var end = DateTime.UtcNow.Add(gracePeriod);
                 using var cmd = conn.CreateCommand();
                 cmd.Transaction = tx;
-                cmd.CommandText = "UPDATE AppKeys SET GracePeriodEnd = @End WHERE AppId = @AppId";
-                cmd.Parameters.AddWithValue("@End", end.ToString("O"));
-                cmd.Parameters.AddWithValue("@AppId", appId);
+                if (gracePeriodEnd == null)
+                {
+                    // Stamp GracePeriodEnd the first time the new key is used after a rotation.
+                    var end = DateTime.UtcNow.Add(gracePeriod);
+                    cmd.CommandText = "UPDATE AppKeys SET GracePeriodEnd = @End WHERE AppId = @AppId";
+                    cmd.Parameters.AddWithValue("@End", end.ToString("O"));
+                    cmd.Parameters.AddWithValue("@AppId", appId);
+                }
+                else if (DateTime.UtcNow >= DateTime.Parse(gracePeriodEnd))
+                {
+                    // Grace period has elapsed — purge the old key so it can never be used again.
+                    cmd.CommandText = "UPDATE AppKeys SET PreviousKey = NULL, GracePeriodEnd = NULL WHERE AppId = @AppId";
+                    cmd.Parameters.AddWithValue("@AppId", appId);
+                }
                 await cmd.ExecuteNonQueryAsync();
             }
             tx.Commit();
