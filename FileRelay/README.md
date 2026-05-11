@@ -247,6 +247,71 @@ Response: { transferId, filename, chunksTotal, chunksConfirmed, chunksNeeded, is
 - After the last chunk is confirmed, the server verifies the whole-file hash (if provided in negotiate), calls `OnValidateAsync`, renames the `.partial` file, then fires `OnCompleteAsync` after sending 200
 - The final chunk's 200 response includes `{ isComplete: true }`
 
+## Transfer Context
+
+`TransferContext` is an optional, extensible payload the client attaches to the negotiate request. It flows through the entire transfer lifecycle and is available to both `ITransferTarget` and `ITransferCompleteHandler` on the server side.
+
+```csharp
+// Built-in: route the file into a subdirectory under the user's configured target path.
+await client.UploadFileAsync(file, new UploadOptions
+{
+    Context = new SubdirectoryContext("2026/clients/acme"),
+    // file lands at <target-root>/2026/clients/acme/<filename>
+});
+```
+
+`SubdirectoryContext` is the only concrete type in `FileRelay.Core`. It provides `RelativePath`, which `LocalDirectoryTarget` appends to the user's configured root path on `InitializeAsync`. The subdirectory is created if it does not exist.
+
+### Extending Context
+
+Define your own subclass to carry anything the server-side handler needs to know — instructions, metadata, routing hints:
+
+```csharp
+// In a shared assembly referenced by both client and server:
+[JsonDerivedType(typeof(ArchiveContext), "archive")]
+public class ArchiveContext : TransferContext
+{
+    public ArchiveContext(string relativePath, string backupSet, bool encrypt)
+    {
+        RelativePath = relativePath;
+        BackupSet    = backupSet;
+        Encrypt      = encrypt;
+    }
+    public override string RelativePath { get; }
+    public string BackupSet { get; }
+    public bool   Encrypt   { get; }
+}
+```
+
+Register the derived type on the `TransferContext` base so the polymorphic JSON serializer handles it:
+
+```csharp
+// Apply at startup, or directly on TransferContext with [JsonDerivedType] in the shared assembly.
+// The $type discriminator value ("archive") must match on both sides.
+```
+
+The server's `ITransferCompleteHandler` receives the context via `CompletedTransfer.Context` and can switch on its concrete type:
+
+```csharp
+public Task<bool> OnValidateAsync(CompletedTransfer transfer, CancellationToken ct)
+{
+    if (transfer.Context is ArchiveContext arc && arc.Encrypt)
+        return ValidateEncryptedAsync(transfer, ct);
+    return Task.FromResult(true);
+}
+
+public Task OnCompleteAsync(CompletedTransfer transfer, CancellationToken ct)
+{
+    if (transfer.Context is ArchiveContext arc)
+        return IndexAsync(transfer.Filename, arc.BackupSet, ct);
+    return Task.CompletedTask;
+}
+```
+
+### Context and Transfer Identity
+
+Context participates in transfer identity: `GetOrCreateAsync` matches an existing transfer record on `AppId + filename + fileSize + context`. Two negotiate requests with the same file but different context values create separate transfer records. This means a client can route the same filename to different subdirectories in different transfers without collision.
+
 ### 5. Key Rotation
 ```
 POST /transfer/rotate-key
@@ -364,7 +429,7 @@ SaveKeyToStorage(newKey);
 - **Never buffer a whole chunk in server memory.** Stream the request body directly to the target writer(s). Chunks may be 50–200MB.
 - **The server is the source of truth for transfer state.** The client is stateless between connections. If the client process restarts, it calls Negotiate again and gets the current missing chunk list.
 - **Chunk confirmation is atomic.** The state store must not mark a chunk confirmed until it has been fully written to all targets and hash-verified.
-- **The client does not know about targets or multicast.** It sends to one endpoint. What happens on the server side is invisible to the client.
+- **The client does not know about targets or multicast.** It sends to one endpoint. What happens on the server side is invisible to the client. The client can, however, pass a `TransferContext` on negotiate to influence server behavior (see [Transfer Context](#transfer-context)).
 - **`OnValidateAsync` blocks the final chunk response.** Use it for synchronous validation the client needs to know about (rejected file → 422). `OnCompleteAsync` is fire-and-forget after the 200 is sent — errors are logged and do not affect the client.
 - **Chunk indices are 1-based integers.** `totalChunks` is derived from `ceil(fileSizeBytes / chunkSizeBytes)`. The last chunk may be smaller than `chunkSizeMB`.
 - **Transfer state is scoped per AppId.** A resume lookup matches on AppId + filename + file size + context. Two different users uploading a file with the same name do not collide.

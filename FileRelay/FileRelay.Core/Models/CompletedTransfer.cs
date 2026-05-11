@@ -8,4 +8,5 @@ public class CompletedTransfer
     public long FileSizeBytes { get; set; }
     public string? FileHash { get; set; }
     public DateTime CompletedAt { get; set; }
+    public TransferContext? Context { get; set; }
 }

@@ -216,7 +216,8 @@ public class TransferService
                 Filename      = state.Filename,
                 FileSizeBytes = state.FileSizeBytes,
                 FileHash      = state.FileHash,
-                CompletedAt   = DateTime.UtcNow
+                CompletedAt   = DateTime.UtcNow,
+                Context       = state.Context
             };
 
             if (_options.OnComplete != null)
