@@ -1,3 +1,4 @@
+using FileRelay.Core;
 using FileRelay.Core.Interfaces;
 using FileRelay.Core.Models;
 using Microsoft.AspNetCore.Builder;
@@ -68,6 +69,43 @@ public static class EndpointRouteBuilderExtensions
             var user  = options.Users.FirstOrDefault(u => u.AppId == appId);
             if (user == null) return Results.Unauthorized();
 
+            // Chunk endpoints authenticate via per-chunk HMAC token — the API key is never
+            // sent on these requests, which makes a future HTTP data path safe to enable.
+            var routeValues = ctx.HttpContext.Request.RouteValues;
+            if (routeValues.TryGetValue("transferId", out var tidVal) &&
+                routeValues.TryGetValue("chunkIndex",  out var cidxVal) &&
+                Guid.TryParse(tidVal?.ToString(),  out var transferId) &&
+                int.TryParse(cidxVal?.ToString(),  out var chunkIndex))
+            {
+                var rawToken = ctx.HttpContext.Request.Headers["X-Chunk-Token"].ToString();
+                byte[]? tokenBytes = null;
+                try { tokenBytes = Convert.FromBase64String(rawToken); } catch { }
+                if (tokenBytes == null) return Results.Unauthorized();
+
+                bool valid;
+                if (options.KeyStore != null)
+                {
+                    var keys = await options.KeyStore.GetKeysAsync(appId);
+                    if (keys == null) return Results.Unauthorized();
+                    valid = ChunkToken.Validate(tokenBytes, keys.Value.Current, appId, transferId, chunkIndex)
+                         || (keys.Value.Previous != null &&
+                             ChunkToken.Validate(tokenBytes, keys.Value.Previous, appId, transferId, chunkIndex));
+                }
+                else if (user.SeedKey.Length > 0)
+                {
+                    valid = ChunkToken.Validate(tokenBytes, user.SeedKey, appId, transferId, chunkIndex);
+                }
+                else
+                {
+                    valid = true; // keyless user — X-App-Id alone is sufficient
+                }
+
+                if (!valid) return Results.Unauthorized();
+                ctx.HttpContext.Items["AppUser"] = user;
+                return await next(ctx);
+            }
+
+            // All other endpoints: Bearer authentication.
             KeyAuthResult? keyResult = null;
 
             if (options.KeyStore != null)

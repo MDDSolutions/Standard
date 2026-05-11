@@ -10,22 +10,28 @@ public class FileRelayClient : IDisposable
 {
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
+    private readonly ChunkTokenHandler? _chunkTokenHandler;
 
     public FileRelayClient(Uri baseUri, string? appId = null, string? apiKey = null, bool allowUntrustedCertificate = false)
     {
-        var handler = new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(10) };
+        var inner = new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(10) };
         if (allowUntrustedCertificate)
-            handler.SslOptions.RemoteCertificateValidationCallback = (_, _, _, _) => true;
-        _http = new HttpClient(handler)
+            inner.SslOptions.RemoteCertificateValidationCallback = (_, _, _, _) => true;
+
+        _chunkTokenHandler = appId is { Length: > 0 } && apiKey is { Length: > 0 }
+            ? new ChunkTokenHandler(appId, apiKey, inner)
+            : null;
+
+        _http = new HttpClient(_chunkTokenHandler ?? (HttpMessageHandler)inner)
         {
-            BaseAddress = baseUri,
+            BaseAddress           = baseUri,
             DefaultRequestVersion = System.Net.HttpVersion.Version20,
             DefaultVersionPolicy  = HttpVersionPolicy.RequestVersionOrLower,
         };
         if (appId is { Length: > 0 })
             _http.DefaultRequestHeaders.Add("X-App-Id", appId);
         if (apiKey is { Length: > 0 })
-            _http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+            _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
         _ownsHttp = true;
     }
 
@@ -50,11 +56,11 @@ public class FileRelayClient : IDisposable
 
         var request = new TransferNegotiateRequest
         {
-            Filename = file.Name,
+            Filename      = file.Name,
             FileSizeBytes = file.Length,
-            FileHash = fileHash,
-            ChunkSizeMB = options.PreferredChunkSizeMB,
-            Context = options.Context
+            FileHash      = fileHash,
+            ChunkSizeMB   = options.PreferredChunkSizeMB,
+            Context       = options.Context
         };
 
         int attempt = 0;
@@ -113,8 +119,8 @@ public class FileRelayClient : IDisposable
         response.EnsureSuccessStatusCode();
         var result = await response.Content.ReadFromJsonAsync<RotateKeyResponse>(ct)
             ?? throw new InvalidOperationException("Empty rotate-key response.");
-        _http.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Bearer", result.NewKey);
+        _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", result.NewKey);
+        _chunkTokenHandler?.UpdateApiKey(result.NewKey);
         return result.NewKey;
     }
 
@@ -238,8 +244,7 @@ public class FileRelayClient : IDisposable
         if (appId is { Length: > 0 })
             http.DefaultRequestHeaders.Add("X-App-Id", appId);
         if (apiKey is { Length: > 0 })
-            http.DefaultRequestHeaders.Authorization =
-                new AuthenticationHeaderValue("Bearer", apiKey);
+            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
 
         using var response = await http.GetAsync("transfer/ping", ct);
         response.EnsureSuccessStatusCode();
@@ -262,5 +267,39 @@ public class FileRelayClient : IDisposable
     public void Dispose()
     {
         if (_ownsHttp) _http.Dispose();
+    }
+
+    // Intercepts chunk requests to strip the Bearer token and inject a scoped HMAC token.
+    // DefaultRequestHeaders (including Authorization) are merged into request.Headers before
+    // DelegatingHandler.SendAsync is called, so Remove("Authorization") works correctly here.
+    private sealed class ChunkTokenHandler(string appId, string apiKey, HttpMessageHandler inner)
+        : DelegatingHandler(inner)
+    {
+        private volatile string _apiKey = apiKey;
+
+        public void UpdateApiKey(string key) => _apiKey = key;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            if (TryParseChunkRequest(request.RequestUri, out var transferId, out var chunkIndex))
+            {
+                request.Headers.Remove("Authorization");
+                request.Headers.Add("X-Chunk-Token", ChunkToken.Compute(_apiKey, appId, transferId, chunkIndex));
+            }
+            return base.SendAsync(request, ct);
+        }
+
+        private static bool TryParseChunkRequest(Uri? uri, out Guid transferId, out int chunkIndex)
+        {
+            transferId = default;
+            chunkIndex = default;
+            var path = uri?.AbsolutePath ?? "";
+            var marker = path.LastIndexOf("/chunk/", StringComparison.Ordinal);
+            if (marker < 0) return false;
+            if (!int.TryParse(path[(marker + 7)..], out chunkIndex)) return false;
+            var before = path[..marker];
+            var slash  = before.LastIndexOf('/');
+            return slash >= 0 && Guid.TryParse(before[(slash + 1)..], out transferId);
+        }
     }
 }

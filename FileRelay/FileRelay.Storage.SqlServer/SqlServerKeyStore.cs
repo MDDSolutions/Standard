@@ -124,6 +124,17 @@ public class SqlServerKeyStore : IKeyStore
         return newKey;
     }
 
+    public async Task<(string Current, string? Previous)?> GetKeysAsync(string appId)
+    {
+        using var conn = Open();
+        using var cmd  = conn.CreateCommand();
+        cmd.CommandText = "SELECT CurrentKey, PreviousKey FROM FileRelay.AppKeys WHERE AppId = @AppId";
+        cmd.Parameters.AddWithValue("@AppId", appId);
+        using var reader = await cmd.ExecuteReaderAsync();
+        if (!await reader.ReadAsync()) return null;
+        return (reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1));
+    }
+
     public async Task<bool> HasActiveGracePeriodAsync(string appId)
     {
         using var conn = Open();
