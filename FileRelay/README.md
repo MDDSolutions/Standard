@@ -38,7 +38,7 @@ FileRelay.Server      — receiver implementation
 
 FileRelay.Storage.Sqlite      — SQLite implementations of ITransferStateStore and IKeyStore
                                     (embedded, no server required; both use the same DB file)
-FileRelay.Storage.SqlServer   — SQL Server implementation of ITransferStateStore
+FileRelay.Storage.SqlServer   — SQL Server implementations of ITransferStateStore and IKeyStore
 ```
 
 ## Core Interfaces (defined in FileRelay.Core)
@@ -112,8 +112,13 @@ public interface IKeyStore
     Task<bool> HasActiveGracePeriodAsync(string appId);
     Task<string> RotateAsync(string appId, byte[] clientEntropy);
 
-    // Returns current key and previous key (when still in grace period). Used to validate
-    // per-chunk HMAC tokens without requiring the API key on chunk requests.
+    // Validates a per-chunk HMAC token (via lambda) and runs the same grace-period lifecycle
+    // as AuthenticateAsync in a single transaction. Returns (status, macKeys) on success —
+    // macKeys contains the key(s) valid for body-HMAC verification (both keys during grace).
+    Task<(KeyAuthResult Status, string[] MacKeys)?> AuthenticateChunkAsync(
+        string appId, Func<string, bool> validateToken, TimeSpan gracePeriod);
+
+    // Returns current and previous key. Primarily used for internal state inspection.
     Task<(string Current, string? Previous)?> GetKeysAsync(string appId);
 }
 ```
@@ -325,13 +330,16 @@ On startup, `MapFileRelay()` seeds the key store: for each user, if no `AppKeys`
 var client = new FileRelayClient(
     new Uri("https://receiver-host/"),
     appId:  "backup-client",
-    apiKey: storedKey);   // load from persistent storage; updated after each rotation
+    apiKey: storedKey)   // load from persistent storage; updated after each rotation
+{
+    ParallelConnections = 4,   // parallel chunk connections (default 4)
+    ThrottleMBps        = 0,   // bandwidth cap in MB/s; 0 = unlimited
+};
 
 await client.UploadFileAsync(
     new FileInfo(@"C:\backups\mydb.bak"),
     options: new UploadOptions
     {
-        ParallelConnections = 4,
         OnProgress  = progress => Console.WriteLine(progress),
         OnKeyWarning = status =>
         {
@@ -367,6 +375,6 @@ SaveKeyToStorage(newKey);
 - The server component runs on any ASP.NET Core host: Windows, Linux, Docker
 - Designed to run on a QNAP NAS via Container Station (Docker) or as a self-contained Linux binary
 - `FileRelay.Storage.Sqlite` is the preferred state backend for self-contained deployment — `SqliteTransferStateStore` and `SqliteKeyStore` both take the same DB file path and coexist in the same database
-- `FileRelay.Storage.SqlServer` is available when the host has LAN access to a SQL Server instance (does not implement `IKeyStore`)
+- `FileRelay.Storage.SqlServer` is available when the host has LAN access to a SQL Server instance; implements both `ITransferStateStore` and `IKeyStore`
 - Configure Kestrel limits via `FileRelayOptions.ConfigureKestrelLimits()` — the defaults (30MB body limit, 128KB HTTP/2 window) will cap throughput and reject large chunks
 - The `SeedKey` in appsettings is only used on first run; inspect the `AppKeys` table in the SQLite database to see the live key after rotation
