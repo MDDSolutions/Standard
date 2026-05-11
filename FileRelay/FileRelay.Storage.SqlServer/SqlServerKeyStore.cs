@@ -70,6 +70,7 @@ public class SqlServerKeyStore : IKeyStore
             {
                 using var cmd = conn.CreateCommand();
                 cmd.Transaction = tx;
+                bool exec = false;
                 if (gracePeriodEnd == null)
                 {
                     // Stamp GracePeriodEnd the first time the new key is used after a rotation.
@@ -77,14 +78,16 @@ public class SqlServerKeyStore : IKeyStore
                     cmd.CommandText = "UPDATE FileRelay.AppKeys SET GracePeriodEnd = @End WHERE AppId = @AppId";
                     cmd.Parameters.AddWithValue("@End",   end);
                     cmd.Parameters.AddWithValue("@AppId", appId);
+                    exec = true;
                 }
                 else if (DateTime.UtcNow >= gracePeriodEnd.Value)
                 {
                     // Grace period has elapsed — purge the old key so it can never be used again.
                     cmd.CommandText = "UPDATE FileRelay.AppKeys SET PreviousKey = NULL, GracePeriodEnd = NULL WHERE AppId = @AppId";
                     cmd.Parameters.AddWithValue("@AppId", appId);
+                    exec = true;
                 }
-                await cmd.ExecuteNonQueryAsync();
+                if (exec) await cmd.ExecuteNonQueryAsync();
             }
             await tx.CommitAsync();
             return new KeyAuthResult(KeyStatus.Current);
@@ -131,6 +134,82 @@ public class SqlServerKeyStore : IKeyStore
         await cmd.ExecuteNonQueryAsync();
 
         return newKey;
+    }
+
+    public async Task<(KeyAuthResult Status, string[] MacKeys)?> AuthenticateChunkAsync(
+        string appId, Func<string, bool> validateToken, TimeSpan gracePeriod)
+    {
+        using var conn = Open();
+        using var tx = conn.BeginTransaction();
+
+        string? currentKey, previousKey;
+        DateTime? gracePeriodEnd;
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = "SELECT CurrentKey, PreviousKey, GracePeriodEnd FROM FileRelay.AppKeys WHERE AppId = @AppId";
+            cmd.Parameters.AddWithValue("@AppId", appId);
+            using var reader = await cmd.ExecuteReaderAsync();
+            if (!await reader.ReadAsync()) { await tx.RollbackAsync(); return null; }
+            currentKey     = reader.GetString(0);
+            previousKey    = reader.IsDBNull(1) ? null : reader.GetString(1);
+            gracePeriodEnd = reader.IsDBNull(2) ? null : reader.GetDateTime(2);
+        }
+
+        bool isCurrentKey  = validateToken(currentKey);
+        bool isPreviousKey = !isCurrentKey && previousKey != null && validateToken(previousKey);
+
+        if (!isCurrentKey && !isPreviousKey) { await tx.RollbackAsync(); return null; }
+
+        // Keys valid for body-HMAC verification — include both during grace window so a
+        // ChunkContent signed with the old key is still accepted alongside a new-key header token.
+        var macKeys = previousKey != null
+            ? new[] { currentKey, previousKey }
+            : new[] { currentKey };
+
+        KeyStatus status;
+        if (isCurrentKey)
+        {
+            status = KeyStatus.Current;
+            if (previousKey != null)
+            {
+                using var cmd = conn.CreateCommand();
+                cmd.Transaction = tx;
+                if (gracePeriodEnd == null)
+                {
+                    var end = DateTime.UtcNow.Add(gracePeriod);
+                    cmd.CommandText = "UPDATE FileRelay.AppKeys SET GracePeriodEnd = @End WHERE AppId = @AppId";
+                    cmd.Parameters.AddWithValue("@End",   end);
+                    cmd.Parameters.AddWithValue("@AppId", appId);
+                }
+                else if (DateTime.UtcNow >= gracePeriodEnd.Value)
+                {
+                    macKeys = new[] { currentKey };  // old key is being purged
+                    cmd.CommandText = "UPDATE FileRelay.AppKeys SET PreviousKey = NULL, GracePeriodEnd = NULL WHERE AppId = @AppId";
+                    cmd.Parameters.AddWithValue("@AppId", appId);
+                }
+                await cmd.ExecuteNonQueryAsync();
+            }
+        }
+        else // isPreviousKey
+        {
+            if (gracePeriodEnd == null)
+            {
+                status = KeyStatus.PreviousGracePending;
+            }
+            else if (DateTime.UtcNow < gracePeriodEnd.Value)
+            {
+                status = KeyStatus.PreviousGraceActive;
+            }
+            else
+            {
+                await tx.RollbackAsync();
+                return null;
+            }
+        }
+
+        await tx.CommitAsync();
+        return (new KeyAuthResult(status), macKeys);
     }
 
     public async Task<(string Current, string? Previous)?> GetKeysAsync(string appId)

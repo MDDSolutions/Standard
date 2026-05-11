@@ -95,30 +95,22 @@ public static class EndpointRouteBuilderExtensions
                 var runIndexStr = ctx.HttpContext.Request.Headers["X-Run-Index"].ToString();
                 var runIndex = int.TryParse(runIndexStr, out var ri) && ri >= 1 ? ri : 1;
 
-                bool valid;
                 var chunkMacKeys = Array.Empty<string>();
                 if (options.KeyStore != null)
                 {
-                    var keys = await options.KeyStore.GetKeysAsync(appId);
-                    if (keys == null) return Results.Unauthorized();
-                    chunkMacKeys = keys.Value.Previous != null
-                        ? [keys.Value.Current, keys.Value.Previous]
-                        : [keys.Value.Current];
-                    valid = ChunkToken.Validate(tokenBytes, keys.Value.Current, appId, transferId, chunkIndex, runIndex)
-                         || (keys.Value.Previous != null &&
-                             ChunkToken.Validate(tokenBytes, keys.Value.Previous, appId, transferId, chunkIndex, runIndex));
+                    var chunkAuth = await options.KeyStore.AuthenticateChunkAsync(appId,
+                        k => ChunkToken.Validate(tokenBytes, k, appId, transferId, chunkIndex, runIndex),
+                        options.KeyGracePeriod);
+                    if (chunkAuth == null) return Results.Unauthorized();
+                    chunkMacKeys = chunkAuth.Value.MacKeys;
                 }
                 else if (user.SeedKey.Length > 0)
                 {
+                    if (!ChunkToken.Validate(tokenBytes, user.SeedKey, appId, transferId, chunkIndex, runIndex))
+                        return Results.Unauthorized();
                     chunkMacKeys = [user.SeedKey];
-                    valid = ChunkToken.Validate(tokenBytes, user.SeedKey, appId, transferId, chunkIndex, runIndex);
                 }
-                else
-                {
-                    valid = true; // keyless user — X-App-Id alone is sufficient
-                }
-
-                if (!valid) return Results.Unauthorized();
+                // else: keyless user — X-App-Id alone is sufficient
                 ctx.HttpContext.Items["AppUser"]      = user;
                 ctx.HttpContext.Items["RunIndex"]     = runIndex;
                 ctx.HttpContext.Items["ChunkMacKeys"] = chunkMacKeys;

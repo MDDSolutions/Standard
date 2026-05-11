@@ -5,11 +5,6 @@ namespace FileRelay.Client;
 
 public class UploadOptions
 {
-    /// <summary>
-    /// Used when no Throttle is set. When a BandwidthLimiter is provided,
-    /// its ParallelConnections value is used instead.
-    /// </summary>
-    public int ParallelConnections { get; set; } = 4;
     public int PreferredChunkSizeMB { get; set; } = 50;
     public int MaxRetries { get; set; } = 5;
     public TransferContext? Context { get; set; }
@@ -36,13 +31,7 @@ public class UploadOptions
     public Action<string>? OnKeyWarning { get; set; }
 
     /// <summary>
-    /// Shared bandwidth limiter. When set, all uploads using this limiter cooperate
-    /// on a single throughput budget and ParallelConnections comes from the limiter.
-    /// </summary>
-    public BandwidthLimiter? Throttle { get; set; }
-
-    /// <summary>
-    /// Upload priority within the shared limiter. Lower number = higher priority.
+    /// Upload priority within the shared bandwidth limiter. Lower number = higher priority.
     /// Default 50. Range 0-255.
     /// </summary>
     public byte Priority { get; set; } = 50;
@@ -63,5 +52,4 @@ public class UploadOptions
     /// </summary>
     public bool UseHttpDataPath { get; set; } = true;
 
-    internal int EffectiveParallelConnections => Throttle?.ParallelConnections ?? ParallelConnections;
 }

@@ -11,8 +11,29 @@ public class FileRelayClient : IDisposable
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
     private readonly ChunkTokenHandler? _chunkTokenHandler;
+    private ChunkTokenHandler? _httpChunkTokenHandler;  // handler for the plain-HTTP data-path client
     private readonly string? _appId;
     private volatile string? _currentApiKey;
+
+    // Internal throttle management — shared across concurrent UploadFileAsync calls.
+    private int _activeUploads;
+    private BandwidthLimiter? _sharedLimiter;
+    private readonly object _limiterLock = new();
+
+    /// <summary>Number of concurrent uploads currently in progress on this client.</summary>
+    public int ActiveUploads => Interlocked.CompareExchange(ref _activeUploads, 0, 0);
+
+    /// <summary>
+    /// Maximum number of parallel chunk connections per upload.
+    /// Takes effect the next time the first concurrent upload starts (when ActiveUploads was zero).
+    /// </summary>
+    public int ParallelConnections { get; set; } = 4;
+
+    /// <summary>
+    /// Bandwidth cap in MB/s across all concurrent uploads. 0 = unlimited.
+    /// Takes effect the next time the first concurrent upload starts (when ActiveUploads was zero).
+    /// </summary>
+    public double ThrottleMBps { get; set; } = 0;
 
     public FileRelayClient(Uri baseUri, string? appId = null, string? apiKey = null,
         bool allowUntrustedCertificate = false)
@@ -69,6 +90,7 @@ public class FileRelayClient : IDisposable
             Context       = options.Context
         };
 
+        var limiter = AcquireLimiter();
         int attempt = 0;
         HttpClient? ownedChunkHttp = null;
         try
@@ -90,7 +112,7 @@ public class FileRelayClient : IDisposable
                     }
 
                     var chunkSizeBytes = (long)negotiate.ChunkSizeMB * 1024 * 1024;
-                    await UploadChunksAsync(file, negotiate, chunkSizeBytes, ownedChunkHttp ?? _http, options, ct).ConfigureAwait(false);
+                    await UploadChunksAsync(file, negotiate, chunkSizeBytes, ownedChunkHttp ?? _http, limiter, options, ct).ConfigureAwait(false);
                     return;
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -110,15 +132,23 @@ public class FileRelayClient : IDisposable
         finally
         {
             ownedChunkHttp?.Dispose();
+            ReleaseLimiter();
         }
     }
 
     /// <summary>
-    /// Requests a new API key from the server. Client entropy is generated automatically;
-    /// the server XORs it with its own randomness so neither side alone controls the output.
-    /// The client's Authorization header is updated in place — the caller must persist the
-    /// returned key for use in future sessions.
+    /// Updates the API key used for all subsequent requests on this client instance,
+    /// including any chunk uploads in progress. Call this after a key rotation so that
+    /// active transfers adopt the new key immediately.
     /// </summary>
+    public void UpdateApiKey(string newKey)
+    {
+        _currentApiKey = newKey;
+        _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", newKey);
+        _chunkTokenHandler?.UpdateApiKey(newKey);
+        _httpChunkTokenHandler?.UpdateApiKey(newKey);
+    }
+
     public async Task<string> RotateKeyAsync(CancellationToken ct = default)
     {
         var entropy = new byte[32];
@@ -130,11 +160,27 @@ public class FileRelayClient : IDisposable
         response.EnsureSuccessStatusCode();
         var result = await response.Content.ReadFromJsonAsync<RotateKeyResponse>(ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException("Empty rotate-key response.");
-        _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", result.NewKey);
-        _chunkTokenHandler?.UpdateApiKey(result.NewKey);
-        _currentApiKey = result.NewKey;
+        UpdateApiKey(result.NewKey);
         return result.NewKey;
     }
+
+    private BandwidthLimiter? AcquireLimiter()
+    {
+        lock (_limiterLock)
+        {
+            if (Interlocked.CompareExchange(ref _activeUploads, 0, 0) == 0)
+            {
+                _sharedLimiter?.Dispose();
+                _sharedLimiter = ThrottleMBps > 0
+                    ? new BandwidthLimiter(ThrottleMBps, ParallelConnections)
+                    : null;
+            }
+        }
+        Interlocked.Increment(ref _activeUploads);
+        return _sharedLimiter;
+    }
+
+    private void ReleaseLimiter() => Interlocked.Decrement(ref _activeUploads);
 
     private HttpClient CreateHttpChunkClient(int httpPort)
     {
@@ -143,6 +189,7 @@ public class FileRelayClient : IDisposable
         var handler = _appId is { Length: > 0 } && apiKey is { Length: > 0 }
             ? new ChunkTokenHandler(_appId, apiKey, inner)
             : null;
+        _httpChunkTokenHandler = handler;
 
         var host = _http.BaseAddress!.Host;
         var basePath = _http.BaseAddress.AbsolutePath.TrimEnd('/') + "/";
@@ -168,7 +215,7 @@ public class FileRelayClient : IDisposable
     }
 
     private async Task UploadChunksAsync(FileInfo file, TransferNegotiateResponse negotiate,
-        long chunkSizeBytes, HttpClient httpChunks, UploadOptions options, CancellationToken ct)
+        long chunkSizeBytes, HttpClient httpChunks, BandwidthLimiter? limiter, UploadOptions options, CancellationToken ct)
     {
         var sessionBytesTotal = negotiate.ChunksNeeded
             .Sum(ci => ChunkMath.ChunkLength(ci, file.Length, chunkSizeBytes));
@@ -178,7 +225,8 @@ public class FileRelayClient : IDisposable
         long bytesConfirmed = 0;
         long bytesInFlight = 0;
         int chunksConfirmed = 0;
-        var semaphore = new SemaphoreSlim(options.EffectiveParallelConnections);
+        var parallelConnections = limiter?.ParallelConnections ?? ParallelConnections;
+        var semaphore = new SemaphoreSlim(parallelConnections);
 
         void FireProgress()
         {
@@ -214,17 +262,69 @@ public class FileRelayClient : IDisposable
             }, CancellationToken.None)
             : Task.CompletedTask;
 
+        using var abortCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var chunkCt = abortCts.Token;
+
         var tasks = negotiate.ChunksNeeded.Select(async chunkIndex =>
         {
-            await semaphore.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                await semaphore.WaitAsync(chunkCt).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                return; // aborted before acquiring semaphore — nothing to release
+            }
             try
             {
                 var chunkBytes = ChunkMath.ChunkLength(chunkIndex, file.Length, chunkSizeBytes);
                 var runIndex   = negotiate.ChunkRunIndexes != null
                     && negotiate.ChunkRunIndexes.TryGetValue(chunkIndex, out var ri) ? ri : 1;
-                void onBytesSent(long n) => Interlocked.Add(ref bytesInFlight, n);
-                await UploadChunkAsync(file, negotiate.TransferId, chunkIndex, runIndex, chunkSizeBytes,
-                    httpChunks, _appId, _currentApiKey, onBytesSent, options, ct).ConfigureAwait(false);
+                var apiKey = _currentApiKey;   // snapshot: pending tasks pick up a rotated key naturally
+                long bytesSent = 0;
+                void onBytesSent(long n) { Interlocked.Add(ref bytesInFlight, n); bytesSent += n; }
+
+                UnauthorizedAccessException? authEx = null;
+                try
+                {
+                    await UploadChunkAsync(file, negotiate.TransferId, chunkIndex, runIndex, chunkSizeBytes,
+                        httpChunks, apiKey, onBytesSent, limiter, options.Priority, chunkCt).ConfigureAwait(false);
+                }
+                catch (UnauthorizedAccessException ex) { authEx = ex; }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    Interlocked.Add(ref bytesInFlight, -bytesSent);
+                    return;
+                }
+
+                if (authEx != null)
+                {
+                    Interlocked.Add(ref bytesInFlight, -bytesSent);
+                    bytesSent = 0;
+                    var updatedKey = _currentApiKey;
+                    if (updatedKey != null && updatedKey != apiKey)
+                    {
+                        // Key was rotated externally while this chunk was in-flight — retry once.
+                        apiKey = updatedKey;
+                        try
+                        {
+                            await UploadChunkAsync(file, negotiate.TransferId, chunkIndex, runIndex, chunkSizeBytes,
+                                httpChunks, apiKey, onBytesSent, limiter, options.Priority, chunkCt).ConfigureAwait(false);
+                            authEx = null;
+                        }
+                        catch (UnauthorizedAccessException ex)
+                        {
+                            Interlocked.Add(ref bytesInFlight, -bytesSent);
+                            authEx = ex;
+                        }
+                        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                        {
+                            Interlocked.Add(ref bytesInFlight, -bytesSent);
+                            return;
+                        }
+                    }
+                    if (authEx != null) { abortCts.Cancel(); throw authEx; }
+                }
                 Interlocked.Add(ref bytesConfirmed, chunkBytes);
                 Interlocked.Add(ref bytesInFlight, -chunkBytes);
                 Interlocked.Increment(ref chunksConfirmed);
@@ -253,15 +353,15 @@ public class FileRelayClient : IDisposable
         });
     }
 
-    private static async Task UploadChunkAsync(FileInfo file, Guid transferId, int chunkIndex,
+    private async Task UploadChunkAsync(FileInfo file, Guid transferId, int chunkIndex,
         int runIndex, long chunkSizeBytes, HttpClient httpChunks,
-        string? appId, string? apiKey, Action<long> onBytesSent, UploadOptions options, CancellationToken ct)
+        string? apiKey, Action<long> onBytesSent, BandwidthLimiter? limiter, byte priority, CancellationToken ct)
     {
         var offset = ChunkMath.ChunkOffset(chunkIndex, chunkSizeBytes);
         var length = ChunkMath.ChunkLength(chunkIndex, file.Length, chunkSizeBytes);
 
         using var content = new ChunkContent(file.FullName, offset, length, onBytesSent,
-            options.Throttle, options.Priority, appId, apiKey, transferId, chunkIndex, runIndex);
+            limiter, priority, _appId, apiKey, transferId, chunkIndex, runIndex);
         using var request = new HttpRequestMessage(HttpMethod.Post, $"transfer/{transferId}/chunk/{chunkIndex}")
         {
             Content = content
@@ -277,10 +377,7 @@ public class FileRelayClient : IDisposable
         Uri baseUri, string? appId, string? apiKey, CancellationToken ct,
         bool allowUntrustedCertificate = false, Action<string>? onKeyWarning = null)
     {
-        var handler = new HttpClientHandler
-        {
-            // Short timeout for connectivity checks; set on the handler so it applies to connect.
-        };
+        var handler = new HttpClientHandler();
         if (allowUntrustedCertificate)
         {
             try { handler.ServerCertificateCustomValidationCallback = (_, _, _, _) => true; }
@@ -341,6 +438,7 @@ public class FileRelayClient : IDisposable
     public void Dispose()
     {
         if (_ownsHttp) _http.Dispose();
+        _sharedLimiter?.Dispose();
     }
 
     // Intercepts chunk requests to strip the Bearer token and inject a scoped HMAC token.

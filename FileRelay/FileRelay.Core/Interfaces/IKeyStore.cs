@@ -37,6 +37,15 @@ public interface IKeyStore
     Task<(string Current, string? Previous)?> GetKeysAsync(string appId);
 
     /// <summary>
+    /// Validates a per-chunk HMAC token against known keys using the provided validator,
+    /// then runs the same grace-period lifecycle as AuthenticateAsync (stamp/purge).
+    /// Returns (status, macKeys) on success, where macKeys are the key(s) valid for
+    /// body-HMAC verification. Returns null on authentication failure.
+    /// </summary>
+    Task<(KeyAuthResult Status, string[] MacKeys)?> AuthenticateChunkAsync(
+        string appId, Func<string, bool> validateToken, TimeSpan gracePeriod);
+
+    /// <summary>
     /// Returns true if a grace period is currently active for the given app
     /// (i.e. GracePeriodEnd is set and has not yet elapsed).
     /// </summary>

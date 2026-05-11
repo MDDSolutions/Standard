@@ -4,6 +4,7 @@ using FileRelay.Core.Models;
 using FileRelay.Server;
 using FileRelay.Storage.Sqlite;
 using FileRelay.Storage.SqlServer;
+using Microsoft.Data.SqlClient;
 
 var builder = WebApplication.CreateBuilder(args);
 var cfg = builder.Configuration.GetSection("FileRelay");
@@ -16,6 +17,7 @@ if (httpPort <= 0 && httpsPort <= 0)
         "FileRelay config: at least one of HttpPort or HttpsPort must be a valid port number.");
 
 var chunkSizeMB = cfg.GetValue<int>("ChunkSizeMB", 50);
+var dbConnStr   = "Server=MDD-SQL2022;Database=DBA;Trusted_Connection=True;Encrypt=False;";
 
 builder.WebHost.ConfigureKestrel(options =>
 {
@@ -53,7 +55,6 @@ builder.Services.AddFileRelay(options =>
     //options.StateStore = new SqliteTransferStateStore(dbPath);
     //options.KeyStore   = new SqliteKeyStore(dbPath);
 
-    var dbConnStr = "Server=MDD-SQL2022;Database=DBA;Trusted_Connection=True;Encrypt=False;";
     options.StateStore = new SqlServerTransferStateStore(dbConnStr);
     options.KeyStore = new SqlServerKeyStore(dbConnStr);
 });
@@ -89,6 +90,37 @@ app.MapPost("/test/inject-fault", (InjectFaultRequest req, FaultInjector faults)
     faults.Enqueue(req.ChunkIndex, req.TransferId);
     var target = req.TransferId.HasValue ? $"transfer {req.TransferId}" : "any transfer";
     return Results.Ok(new { Message = $"Fault queued: chunk {req.ChunkIndex} on {target}" });
+});
+
+// Set the grace period duration. Must be called before the new key is first used after rotation —
+// the window is stamped lazily on first new-key authenticate, so this controls how long that stamp
+// will be. Has no effect on a grace period that is already stamped.
+app.MapPost("/test/set-grace-period", (int seconds, FileRelayOptions opts) =>
+{
+    opts.KeyGracePeriod = TimeSpan.FromSeconds(seconds);
+    return Results.Ok(new { Message = $"Key grace period set to {seconds}s." });
+});
+
+// Force-expire any active key rotation grace period by backdating GracePeriodEnd in the DB.
+// Works regardless of whether the grace period has been stamped yet.
+// After this, the next negotiate/status call with the OLD key returns 401.
+// Chunk auth (which has no grace check) stays valid until the new key purges PreviousKey.
+app.MapPost("/test/expire-grace", async () =>
+{
+    using var conn = new SqlConnection(dbConnStr);
+    await conn.OpenAsync();
+    using var cmd = conn.CreateCommand();
+    cmd.CommandText = """
+        UPDATE FileRelay.AppKeys
+        SET    GracePeriodEnd = @Past
+        WHERE  PreviousKey IS NOT NULL
+          AND  (GracePeriodEnd IS NULL OR GracePeriodEnd > @Past)
+        """;
+    cmd.Parameters.AddWithValue("@Past", DateTime.UtcNow.AddSeconds(-1));
+    var affected = await cmd.ExecuteNonQueryAsync();
+    return affected > 0
+        ? Results.Ok(new { Message = $"Grace period force-expired for {affected} app(s)." })
+        : Results.Ok(new { Message = "No active grace periods to expire." });
 });
 
 app.MapFileRelay();

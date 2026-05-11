@@ -35,35 +35,29 @@ public partial class TransferForm : Form
 
         if (string.IsNullOrWhiteSpace(txtFilePath.Text)) return;
 
-        var filePath = txtFilePath.Text;
-        var (serverUrl, parallelConnections, throttleMBps, appId, apiKey, allowUntrustedCert) = _hub.GetSettings();
-
-        var throttle    = _hub.BeginUpload(throttleMBps, parallelConnections);
+        var filePath    = txtFilePath.Text;
         var transferNum = Interlocked.Increment(ref MainForm.NextTransferNumber);
         var key         = $"T{transferNum}";
 
         _cts = new CancellationTokenSource();
         SetUploading(true);
+        _hub.BeginTransfer();
 
         try
         {
-            var file = new FileInfo(filePath);
-            using var client = new FileRelayClient(new Uri(serverUrl), appId: appId, apiKey: apiKey, allowUntrustedCertificate: allowUntrustedCert);
-
+            var file       = new FileInfo(filePath);
             var maxRetries = 5;
-            await client.UploadFileAsync(file, new UploadOptions
+            await _hub.Client.UploadFileAsync(file, new UploadOptions
             {
-                ParallelConnections = parallelConnections,
-                Throttle            = throttle,
-                MaxRetries          = maxRetries,
-                OnNegotiated        = n  => OnNegotiated(file, n, key),
-                OnProgress          = p  => OnProgress(key, p),
-                OnRetry             = (ex, attempt, delay) =>
+                MaxRetries   = maxRetries,
+                OnNegotiated = n  => OnNegotiated(file, n, key),
+                OnProgress   = p  => OnProgress(key, p),
+                OnRetry      = (ex, attempt, delay) =>
                 {
                     var reason = ex is OperationCanceledException ? "Connection timed out" : ex.Message;
                     AppendLog($"[{key}] {reason} — retry {attempt}/{maxRetries} in {(int)delay.TotalSeconds}s");
                 },
-                OnKeyWarning        = status =>
+                OnKeyWarning = status =>
                 {
                     var msg = status == "previous-grace-pending"
                         ? "WARNING: authenticated with previous key — new key not yet used (dropped response?). Consider rotating."
@@ -93,7 +87,7 @@ public partial class TransferForm : Form
         }
         finally
         {
-            _hub.EndUpload();
+            _hub.EndTransfer();
             _hub.ClearRate(key);
             _cts?.Dispose();
             _cts = null;
@@ -176,7 +170,7 @@ public partial class TransferForm : Form
 
     private async void btnFault_Click(object sender, EventArgs e)
     {
-        var (serverUrl, _, _, _, _, allowUntrustedCert) = _hub.GetSettings();
+        var (serverUrl, _, _, allowUntrustedCert) = _hub.GetConnectionSettings();
         var chunkIndex = (int)nudFaultChunk.Value;
 
         try

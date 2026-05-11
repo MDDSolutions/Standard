@@ -108,6 +108,79 @@ public class SqliteKeyStore : IKeyStore
         return null;
     }
 
+    public async Task<(KeyAuthResult Status, string[] MacKeys)?> AuthenticateChunkAsync(
+        string appId, Func<string, bool> validateToken, TimeSpan gracePeriod)
+    {
+        using var conn = Open();
+        using var tx = conn.BeginTransaction();
+
+        string? currentKey, previousKey, gracePeriodEndStr;
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = "SELECT CurrentKey, PreviousKey, GracePeriodEnd FROM AppKeys WHERE AppId = @AppId";
+            cmd.Parameters.AddWithValue("@AppId", appId);
+            using var reader = await cmd.ExecuteReaderAsync();
+            if (!await reader.ReadAsync()) { tx.Rollback(); return null; }
+            currentKey       = reader.GetString(0);
+            previousKey      = reader.IsDBNull(1) ? null : reader.GetString(1);
+            gracePeriodEndStr = reader.IsDBNull(2) ? null : reader.GetString(2);
+        }
+
+        bool isCurrentKey  = validateToken(currentKey);
+        bool isPreviousKey = !isCurrentKey && previousKey != null && validateToken(previousKey);
+
+        if (!isCurrentKey && !isPreviousKey) { tx.Rollback(); return null; }
+
+        var macKeys = previousKey != null
+            ? new[] { currentKey, previousKey }
+            : new[] { currentKey };
+
+        KeyStatus status;
+        if (isCurrentKey)
+        {
+            status = KeyStatus.Current;
+            if (previousKey != null)
+            {
+                using var cmd = conn.CreateCommand();
+                cmd.Transaction = tx;
+                if (gracePeriodEndStr == null)
+                {
+                    var end = DateTime.UtcNow.Add(gracePeriod);
+                    cmd.CommandText = "UPDATE AppKeys SET GracePeriodEnd = @End WHERE AppId = @AppId";
+                    cmd.Parameters.AddWithValue("@End", end.ToString("O"));
+                    cmd.Parameters.AddWithValue("@AppId", appId);
+                }
+                else if (DateTime.UtcNow >= DateTime.Parse(gracePeriodEndStr))
+                {
+                    macKeys = new[] { currentKey };
+                    cmd.CommandText = "UPDATE AppKeys SET PreviousKey = NULL, GracePeriodEnd = NULL WHERE AppId = @AppId";
+                    cmd.Parameters.AddWithValue("@AppId", appId);
+                }
+                await cmd.ExecuteNonQueryAsync();
+            }
+        }
+        else // isPreviousKey
+        {
+            if (gracePeriodEndStr == null)
+            {
+                status = KeyStatus.PreviousGracePending;
+            }
+            else if (DateTime.UtcNow < DateTime.Parse(gracePeriodEndStr))
+            {
+                status = KeyStatus.PreviousGraceActive;
+            }
+            else
+            {
+                tx.Rollback();
+                return null;
+            }
+        }
+
+        tx.Commit();
+        return (new KeyAuthResult(status), macKeys);
+    }
+
     public async Task<string> RotateAsync(string appId, byte[] clientEntropy)
     {
         var newKey = GenerateKey(clientEntropy);

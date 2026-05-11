@@ -10,8 +10,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\FileRelay.Client\FileRelay.Client.csproj" />
     <ProjectReference Include="..\..\MDDFoundation\MDDFoundation.csproj" />
+    <ProjectReference Include="..\FileRelay.Client\FileRelay.Client.csproj" />
   </ItemGroup>
 
 </Project>

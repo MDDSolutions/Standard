@@ -1,3 +1,4 @@
+using System.Net.Http.Json;
 using FileRelay.Client;
 using FileRelay.Core;
 
@@ -5,15 +6,14 @@ namespace FileRelay.TestClient;
 
 public partial class MainForm : Form
 {
-    internal static BandwidthLimiter? SharedThrottle;
-    internal static int GlobalActiveCount;            // Interlocked
     internal static int NextTransferNumber;           // Interlocked, 1-based
     internal static readonly Dictionary<string, double> GlobalRates = new();
     internal static readonly object GlobalRatesLock = new();
-    internal static readonly object ThrottleLock = new();
 
     private readonly ClientSettings _settings;
-    private readonly ToolTip _tip = new();
+    private FileRelayClient? _client;
+
+    internal FileRelayClient Client => _client ??= CreateClient();
 
     public MainForm()
     {
@@ -21,6 +21,26 @@ public partial class MainForm : Form
         _settings = ClientSettings.Load();
         ApplySettings();
         WireSettingsEvents();
+    }
+
+    private FileRelayClient CreateClient()
+    {
+        _client?.Dispose();
+        var appId  = _settings.AppId.Length  > 0 ? _settings.AppId  : null;
+        var apiKey = _settings.SeedKey.Length > 0 ? _settings.SeedKey : null;
+        _client = new FileRelayClient(new Uri(_settings.ServerUrl), appId: appId, apiKey: apiKey,
+            allowUntrustedCertificate: _settings.AllowUntrustedCert)
+        {
+            ParallelConnections = _settings.ParallelConnections,
+            ThrottleMBps        = _settings.ThrottleMBps,
+        };
+        return _client;
+    }
+
+    private void InvalidateClient()
+    {
+        _client?.Dispose();
+        _client = null;
     }
 
     private void ApplySettings()
@@ -35,17 +55,31 @@ public partial class MainForm : Form
 
     private void WireSettingsEvents()
     {
-        txtServerUrl.Validated += (_, _) => { _settings.ServerUrl          = txtServerUrl.Text;         _settings.Save(); };
-        txtAppId.Validated     += (_, _) => { _settings.AppId              = txtAppId.Text;              _settings.Save(); };
-        txtApiKey.Validated    += (_, _) => { _settings.SeedKey             = txtApiKey.Text;             _settings.Save(); };
-        nudParallel.Validated  += (_, _) => { _settings.ParallelConnections = (int)nudParallel.Value;   _settings.Save(); };
-        nudBandwidth.Validated += (_, _) => { _settings.ThrottleMBps        = (double)nudBandwidth.Value; _settings.Save(); };
+        // Connection-level changes require a new client.
+        txtServerUrl.Validated += (_, _) => { _settings.ServerUrl = txtServerUrl.Text; _settings.Save(); InvalidateClient(); };
+        txtAppId.Validated     += (_, _) => { _settings.AppId     = txtAppId.Text;     _settings.Save(); InvalidateClient(); };
+        txtApiKey.Validated    += (_, _) => { _settings.SeedKey   = txtApiKey.Text;    _settings.Save(); InvalidateClient(); };
+
+        // Performance settings can be updated on the existing client.
+        nudParallel.Validated  += (_, _) =>
+        {
+            _settings.ParallelConnections = (int)nudParallel.Value;
+            _settings.Save();
+            if (_client != null) _client.ParallelConnections = (int)nudParallel.Value;
+        };
+        nudBandwidth.Validated += (_, _) =>
+        {
+            _settings.ThrottleMBps = (double)nudBandwidth.Value;
+            _settings.Save();
+            if (_client != null) _client.ThrottleMBps = (double)nudBandwidth.Value;
+        };
     }
 
     private void chkAllowUntrustedCert_CheckedChanged(object? sender, EventArgs e)
     {
         _settings.AllowUntrustedCert = chkAllowUntrustedCert.Checked;
         _settings.Save();
+        InvalidateClient();
     }
 
     private void btnNewTransfer_Click(object sender, EventArgs e)
@@ -53,26 +87,10 @@ public partial class MainForm : Form
         new TransferForm(this).Show();
     }
 
-    internal BandwidthLimiter? BeginUpload(double throttleMBps, int parallelConnections)
-    {
-        lock (ThrottleLock)
-        {
-            if (Interlocked.CompareExchange(ref GlobalActiveCount, 0, 0) == 0)
-            {
-                SharedThrottle?.Dispose();
-                SharedThrottle = throttleMBps > 0
-                    ? new BandwidthLimiter(throttleMBps, parallelConnections)
-                    : null;
-            }
-        }
-        Interlocked.Increment(ref GlobalActiveCount);
-        UpdateControlState();
-        return SharedThrottle;
-    }
+    internal void BeginTransfer() => UpdateControlState();
 
-    internal void EndUpload()
+    internal void EndTransfer()
     {
-        Interlocked.Decrement(ref GlobalActiveCount);
         if (InvokeRequired) Invoke(UpdateControlState);
         else UpdateControlState();
     }
@@ -89,20 +107,22 @@ public partial class MainForm : Form
         RefreshOverallRate();
     }
 
-    internal (string ServerUrl, int ParallelConnections, double ThrottleMBps, string? AppId, string? ApiKey, bool AllowUntrustedCert) GetSettings()
+    internal (string ServerUrl, string? AppId, string? ApiKey, bool AllowUntrustedCert) GetConnectionSettings()
     {
-        var appId = txtAppId.Text.Trim();
-        var key   = txtApiKey.Text.Trim();
-        return (txtServerUrl.Text, (int)nudParallel.Value, (double)nudBandwidth.Value,
-                appId.Length > 0 ? appId : null,
-                key.Length   > 0 ? key   : null,
+        var appId  = txtAppId.Text.Trim();
+        var apiKey = txtApiKey.Text.Trim();
+        return (txtServerUrl.Text,
+                appId.Length  > 0 ? appId  : null,
+                apiKey.Length > 0 ? apiKey : null,
                 chkAllowUntrustedCert.Checked);
     }
 
-    private void SetStatus(string text)
+    private void AppendStatus(string text)
     {
-        lblOverall.Text = text;
-        _tip.SetToolTip(lblOverall, text);
+        if (InvokeRequired) { Invoke(() => AppendStatus(text)); return; }
+        if (rtbStatus.TextLength > 0) rtbStatus.AppendText(Environment.NewLine);
+        rtbStatus.AppendText($"{DateTime.Now:HH:mm:ss}  {text}");
+        rtbStatus.ScrollToCaret();
     }
 
     private void RefreshOverallRate()
@@ -110,54 +130,74 @@ public partial class MainForm : Form
         if (InvokeRequired) { Invoke(RefreshOverallRate); return; }
         double total;
         lock (GlobalRatesLock) total = GlobalRates.Values.Sum();
-        SetStatus(total > 0 ? $"Overall: {total:F1} MB/s" : "");
+        lblRate.Text = total > 0 ? $"Overall: {total:F1} MB/s" : "";
     }
 
     private void UpdateControlState()
     {
-        var active = Interlocked.CompareExchange(ref GlobalActiveCount, 0, 0) > 0;
+        var active = _client?.ActiveUploads > 0;
         txtServerUrl.Enabled          = !active;
         txtAppId.Enabled              = !active;
         txtApiKey.Enabled             = !active;
         nudParallel.Enabled           = !active;
         nudBandwidth.Enabled          = !active;
         chkAllowUntrustedCert.Enabled = !active;
-        btnTest.Enabled               = !active;
-        btnRotateKey.Enabled          = !active;
     }
 
     private void MainForm_FormClosing(object? sender, FormClosingEventArgs e)
     {
         if (e.CloseReason != CloseReason.UserClosing) return;
-        if (Interlocked.CompareExchange(ref GlobalActiveCount, 0, 0) > 0)
+        if (_client?.ActiveUploads > 0)
         {
             var r = MessageBox.Show("Transfers are in progress. Exit anyway?", "FileRelay",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
             if (r == DialogResult.No) { e.Cancel = true; return; }
         }
-        SharedThrottle?.Dispose();
+        _client?.Dispose();
+    }
+
+    private async void btnExpireGrace_Click(object sender, EventArgs e)
+    {
+        var (serverUrl, _, _, allowUntrustedCert) = GetConnectionSettings();
+        btnExpireGrace.Enabled = false;
+        AppendStatus("Expiring grace period...");
+        try
+        {
+            var handler = new HttpClientHandler();
+            if (allowUntrustedCert)
+                handler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
+            using var http = new HttpClient(handler);
+            var resp = await http.PostAsync(serverUrl.TrimEnd('/') + "/test/expire-grace", null);
+            var body = await resp.Content.ReadFromJsonAsync<ExpireGraceResponse>();
+            AppendStatus(body?.Message ?? (resp.IsSuccessStatusCode ? "Done." : $"Error {(int)resp.StatusCode}"));
+        }
+        catch (Exception ex)
+        {
+            AppendStatus($"Expire grace failed: {ex.Message}");
+        }
+        finally
+        {
+            btnExpireGrace.Enabled = true;
+        }
     }
 
     private async void btnRotateKey_Click(object sender, EventArgs e)
     {
-        var (serverUrl, _, _, appId, seedKey, allowUntrustedCert) = GetSettings();
         btnRotateKey.Enabled = false;
-        SetStatus("Rotating key...");
+        AppendStatus("Rotating key...");
         try
         {
-            using var client = new FileRelayClient(new Uri(serverUrl), appId: appId, apiKey: seedKey,
-                allowUntrustedCertificate: allowUntrustedCert);
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            var newKey = await client.RotateKeyAsync(cts.Token);
+            var newKey = await Client.RotateKeyAsync(cts.Token);
             _settings.SeedKey = newKey;
             _settings.Save();
             txtApiKey.Text = newKey;
-            SetStatus("Key rotated.");
+            AppendStatus("Key rotated.");
         }
         catch (Exception ex)
         {
             var msg = ex.InnerException?.Message ?? ex.Message;
-            SetStatus($"Rotate failed: {msg}");
+            AppendStatus($"Rotate failed: {msg}");
         }
         finally
         {
@@ -167,21 +207,21 @@ public partial class MainForm : Form
 
     private async void btnTest_Click(object sender, EventArgs e)
     {
-        var (serverUrl, _, _, appId, apiKey, allowUntrustedCert) = GetSettings();
+        var (serverUrl, appId, apiKey, allowUntrustedCert) = GetConnectionSettings();
         btnTest.Enabled = false;
-        SetStatus("Testing...");
+        AppendStatus("Testing...");
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             var info = await FileRelayClient.PingAsync(new Uri(serverUrl), appId, apiKey, cts.Token, allowUntrustedCert);
             var build = info.BuildTime.HasValue ? info.BuildTime.Value.ToString("yyyy-MM-dd HH:mm") : "unknown";
             var ver   = info.AssemblyVersion ?? "?";
-            SetStatus($"Server build: {build}  v{ver}");
+            AppendStatus($"Server build: {build}  v{ver}");
         }
         catch (Exception ex)
         {
             var msg = ex is OperationCanceledException ? "Timed out" : ex.Message;
-            SetStatus($"Connection failed: {msg}");
+            AppendStatus($"Connection failed: {msg}");
         }
         finally
         {
@@ -189,3 +229,5 @@ public partial class MainForm : Form
         }
     }
 }
+
+record ExpireGraceResponse(string? Message);
