@@ -28,7 +28,9 @@
       "Bash(Sort-Object FullName)",
       "Bash(Format-Table -AutoSize)",
       "PowerShell(dotnet build \"C:\\\\Dev\\\\Standard\\\\FileRelay\\\\FileRelay.Storage.SqlServer\\\\FileRelay.Storage.SqlServer.csproj\" 2>&1)",
-      "Bash(xargs grep -l \"Bearer\\\\|Authorization\\\\|apikey\\\\|API.Key\")"
+      "Bash(xargs grep -l \"Bearer\\\\|Authorization\\\\|apikey\\\\|API.Key\")",
+      "Bash(grep -v \"\\\\\\\\\\\\\\\\obj\\\\\\\\\\\\\\\\\")",
+      "Bash(grep -v \"\\\\\\\\\\\\\\\\bin\\\\\\\\\\\\\\\\\")"
     ]
   }
 }

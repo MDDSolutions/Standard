@@ -17,12 +17,15 @@ public class FileRelayClient : IDisposable
     public FileRelayClient(Uri baseUri, string? appId = null, string? apiKey = null,
         bool allowUntrustedCertificate = false)
     {
-        _appId          = appId;
-        _currentApiKey  = apiKey;
+        _appId         = appId;
+        _currentApiKey = apiKey;
 
-        var inner = new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(10) };
+        var inner = new HttpClientHandler();
         if (allowUntrustedCertificate)
-            inner.SslOptions.RemoteCertificateValidationCallback = (_, _, _, _) => true;
+        {
+            try { inner.ServerCertificateCustomValidationCallback = (_, _, _, _) => true; }
+            catch (PlatformNotSupportedException) { }
+        }
 
         _chunkTokenHandler = appId is { Length: > 0 } && apiKey is { Length: > 0 }
             ? new ChunkTokenHandler(appId, apiKey, inner)
@@ -30,9 +33,7 @@ public class FileRelayClient : IDisposable
 
         _http = new HttpClient(_chunkTokenHandler ?? (HttpMessageHandler)inner)
         {
-            BaseAddress           = baseUri,
-            DefaultRequestVersion = System.Net.HttpVersion.Version20,
-            DefaultVersionPolicy  = HttpVersionPolicy.RequestVersionOrLower,
+            BaseAddress = baseUri,
         };
         if (appId is { Length: > 0 })
             _http.DefaultRequestHeaders.Add("X-App-Id", appId);
@@ -54,9 +55,8 @@ public class FileRelayClient : IDisposable
         string? fileHash = null;
         if (options.ComputeFileHash)
         {
-            using var sha = SHA256.Create();
-            await using var fs = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, FileOptions.Asynchronous);
-            var hashBytes = await sha.ComputeHashAsync(fs, ct);
+            using var fs = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, FileOptions.Asynchronous);
+            var hashBytes = await ComputeSha256Async(fs, ct).ConfigureAwait(false);
             fileHash = $"sha256:{Convert.ToBase64String(hashBytes)}";
         }
 
@@ -77,7 +77,7 @@ public class FileRelayClient : IDisposable
             {
                 try
                 {
-                    var negotiate = await NegotiateAsync(request, options, ct);
+                    var negotiate = await NegotiateAsync(request, options, ct).ConfigureAwait(false);
                     options.OnNegotiated?.Invoke(negotiate);
                     if (negotiate.ChunksNeeded.Count == 0) return;
 
@@ -90,20 +90,8 @@ public class FileRelayClient : IDisposable
                     }
 
                     var chunkSizeBytes = (long)negotiate.ChunkSizeMB * 1024 * 1024;
-                    await UploadChunksAsync(file, negotiate, chunkSizeBytes, ownedChunkHttp ?? _http, options, ct);
+                    await UploadChunksAsync(file, negotiate, chunkSizeBytes, ownedChunkHttp ?? _http, options, ct).ConfigureAwait(false);
                     return;
-                }
-                catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
-                {
-                    throw new UnauthorizedAccessException("The server rejected the API key.", ex);
-                }
-                catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.MisdirectedRequest)
-                {
-                    throw new InvalidOperationException("The server requires HTTPS. Use an https:// URL.", ex);
-                }
-                catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
-                {
-                    throw new InvalidOperationException("The server no longer has a record of this transfer. The partial file may have been deleted. Restart the transfer manually if intended.", ex);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -115,7 +103,7 @@ public class FileRelayClient : IDisposable
                     attempt++;
                     var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt));
                     options.OnRetry?.Invoke(ex, attempt, delay);
-                    await Task.Delay(delay, ct);
+                    await Task.Delay(delay, ct).ConfigureAwait(false);
                 }
             }
         }
@@ -133,11 +121,14 @@ public class FileRelayClient : IDisposable
     /// </summary>
     public async Task<string> RotateKeyAsync(CancellationToken ct = default)
     {
-        var clientEntropy = RandomNumberGenerator.GetBytes(32);
-        var request = new RotateKeyRequest { ClientEntropy = Convert.ToBase64String(clientEntropy) };
-        var response = await _http.PostAsJsonAsync("transfer/rotate-key", request, ct);
+        var entropy = new byte[32];
+        using (var rng = RandomNumberGenerator.Create())
+            rng.GetBytes(entropy);
+
+        var request = new RotateKeyRequest { ClientEntropy = Convert.ToBase64String(entropy) };
+        var response = await _http.PostAsJsonAsync("transfer/rotate-key", request, ct).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
-        var result = await response.Content.ReadFromJsonAsync<RotateKeyResponse>(ct)
+        var result = await response.Content.ReadFromJsonAsync<RotateKeyResponse>(ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException("Empty rotate-key response.");
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", result.NewKey);
         _chunkTokenHandler?.UpdateApiKey(result.NewKey);
@@ -147,7 +138,7 @@ public class FileRelayClient : IDisposable
 
     private HttpClient CreateHttpChunkClient(int httpPort)
     {
-        var inner = new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(10) };
+        var inner = new HttpClientHandler();
         var apiKey = _currentApiKey;
         var handler = _appId is { Length: > 0 } && apiKey is { Length: > 0 }
             ? new ChunkTokenHandler(_appId, apiKey, inner)
@@ -157,9 +148,7 @@ public class FileRelayClient : IDisposable
         var basePath = _http.BaseAddress.AbsolutePath.TrimEnd('/') + "/";
         var client = new HttpClient(handler ?? (HttpMessageHandler)inner)
         {
-            BaseAddress           = new Uri($"http://{host}:{httpPort}{basePath}"),
-            DefaultRequestVersion = System.Net.HttpVersion.Version20,
-            DefaultVersionPolicy  = HttpVersionPolicy.RequestVersionOrLower,
+            BaseAddress = new Uri($"http://{host}:{httpPort}{basePath}"),
         };
         if (_appId is { Length: > 0 })
             client.DefaultRequestHeaders.Add("X-App-Id", _appId);
@@ -170,10 +159,11 @@ public class FileRelayClient : IDisposable
     private async Task<TransferNegotiateResponse> NegotiateAsync(
         TransferNegotiateRequest request, UploadOptions options, CancellationToken ct)
     {
-        using var response = await _http.PostAsJsonAsync("transfer/negotiate", request, ct);
+        using var response = await _http.PostAsJsonAsync("transfer/negotiate", request, ct).ConfigureAwait(false);
+        ThrowForKnownStatusCodes(response);
         response.EnsureSuccessStatusCode();
         CheckKeyWarning(response, options.OnKeyWarning);
-        return await response.Content.ReadFromJsonAsync<TransferNegotiateResponse>(ct)
+        return await response.Content.ReadFromJsonAsync<TransferNegotiateResponse>(ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException("Empty negotiate response.");
     }
 
@@ -217,7 +207,7 @@ public class FileRelayClient : IDisposable
             {
                 while (!progressCts.Token.IsCancellationRequested)
                 {
-                    try { await Task.Delay(TimeSpan.FromSeconds(options.ProgressIntervalSeconds), progressCts.Token); }
+                    try { await Task.Delay(TimeSpan.FromSeconds(options.ProgressIntervalSeconds), progressCts.Token).ConfigureAwait(false); }
                     catch (OperationCanceledException) { break; }
                     FireProgress();
                 }
@@ -226,14 +216,15 @@ public class FileRelayClient : IDisposable
 
         var tasks = negotiate.ChunksNeeded.Select(async chunkIndex =>
         {
-            await semaphore.WaitAsync(ct);
+            await semaphore.WaitAsync(ct).ConfigureAwait(false);
             try
             {
                 var chunkBytes = ChunkMath.ChunkLength(chunkIndex, file.Length, chunkSizeBytes);
-                var runIndex   = negotiate.ChunkRunIndexes?.GetValueOrDefault(chunkIndex, 1) ?? 1;
+                var runIndex   = negotiate.ChunkRunIndexes != null
+                    && negotiate.ChunkRunIndexes.TryGetValue(chunkIndex, out var ri) ? ri : 1;
                 void onBytesSent(long n) => Interlocked.Add(ref bytesInFlight, n);
                 await UploadChunkAsync(file, negotiate.TransferId, chunkIndex, runIndex, chunkSizeBytes,
-                    httpChunks, _appId, _currentApiKey, onBytesSent, options, ct);
+                    httpChunks, _appId, _currentApiKey, onBytesSent, options, ct).ConfigureAwait(false);
                 Interlocked.Add(ref bytesConfirmed, chunkBytes);
                 Interlocked.Add(ref bytesInFlight, -chunkBytes);
                 Interlocked.Increment(ref chunksConfirmed);
@@ -244,10 +235,10 @@ public class FileRelayClient : IDisposable
             }
         });
 
-        await Task.WhenAll(tasks);
+        await Task.WhenAll(tasks).ConfigureAwait(false);
 
-        await progressCts.CancelAsync();
-        await progressTask;
+        progressCts.Cancel();
+        await progressTask.ConfigureAwait(false);
 
         var sessionElapsed = (DateTime.UtcNow - started).TotalSeconds;
         options.OnProgress?.Invoke(new UploadProgress
@@ -277,7 +268,8 @@ public class FileRelayClient : IDisposable
         };
         if (runIndex != 1)
             request.Headers.Add("X-Run-Index", runIndex.ToString());
-        var response = await httpChunks.SendAsync(request, ct);
+        var response = await httpChunks.SendAsync(request, ct).ConfigureAwait(false);
+        ThrowForKnownStatusCodes(response);
         response.EnsureSuccessStatusCode();
     }
 
@@ -285,26 +277,43 @@ public class FileRelayClient : IDisposable
         Uri baseUri, string? appId, string? apiKey, CancellationToken ct,
         bool allowUntrustedCertificate = false, Action<string>? onKeyWarning = null)
     {
-        var handler = new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(5) };
+        var handler = new HttpClientHandler
+        {
+            // Short timeout for connectivity checks; set on the handler so it applies to connect.
+        };
         if (allowUntrustedCertificate)
-            handler.SslOptions.RemoteCertificateValidationCallback = (_, _, _, _) => true;
+        {
+            try { handler.ServerCertificateCustomValidationCallback = (_, _, _, _) => true; }
+            catch (PlatformNotSupportedException) { }
+        }
         using var http = new HttpClient(handler)
         {
-            BaseAddress           = baseUri,
-            Timeout               = TimeSpan.FromSeconds(5),
-            DefaultRequestVersion = System.Net.HttpVersion.Version20,
-            DefaultVersionPolicy  = HttpVersionPolicy.RequestVersionOrLower,
+            BaseAddress = baseUri,
+            Timeout     = TimeSpan.FromSeconds(5),
         };
         if (appId is { Length: > 0 })
             http.DefaultRequestHeaders.Add("X-App-Id", appId);
         if (apiKey is { Length: > 0 })
             http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
 
-        using var response = await http.GetAsync("transfer/ping", ct);
+        using var response = await http.GetAsync("transfer/ping", ct).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
         CheckKeyWarning(response, onKeyWarning);
-        return await response.Content.ReadFromJsonAsync<Core.Models.ServerInfoResponse>(ct)
+        return await response.Content.ReadFromJsonAsync<Core.Models.ServerInfoResponse>(ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException("Empty ping response.");
+    }
+
+    private static void ThrowForKnownStatusCodes(HttpResponseMessage response)
+    {
+        switch (response.StatusCode)
+        {
+            case System.Net.HttpStatusCode.Unauthorized:
+                throw new UnauthorizedAccessException("The server rejected the API key.");
+            case (System.Net.HttpStatusCode)421: // MisdirectedRequest
+                throw new InvalidOperationException("The server requires HTTPS. Use an https:// URL.");
+            case System.Net.HttpStatusCode.NotFound:
+                throw new InvalidOperationException("The server no longer has a record of this transfer. The partial file may have been deleted. Restart the transfer manually if intended.");
+        }
     }
 
     private static void CheckKeyWarning(HttpResponseMessage response, Action<string>? handler)
@@ -318,6 +327,17 @@ public class FileRelayClient : IDisposable
         }
     }
 
+    private static async Task<byte[]> ComputeSha256Async(Stream stream, CancellationToken ct)
+    {
+        using var sha = SHA256.Create();
+        var buffer = new byte[1024 * 1024];
+        int read;
+        while ((read = await stream.ReadAsync(buffer, 0, buffer.Length, ct).ConfigureAwait(false)) > 0)
+            sha.TransformBlock(buffer, 0, read, null, 0);
+        sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+        return sha.Hash!;
+    }
+
     public void Dispose()
     {
         if (_ownsHttp) _http.Dispose();
@@ -326,10 +346,17 @@ public class FileRelayClient : IDisposable
     // Intercepts chunk requests to strip the Bearer token and inject a scoped HMAC token.
     // DefaultRequestHeaders (including Authorization) are merged into request.Headers before
     // DelegatingHandler.SendAsync is called, so Remove("Authorization") works correctly here.
-    private sealed class ChunkTokenHandler(string appId, string apiKey, HttpMessageHandler inner)
-        : DelegatingHandler(inner)
+    private sealed class ChunkTokenHandler : DelegatingHandler
     {
-        private volatile string _apiKey = apiKey;
+        private readonly string _appId;
+        private volatile string _apiKey;
+
+        public ChunkTokenHandler(string appId, string apiKey, HttpMessageHandler inner)
+            : base(inner)
+        {
+            _appId  = appId;
+            _apiKey = apiKey;
+        }
 
         public void UpdateApiKey(string key) => _apiKey = key;
 
@@ -340,7 +367,7 @@ public class FileRelayClient : IDisposable
                 var runIndex = request.Headers.TryGetValues("X-Run-Index", out var vals)
                     && int.TryParse(vals.FirstOrDefault(), out var ri) ? ri : 1;
                 request.Headers.Remove("Authorization");
-                request.Headers.Add("X-Chunk-Token", ChunkToken.Compute(_apiKey, appId, transferId, chunkIndex, runIndex));
+                request.Headers.Add("X-Chunk-Token", ChunkToken.Compute(_apiKey, _appId, transferId, chunkIndex, runIndex));
             }
             return base.SendAsync(request, ct);
         }
@@ -352,10 +379,10 @@ public class FileRelayClient : IDisposable
             var path = uri?.AbsolutePath ?? "";
             var marker = path.LastIndexOf("/chunk/", StringComparison.Ordinal);
             if (marker < 0) return false;
-            if (!int.TryParse(path[(marker + 7)..], out chunkIndex)) return false;
-            var before = path[..marker];
+            if (!int.TryParse(path.Substring(marker + 7), out chunkIndex)) return false;
+            var before = path.Substring(0, marker);
             var slash  = before.LastIndexOf('/');
-            return slash >= 0 && Guid.TryParse(before[(slash + 1)..], out transferId);
+            return slash >= 0 && Guid.TryParse(before.Substring(slash + 1), out transferId);
         }
     }
 }

@@ -45,10 +45,7 @@ internal sealed class ChunkContent : HttpContent
         return true;
     }
 
-    protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context)
-        => SerializeToStreamAsync(stream, context, CancellationToken.None);
-
-    protected override async Task SerializeToStreamAsync(Stream stream, TransportContext? context, CancellationToken ct)
+    protected override async Task SerializeToStreamAsync(Stream stream, TransportContext? context)
     {
         using var sha = SHA256.Create();
         const int bufSize = 1024 * 1024; // 1MB — fewer async iterations, larger HTTP/2 frames
@@ -59,24 +56,24 @@ internal sealed class ChunkContent : HttpContent
         var remaining = _length;
         while (remaining > 0)
         {
-            var read = await fs.ReadAsync(buf, 0, (int)Math.Min(buf.Length, remaining), ct);
+            var read = await fs.ReadAsync(buf, 0, (int)Math.Min(buf.Length, remaining)).ConfigureAwait(false);
             if (read == 0) throw new EndOfStreamException("Unexpected end of file during chunk upload.");
             sha.TransformBlock(buf, 0, read, null, 0);
             if (_throttle != null)
-                await _throttle.AcquireAsync(read, _priority, ct);
-            await stream.WriteAsync(buf.AsMemory(0, read), ct);
+                await _throttle.AcquireAsync(read, _priority, CancellationToken.None).ConfigureAwait(false);
+            await stream.WriteAsync(buf, 0, read).ConfigureAwait(false);
             _onBytesSent?.Invoke(read);
             remaining -= read;
         }
 
         sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
         var hash = sha.Hash!;
-        await stream.WriteAsync(hash.AsMemory(), ct);
+        await stream.WriteAsync(hash, 0, hash.Length).ConfigureAwait(false);
 
         if (HasMac)
         {
             var mac = ChunkToken.ComputeHashMac(_apiKey!, _appId!, _transferId, _chunkIndex, _runIndex, _length, hash);
-            await stream.WriteAsync(mac.AsMemory(), ct);
+            await stream.WriteAsync(mac, 0, mac.Length).ConfigureAwait(false);
         }
     }
 

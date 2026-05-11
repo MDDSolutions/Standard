@@ -80,7 +80,7 @@ public static class EndpointRouteBuilderExtensions
             if (user == null) return Results.Unauthorized();
 
             // Chunk endpoints authenticate via per-chunk HMAC token — the API key is never
-            // sent on these requests, which makes a future HTTP data path safe to enable.
+            // sent on these requests, which makes HTTP data path safe to enable as long as the data itself is not sensitive.
             var routeValues = ctx.HttpContext.Request.RouteValues;
             if (routeValues.TryGetValue("transferId", out var tidVal) &&
                 routeValues.TryGetValue("chunkIndex",  out var cidxVal) &&

@@ -48,32 +48,59 @@ FileRelay.Storage.SqlServer   — SQL Server implementation of ITransferStateSto
 public interface ITransferStateStore
 {
     Task<TransferState> GetOrCreateAsync(TransferNegotiateRequest request, int serverChunkSizeMB);
+    Task<TransferState?> GetAsync(Guid transferId);
     Task ConfirmChunkAsync(Guid transferId, int chunkIndex, string chunkHash);
     Task<IReadOnlyList<int>> GetMissingChunksAsync(Guid transferId);
-    Task MarkCompleteAsync(Guid transferId);
+
+    // Atomically claims runIndex for (transferId, chunkIndex). Returns false if another
+    // request already owns this run — prevents duplicate and replayed chunk uploads.
+    Task<bool> TryClaimChunkAsync(Guid transferId, int chunkIndex, int runIndex);
+
+    // Returns the highest claimed run index per chunk. Used by Negotiate to tell a resuming
+    // client which run index to use next for any chunk that was claimed but not confirmed.
+    Task<IReadOnlyDictionary<int, int>> GetClaimedRunIndexesAsync(Guid transferId);
+
+    // Returns true if this call flipped IsComplete; false if another finalizer got there first.
+    Task<bool> MarkCompleteAsync(Guid transferId);
+
+    Task PruneCompletedAsync(TimeSpan retention);
+    Task<IReadOnlyList<TransferState>> GetInactiveIncompleteTransfersAsync(TimeSpan inactivityThreshold);
+    Task DeleteTransferStateAsync(Guid transferId);
 }
 
-// Where assembled files are written. Multiple targets = multicast.
+// Where uploaded files are written. Multiple targets = multicast.
 public interface ITransferTarget
 {
-    Task WriteChunkAsync(Guid transferId, int chunkIndex, Stream data, CancellationToken ct);
-    Task AssembleAsync(Guid transferId, CancellationToken ct);
+    // Pre-allocates the .partial file at the correct size and registers the transfer path.
+    Task InitializeAsync(Guid transferId, string filename, long fileSizeBytes, TransferContext? context, CancellationToken ct);
+
+    // Returns a write stream positioned at the correct byte offset for this chunk.
+    Task<Stream> OpenChunkWriterAsync(Guid transferId, int chunkIndex, long offset, CancellationToken ct);
+
+    // Verifies the assembled file against expectedHash ("sha256:base64"). Throws on mismatch.
     Task VerifyAsync(Guid transferId, string expectedHash, CancellationToken ct);
+
+    // Renames .partial to final filename.
+    Task FinalizeAsync(Guid transferId, CancellationToken ct);
+
+    Task AbortAsync(Guid transferId, CancellationToken ct);
+
+    // Returns false (and deletes a wrong-size partial) if the partial file is missing or corrupt.
+    Task<bool> IsPartialIntactAsync(Guid transferId, string filename, long expectedSizeBytes, TransferContext? context, CancellationToken ct);
 }
 
-// Invoked by the server after a transfer is fully assembled and verified.
-// The consuming application implements this to define what happens with the file.
+// Invoked by the server after a transfer is finalized on disk.
+// The consuming application implements this to define what happens with the completed file.
 // CompletedTransfer includes AppId so the handler knows which user completed the transfer.
 public interface ITransferCompleteHandler
 {
-    Task OnCompleteAsync(CompletedTransfer transfer, CancellationToken ct);
-}
+    // Called before the 200 is sent. Return false → 422 to the client. Throw → 500.
+    // Use for synchronous validation (virus scan, schema check) the client should know about.
+    Task<bool> OnValidateAsync(CompletedTransfer transfer, CancellationToken ct);
 
-// Hash algorithm used for chunk verification. Default: SHA-256.
-public interface IChunkVerifier
-{
-    string ComputeHash(Stream data);
-    bool Verify(Stream data, string expectedHash);
+    // Called after the 200 is sent. Errors are logged and swallowed — the client is already gone.
+    // Use for notifications, indexing, or other work that does not need to block the client.
+    Task OnCompleteAsync(CompletedTransfer transfer, CancellationToken ct);
 }
 
 // Persists and rotates per-user API keys. Optional — if not configured, SeedKey is used directly.
@@ -84,6 +111,10 @@ public interface IKeyStore
     Task<KeyAuthResult?> AuthenticateAsync(string appId, string providedKey, TimeSpan gracePeriod);
     Task<bool> HasActiveGracePeriodAsync(string appId);
     Task<string> RotateAsync(string appId, byte[] clientEntropy);
+
+    // Returns current key and previous key (when still in grace period). Used to validate
+    // per-chunk HMAC tokens without requiring the API key on chunk requests.
+    Task<(string Current, string? Previous)?> GetKeysAsync(string appId);
 }
 ```
 
@@ -100,6 +131,8 @@ Authorization: Bearer {apiKey}
 
 The server looks up the registered `AppUser` by `AppId` and verifies the key. If no match is found, or the key is wrong, all endpoints return 401. The `AppId` also determines which target paths files are written to.
 
+Chunk upload requests are the exception — they authenticate via a per-chunk HMAC token instead of the Bearer key (see [Chunk Authentication](#chunk-authentication) below).
+
 A user with no `SeedKey` is valid (open, no key required) — but at least one user must always be configured, since users define where files go.
 
 ### AppUser Configuration
@@ -114,6 +147,24 @@ public class AppUser
 ```
 
 `SeedKey` is only used to bootstrap the key store on first run (`INSERT OR IGNORE`). Once a key store entry exists for an `AppId`, the live key in the store is authoritative and `SeedKey` is ignored. Rename `SeedKey` in config to signal this intent.
+
+### Chunk Authentication
+
+Chunk upload requests authenticate via a per-chunk HMAC token in the `X-Chunk-Token` header. The API key is never transmitted on chunk requests.
+
+```
+X-Chunk-Token = HMAC-SHA256(apiKey, appId || transferId || chunkIndex || runIndex)
+```
+
+Both client and server independently derive this token from inputs they already have. The server validates the token before reading the request body.
+
+The chunk body also carries an integrity trailer bound to the key:
+
+```
+Body: [raw chunk bytes] [sha256(chunk bytes)] [HMAC-SHA256(apiKey, appId || transferId || chunkIndex || runIndex || length || chunkHash)]
+```
+
+The trailing HMAC (`hashMac`) is present when API keys are configured. It ensures that an attacker on a plaintext path cannot silently replace chunk data — forging valid data requires the API key, which only ever travels over HTTPS. See [HTTP Data Path](#http-data-path) for the deployment scenario where this matters.
 
 ### Key Rotation
 
@@ -146,32 +197,36 @@ GracePeriodEnd TEXT  -- NULL until new key first used after rotation
 
 ## Transfer Protocol
 
-All endpoints are mounted under a configurable base path (default: `/transfer`). All require `X-App-Id` and `Authorization: Bearer {key}` headers.
+All endpoints are mounted under a configurable base path (default: `/transfer`). All require `X-App-Id`. Chunk endpoints use `X-Chunk-Token`; all other endpoints use `Authorization: Bearer {key}`.
 
 ### 1. Negotiate
 ```
 POST /transfer/negotiate
-Request:  { filename, fileSizeBytes, fileHash, chunkSizeMB }
-Response: { transferId, chunkSizeMB, totalChunks, chunksNeeded: [1, 2, 3, ...] }
+Request:  { filename, fileSizeBytes, fileHash?, chunkSizeMB, context? }
+Response: { transferId, chunkSizeMB, totalChunks, chunksNeeded: [1, 2, 3, ...],
+            chunkRunIndexes?: { "3": 2, "7": 3, ... }, httpChunkPort?: 61488 }
 ```
 - Server creates or resumes a transfer record **scoped to the authenticating AppId**
-- `chunksNeeded` is the full list of unconfirmed chunk indices
-- On first contact this is all chunks; on resume it is only missing chunks
+- `chunksNeeded` is the full list of unconfirmed chunk indices; all chunks on first contact, only missing chunks on resume
 - The sender does not decide chunk size — the server does (returned in response)
+- `chunkRunIndexes` is a sparse map of chunk index → next expected run index, present only when one or more chunks were previously attempted but not confirmed. Chunks absent from this map use run index 1.
+- `httpChunkPort` is present when the server has the HTTP data path enabled; its presence is the client's signal to route chunk data over plain HTTP to that port (see [HTTP Data Path](#http-data-path))
 
 ### 2. Upload Chunk
 ```
 POST /transfer/{transferId}/chunk/{chunkIndex}
-Headers:  X-Chunk-Token: <hmac over appId + transferId + chunkIndex + runIndex>
-Body:     raw bytes (the chunk) + 32-byte SHA-256 + 32-byte HMAC-SHA256
-Response: 200 OK on success, 409 if already confirmed, 4xx on hash mismatch
+Headers:  X-Chunk-Token: <hmac>
+          X-Run-Index: <n>        (omitted when n=1)
+Body:     [chunk bytes] [32-byte SHA-256] [32-byte hashMac]  (hashMac present when keys configured)
+Response: 200 { isComplete: bool } on success
+          409 if chunk already confirmed or run index conflict
+          4xx on hash or HMAC mismatch
 ```
-- Server verifies the transfer belongs to the authenticating AppId (returns 404 otherwise)
-- Server verifies the streamed chunk hash before acknowledging
-- Server verifies the appended hash HMAC before acknowledging, so an HTTP-path attacker cannot replace both the chunk bytes and hash
-- Server writes to the user's configured targets before acknowledging
-- Server updates state store before returning 200
-- Client only removes a chunk from its send queue when it receives 200
+- Server validates `X-Chunk-Token` before reading the body
+- Server atomically claims the run index before opening writers — duplicate or replayed uploads are rejected with 409
+- Server streams the body directly to all configured targets; the chunk is never fully buffered in memory
+- Server verifies SHA-256 and hashMac before confirming the chunk
+- Client only removes a chunk from its send queue on 200
 
 ### 3. Status
 ```
@@ -183,8 +238,9 @@ Response: { transferId, filename, chunksTotal, chunksConfirmed, chunksNeeded, is
 
 ### 4. Completion
 - Triggered internally by the server when the last chunk is confirmed
-- Server assembles the file from chunks (if not streaming-assembled), verifies the whole-file hash, then invokes `ITransferCompleteHandler`
-- No explicit client call needed; the final chunk's 200 response may include `{ complete: true }`
+- Chunks are written directly to byte offsets in a pre-allocated `.partial` file as they arrive; no post-transfer assembly step
+- After the last chunk is confirmed, the server verifies the whole-file hash (if provided in negotiate), calls `OnValidateAsync`, renames the `.partial` file, then fires `OnCompleteAsync` after sending 200
+- The final chunk's 200 response includes `{ isComplete: true }`
 
 ### 5. Key Rotation
 ```
@@ -195,6 +251,38 @@ Response: { newKey: "<base64>" }
 - Requires current key or previous key (only if `GracePeriodEnd` is NULL)
 - Blocked if any grace period is currently active
 - Returns 501 if no `IKeyStore` is configured on the server
+
+## HTTP Data Path
+
+Some deployment targets (e.g. ARM NAS hardware with software-only AES) cannot terminate TLS at meaningful throughput. When the payload is already encrypted before FileRelay sees it, TLS confidentiality is redundant — but running the data path over plain HTTP with a static API key is unacceptable.
+
+FileRelay solves this by splitting security responsibilities across the two protocol phases:
+
+1. **Negotiate (HTTPS)** — authenticates the client with the API key over an encrypted channel and establishes the transfer. The negotiate response includes `httpChunkPort` when the server has an HTTP listener configured.
+2. **Upload chunks (HTTP)** — each request authenticates via `X-Chunk-Token`, which is derived from the API key and therefore unguessable to an observer on the HTTP path. The chunk body trailer (`hashMac`) ensures data integrity — an attacker cannot replace the bytes and forge a valid MAC without knowing the API key.
+
+### Security properties on the HTTP path
+
+- **Cannot forge a token** — HMAC requires the API key, which only traveled over HTTPS
+- **Cannot replay a token usefully** — each token is bound to a specific chunk index and run index; claimed runs are rejected on duplicate use
+- **Cannot corrupt data silently** — replacing bytes requires recomputing the chunk hash, but forging the `hashMac` requires the API key
+- **Can read plaintext payload bytes** — this is an accepted trade-off; only use the HTTP data path when the payload is already encrypted before FileRelay sees it
+- **Can cause retries** (denial of service) — acceptable for a backup transfer use case; the protocol recovers cleanly
+
+### Configuration
+
+```csharp
+options.RequireHttps    = true;   // control plane always HTTPS
+options.AllowHttpChunks = true;   // chunk data path may use HTTP
+options.HttpPort        = 61488;  // advertised to clients in negotiate response
+```
+
+When `AllowHttpChunks` is enabled, the server:
+- Skips HTTPS enforcement for chunk routes only
+- Advertises `HttpPort` as `httpChunkPort` in negotiate responses
+- Continues to require HTTPS for negotiate, rotate-key, status, and ping
+
+The client detects `httpChunkPort` in the negotiate response and automatically creates a separate plain-HTTP connection for chunk data. No client-side configuration is required. Set `UploadOptions.UseHttpDataPath = false` to opt out even when the server advertises an HTTP port.
 
 ## Server Integration
 
@@ -269,72 +357,10 @@ SaveKeyToStorage(newKey);
 - **The server is the source of truth for transfer state.** The client is stateless between connections. If the client process restarts, it calls Negotiate again and gets the current missing chunk list.
 - **Chunk confirmation is atomic.** The state store must not mark a chunk confirmed until it has been fully written to all targets and hash-verified.
 - **The client does not know about targets or multicast.** It sends to one endpoint. What happens on the server side is invisible to the client.
-- **The `ITransferCompleteHandler` is fire-and-forget from the protocol's perspective.** If it fails, that is the consuming application's problem to handle — do not fail the transfer or block the final chunk response on it.
+- **`OnValidateAsync` blocks the final chunk response.** Use it for synchronous validation the client needs to know about (rejected file → 422). `OnCompleteAsync` is fire-and-forget after the 200 is sent — errors are logged and do not affect the client.
 - **Chunk indices are 1-based integers.** `totalChunks` is derived from `ceil(fileSizeBytes / chunkSizeBytes)`. The last chunk may be smaller than `chunkSizeMB`.
 - **Transfer state is scoped per AppId.** A resume lookup matches on AppId + filename + file size + context. Two different users uploading a file with the same name do not collide.
 - **Targets are per-user, not global.** Each `AppUser` defines where its files are written. `FileRelayOptions` has no top-level `Targets` property.
-
-## Future Feature: HMAC Per-Chunk Tokens (HTTP Data Path for Constrained TLS Endpoints)
-
-### Problem
-
-Some deployment targets (e.g. old ARM NAS hardware with no hardware AES) cannot terminate TLS at meaningful throughput. The backup data itself may already be encrypted at rest, making TLS confidentiality redundant. However, simply running the data path over plain HTTP with a static API key is unacceptable because the key is long-lived and would be visible in every request.
-
-### Proposed Solution
-
-Split the security responsibilities across the two phases that already exist in the protocol:
-
-1. **Negotiate (HTTPS)** — authenticates the client with the API key over an encrypted channel and establishes the transfer.
-2. **Upload chunks (HTTP)** — each chunk request carries its chunk-specific token in a header. The token is unguessable to an attacker watching the HTTP stream because it is derived from the API key, which only traveled over HTTPS.
-
-### Token Design
-
-Tokens are derived using HMAC-SHA256 — no storage required, and no token list needs to be transmitted:
-
-```
-token[i] = HMAC-SHA256(key: apiKey, data: appId || transferId || chunkIndex || runIndex)
-hashMac[i] = HMAC-SHA256(key: apiKey, data: appId || transferId || chunkIndex || runIndex || length || chunkHash)
-```
-
-- Both client and server independently compute the token from inputs they already have: `apiKey` (the current live key from `IKeyStore`), `transferId` (returned by negotiate), `chunkIndex` (known per-chunk)
-- The negotiate response does not need to include tokens — nothing changes in the protocol response
-- Client includes `X-Chunk-Token: <token>` on each HTTP chunk upload
-- Client appends `chunkHash` and `hashMac` to the streamed request body after reading the chunk once
-- Server recomputes the expected request token on arrival and rejects mismatches with 401
-- Server recomputes the chunk hash while streaming the body, then verifies the appended `hashMac` before confirming the chunk
-- The API key is never transmitted over HTTP
-
-### Why This Is Sufficient
-
-An attacker on the HTTP path:
-- **Cannot forge a token** — HMAC requires the API key, which only traveled over HTTPS
-- **Cannot replay a token usefully** — each token is bound to a chunk and run index, and claimed runs are rejected on duplicate use
-- **Cannot corrupt data silently** — changing the bytes requires changing the chunk hash, but the attacker cannot forge the hash HMAC
-- **Can read plaintext payload bytes** unless the payload is already encrypted before FileRelay sees it
-- **Can cause retries** (denial of service) — this is true of any unencrypted protocol and is acceptable for a backup transfer use case
-
-### Protocol Changes Required
-
-Negotiate response gains one optional field:
-```
-Response: { transferId, chunkSizeMB, totalChunks, chunksNeeded: [1, 2, 3, ...], httpDataPort: 61488 }
-```
-
-- `httpDataPort` is present only when the server has an HTTP data path configured; absent otherwise
-- Its presence is the client's signal to switch: upload chunks over HTTP to that port, and include `X-Chunk-Token`
-- No client-side flags or modes needed — the response is self-describing
-
-Chunk upload gains one required header and a keyed trailer when uploading over the HTTP data path:
-```
-Headers: X-Chunk-Token: <hmac>
-Body:    raw chunk bytes || sha256(chunk bytes) || hmac(metadata + chunk hash)
-```
-
-`FileRelayOptions` would need an `HttpDataPort: int?` property (default null = disabled). When set, the server accepts HTTP chunk uploads on that port provided a valid token is present, and skips the HTTPS enforcement filter for chunk routes only.
-
-### When to Implement
-
-Only worthwhile when TLS termination is genuinely impractical at the server endpoint — e.g. a constrained ARM device with software-only AES where the backup payload is already encrypted. For all other deployments, standard HTTPS for the full session is simpler, equally secure, and preferred.
 
 ## Deployment Notes
 
@@ -342,5 +368,5 @@ Only worthwhile when TLS termination is genuinely impractical at the server endp
 - Designed to run on a QNAP NAS via Container Station (Docker) or as a self-contained Linux binary
 - `FileRelay.Storage.Sqlite` is the preferred state backend for self-contained deployment — `SqliteTransferStateStore` and `SqliteKeyStore` both take the same DB file path and coexist in the same database
 - `FileRelay.Storage.SqlServer` is available when the host has LAN access to a SQL Server instance (does not implement `IKeyStore`)
-- Configure Kestrel's `MaxRequestBodySize` to at least `chunkSizeMB * 1024 * 1024` — the default (30MB) will reject large chunks with HTTP 413
+- Configure Kestrel limits via `FileRelayOptions.ConfigureKestrelLimits()` — the defaults (30MB body limit, 128KB HTTP/2 window) will cap throughput and reject large chunks
 - The `SeedKey` in appsettings is only used on first run; inspect the `AppKeys` table in the SQLite database to see the live key after rotation

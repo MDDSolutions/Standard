@@ -57,8 +57,7 @@ public class LocalDirectoryTarget : ITransferTarget
     {
         var partial = PartialPath(transferId);
         var final = FinalPath(transferId);
-        if (File.Exists(final)) File.Delete(final);
-        File.Move(partial, final);
+        File.Move(partial, final, overwrite:true);
         _transfers.TryRemove(transferId, out _);
         return Task.CompletedTask;
     }
