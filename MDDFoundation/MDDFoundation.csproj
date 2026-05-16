@@ -3,8 +3,20 @@
 	<PropertyGroup>
 		<TargetFrameworks>netstandard2.0;net8.0</TargetFrameworks>
 		<LangVersion>latestMajor</LangVersion>
-		<Nullable>enable</Nullable>
+		<Nullable>annotations</Nullable>
 		<ImplicitUsings>enable</ImplicitUsings>
+		<NoWarn>$(NoWarn);SYSLIB0014</NoWarn>
+		<PackageId>MDDFoundation</PackageId>
+		<Version>0.1.0-alpha.1</Version>
+		<Authors>Michael DeFehr</Authors>
+		<Description>Shared foundation utilities for MDD projects.</Description>
+		<PackageLicenseExpression>MIT</PackageLicenseExpression>
+		<RepositoryUrl>https://github.com/you/repo</RepositoryUrl>
+		<PackageReadmeFile>README.md</PackageReadmeFile>
 	</PropertyGroup>
+
+	<ItemGroup>
+		<None Include="README.md" Pack="true" PackagePath="\" />
+	</ItemGroup>
 
 </Project>

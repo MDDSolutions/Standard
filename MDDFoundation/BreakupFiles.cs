@@ -87,7 +87,7 @@ namespace MDDFoundation
 
             var controlfile = BreakupControlFile.FromFile(new FileInfo(file.FullName + ".cntrl.breakup"));
 
-            using (var hash = new SHA1CryptoServiceProvider())
+            using (var hash = SHA1.Create())
             {
                 while (controlfile.CurFile <= TotalFiles)
                 {
@@ -284,7 +284,7 @@ namespace MDDFoundation
             Task writer = null;
             byte[] finalhash = null;
 
-            using (var hash = new SHA1CryptoServiceProvider())
+            using (var hash = SHA1.Create())
             using (var srcstream = source.OpenRead())
             using (var tgtstream = new FileStream(target.FullName, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None, bufferSize))
             {

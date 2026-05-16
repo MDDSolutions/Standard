@@ -77,7 +77,7 @@ namespace MDDFoundation
                 FtpWebResponse response = (FtpWebResponse)ex.Response;
                 if (response.StatusCode != FtpStatusCode.ActionNotTakenFileUnavailable)
                 {
-                    throw ex;
+                    throw;
                 }
             }
             return exists;
@@ -98,7 +98,7 @@ namespace MDDFoundation
                 FtpWebResponse response = (FtpWebResponse)ex.Response;
                 if (response.StatusCode != FtpStatusCode.ActionNotTakenFileUnavailable)
                 {
-                    throw ex;
+                    throw;
                 }
             }
             return exists;
@@ -196,7 +196,7 @@ namespace MDDFoundation
                     }
                     else
                     {
-                        throw ex;
+                        throw;
                     }
                 }
                 finally
@@ -331,7 +331,7 @@ namespace MDDFoundation
                 long curstart = 0;
                 if (progressreportinterval == default) progressreportinterval = TimeSpan.FromSeconds(1);
 
-                using (var hash = new SHA1CryptoServiceProvider())
+                using (var hash = SHA1.Create())
                 using (var source = file.OpenRead())
                 using (var dest = await request.GetRequestStreamAsync().ConfigureAwait(false))
                 {
@@ -521,7 +521,7 @@ namespace MDDFoundation
 
                         int currentblockcount = 0;
 
-                        using (var hash = new SHA1CryptoServiceProvider())
+                        using (var hash = SHA1.Create())
                         using (var source = file.OpenRead())
                         using (var dest = await request.GetRequestStreamAsync().ConfigureAwait(false))
                         {
@@ -599,9 +599,9 @@ namespace MDDFoundation
                 }
                 return copyprogress;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                throw ex;
+                throw;
             }
         }
         public FileCopyProgress UploadFile(FileInfo file, bool overwrite, string destinationfolder = null, bool MoveFile = false, Action<FileCopyProgress> progresscallback = null, TimeSpan progressreportinterval = default, int breakupmb = 0, bool processhash = true, double maxmbpersec = 0, bool usetmpfile = true, TimeSpan listupdatethreshold = default)
@@ -676,7 +676,7 @@ namespace MDDFoundation
 
                         StatusUpdate($"UploadFile: Establishing connections for {file.Name} (elapsed: {copyprogress.Stopwatch.ElapsedMilliseconds})", 5);
 
-                        using (var hash = new SHA1CryptoServiceProvider())
+                        using (var hash = SHA1.Create())
                         using (var source = file.OpenRead())
                         using (var dest = request.GetRequestStream())
                         {
@@ -768,7 +768,7 @@ namespace MDDFoundation
             catch (Exception ex)
             {
                 StatusUpdate($"FTPSession.UploadFile: Error Occurred for {file.Name}: {ex.Message}", 16);
-                throw ex;
+                throw;
             }
         }
         public async Task<FileCopyProgress> DownloadFileAsync(FileInfo file, CancellationToken token, bool overwrite, string remotefolder = null, bool MoveFile = false, Action<FileCopyProgress> progresscallback = null, TimeSpan progressreportinterval = default)
@@ -861,9 +861,9 @@ namespace MDDFoundation
                     return copyprogress;
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                throw ex;
+                throw;
             }
         }
         public FileCopyProgress DownloadFile(FileInfo file, bool overwrite, string remotefolder = null, bool MoveFile = false)
@@ -928,9 +928,9 @@ namespace MDDFoundation
                 copyprogress.BytesCopied = len;
                 return copyprogress;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                throw ex;
+                throw;
             }
         }
         public virtual void StatusUpdate(string update, int severity)

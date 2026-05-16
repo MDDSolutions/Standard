@@ -30,7 +30,7 @@
 
         - 6-byte key
         - second-level timestamp precision
-        - 1,024 unique values per second per scope
+        - 1,024 unique values per second per table with the recommended trigger pattern
         - native binary sort by creation time, then sequence
         - extractable approximate creation time
         - compact clustered key
@@ -49,6 +49,32 @@
     Important behavior
     ------------------
     TimeSeqId has second precision. Fractional seconds are discarded.
+
+    TimeSeqId stores local wall-clock time, not UTC and not an absolute instant.
+
+    This is intentional. The public surface accepts and returns times that users understand:
+
+        dbo.TimeSeqId_Parse
+        dbo.TimeSeqId_Make
+        dbo.TimeSeqId_GetCreatedAt
+        dbo.TimeSeqId_Format
+
+    Because the encoded value is local wall-clock time, daylight saving time transitions can affect
+    real-time ordering:
+
+        - During a spring-forward transition, some local wall-clock times do not exist.
+        - During a fall-back transition, some local wall-clock times occur twice.
+        - During the repeated fall-back hour, an ID generated later in real elapsed time may sort
+          before an ID generated earlier in real elapsed time.
+
+    This does not normally break uniqueness. The recommended table trigger below uses the target table's
+    existing IDs for the current local second to choose the next sequence. The practical uniqueness limit
+    remains 1,024 IDs per table for a given local second. During a repeated fall-back second, both
+    appearances of the same local second share that same sequence capacity.
+
+    If a system requires strict absolute chronological order across daylight saving time transitions,
+    time zone changes, servers in multiple local time zones, or historical time-zone rule changes, store
+    a separate UTC datetime2/datetimeoffset value or use an identifier that encodes an absolute instant.
 
     Parsing accepts partial date/time values and assumes the minimum unspecified value:
 
@@ -89,24 +115,7 @@
 
     10 bits of sequence gives:
 
-        1,024 IDs per second per scope
-
-    Scope behavior
-    --------------
-    dbo.TimeSeqId_GetNext uses a scope name so different tables/features can have independent counters.
-
-    Example scopes:
-
-        dbo.Customer
-        dbo.Invoice
-        dbo.ExampleThing
-
-    If you want globally unique TimeSeqIds across the entire database, use one shared scope everywhere,
-    for example:
-
-        default
-
-    If you only need uniqueness within each table, use one scope per table.
+        1,024 IDs per second per table when using the recommended trigger pattern
 
     ORM notes
     ---------
@@ -127,26 +136,29 @@
             IdText AS dbo.TimeSeqId_Format(Id)
         );
 
+    Recommended generation pattern
+    ------------------------------
+    Use a table-specific INSTEAD OF INSERT trigger or insert procedure. The recommended trigger pattern:
+
+        - allows multi-row inserts when enough sequence values remain in the current second
+        - truncates SYSDATETIME() to the current local second
+        - seeks the target table's clustered TimeSeqId key for that second's range
+        - uses TOP (1) ... ORDER BY Id DESC to find the latest existing sequence
+        - uses UPDLOCK, HOLDLOCK so concurrent inserts for the same second serialize
+        - inserts dbo.TimeSeqId_Make(CurrentSecond, LatestSequence + 1 + RowOffset)
+
+    This avoids a separate counter table and avoids cleanup of expired second buckets.
+    During a fall-back repeated second, the trigger sees any rows already inserted for that local second
+    and continues the sequence from the highest existing ID.
+
     Recommended insert pattern
     --------------------------
-        DECLARE @Id dbo.TimeSeqId;
-        DECLARE @CreatedAt datetime2(0);
-        DECLARE @Sequence int;
-
-        EXEC dbo.TimeSeqId_GetNext
-            @ScopeName = N'dbo.ExampleThing',
-            @Id = @Id OUTPUT,
-            @CreatedAt = @CreatedAt OUTPUT,
-            @Sequence = @Sequence OUTPUT;
-
         INSERT dbo.ExampleThing
         (
-            Id,
             Name
         )
         VALUES
         (
-            @Id,
             N'Some row'
         );
 
@@ -191,46 +203,7 @@ GO
 
 /*
     ----------------------------------------------------------------------------------------------------
-    2. Counter table
-    ----------------------------------------------------------------------------------------------------
-
-    Stores the most recently issued sequence for each scope and second bucket.
-*/
-
-IF OBJECT_ID(N'dbo.TimeSeqIdCounter', N'U') IS NULL
-BEGIN
-    CREATE TABLE dbo.TimeSeqIdCounter
-    (
-        ScopeName sysname NOT NULL,
-        SecondBucket bigint NOT NULL,
-        LastSequence int NOT NULL,
-
-        CONSTRAINT PK_TimeSeqIdCounter
-            PRIMARY KEY CLUSTERED
-            (
-                ScopeName,
-                SecondBucket
-            ),
-
-        CONSTRAINT CK_TimeSeqIdCounter_SecondBucket
-            CHECK
-            (
-                SecondBucket BETWEEN 0 AND 274877906943
-            ),
-
-        CONSTRAINT CK_TimeSeqIdCounter_LastSequence
-            CHECK
-            (
-                LastSequence BETWEEN 0 AND 1023
-            )
-    );
-END;
-GO
-
-
-/*
-    ----------------------------------------------------------------------------------------------------
-    3. dbo.TimeSeqId_Make
+    2. dbo.TimeSeqId_Make
     ----------------------------------------------------------------------------------------------------
 
     Converts a datetime and sequence into binary(6).
@@ -332,7 +305,7 @@ GO
 
 /*
     ----------------------------------------------------------------------------------------------------
-    4. dbo.TimeSeqId_GetPackedValue
+    3. dbo.TimeSeqId_GetPackedValue
     ----------------------------------------------------------------------------------------------------
 
     Internal helper.
@@ -380,7 +353,7 @@ GO
 
 /*
     ----------------------------------------------------------------------------------------------------
-    5. dbo.TimeSeqId_GetCreatedAt
+    4. dbo.TimeSeqId_GetCreatedAt
     ----------------------------------------------------------------------------------------------------
 
     Extracts the second-level datetime from a TimeSeqId.
@@ -429,7 +402,7 @@ GO
 
 /*
     ----------------------------------------------------------------------------------------------------
-    6. dbo.TimeSeqId_GetSequence
+    5. dbo.TimeSeqId_GetSequence
     ----------------------------------------------------------------------------------------------------
 
     Extracts the sequence-within-second from a TimeSeqId.
@@ -463,7 +436,7 @@ GO
 
 /*
     ----------------------------------------------------------------------------------------------------
-    7. dbo.TimeSeqId_Format
+    6. dbo.TimeSeqId_Format
     ----------------------------------------------------------------------------------------------------
 
     Formats a TimeSeqId as:
@@ -503,7 +476,7 @@ GO
 
 /*
     ----------------------------------------------------------------------------------------------------
-    8. dbo.TimeSeqId_Parse
+    7. dbo.TimeSeqId_Parse
     ----------------------------------------------------------------------------------------------------
 
     Parses text into a TimeSeqId.
@@ -613,158 +586,17 @@ GO
 
 /*
     ----------------------------------------------------------------------------------------------------
-    9. dbo.TimeSeqId_GetNext
+    8. Recommended table and trigger pattern
     ----------------------------------------------------------------------------------------------------
 
-    Generates the next TimeSeqId for a scope.
+    Uncomment this section in a scratch database if you want a quick test table and trigger.
 
-    This procedure is concurrency-safe.
-
-    It uses:
-        - a transaction
-        - sys.sp_getapplock
-        - dbo.TimeSeqIdCounter
-
-    Output:
-        @Id         binary(6)
-        @CreatedAt datetime2(0), second bucket used
-        @Sequence  int, sequence assigned within that second
-
-    Notes:
-        - Gaps are possible if an ID is generated but the caller does not insert a row.
-        - That is the same general reality as identity values and sequences.
-        - Gaps are fine. Reuse is the beast under the floorboards.
-*/
-
-CREATE OR ALTER PROCEDURE dbo.TimeSeqId_GetNext
-(
-    @ScopeName sysname = N'default',
-    @Id binary(6) OUTPUT,
-    @CreatedAt datetime2(0) OUTPUT,
-    @Sequence int OUTPUT
-)
-AS
-BEGIN
-    SET NOCOUNT ON;
-    SET XACT_ABORT ON;
-
-    DECLARE @Epoch datetime2(0) = DATETIME2FROMPARTS(1289, 6, 18, 17, 50, 56, 0, 0);
-    --intentional epoch value aligns maximum value with datetime2's max value of 9999-12-31 23:59:59
-    DECLARE @Now datetime2(7);
-    DECLARE @SecondBucket bigint;
-    DECLARE @LockResult int;
-    DECLARE @LockResource nvarchar(255);
-
-    IF @ScopeName IS NULL OR LTRIM(RTRIM(CONVERT(nvarchar(128), @ScopeName))) = N''
-    BEGIN
-        THROW 51020, 'ScopeName is required.', 1;
-    END;
-
-    SET @Now = SYSDATETIME();
-
-    /*
-        Truncate to current second.
-    */
-    SET @CreatedAt =
-        DATETIME2FROMPARTS
-        (
-            DATEPART(year, @Now),
-            DATEPART(month, @Now),
-            DATEPART(day, @Now),
-            DATEPART(hour, @Now),
-            DATEPART(minute, @Now),
-            DATEPART(second, @Now),
-            0,
-            0
-        );
-
-    SET @SecondBucket = DATEDIFF_BIG(second, @Epoch, @CreatedAt);
-
-    IF @SecondBucket < 0 OR @SecondBucket > 274877906943
-    BEGIN
-        THROW 51021, 'Current date/time is outside the supported TimeSeqId range.', 1;
-    END;
-
-    SET @LockResource =
-        N'TimeSeqIdCounter:' +
-        CONVERT(nvarchar(128), @ScopeName) +
-        N':' +
-        CONVERT(nvarchar(20), @SecondBucket);
-
-    BEGIN TRY
-        BEGIN TRANSACTION;
-
-        EXEC @LockResult = sys.sp_getapplock
-            @Resource = @LockResource,
-            @LockMode = 'Exclusive',
-            @LockOwner = 'Transaction',
-            @LockTimeout = 10000;
-
-        IF @LockResult < 0
-        BEGIN
-            THROW 51022, 'Could not acquire TimeSeqId generation lock.', 1;
-        END;
-
-        SELECT
-            @Sequence = LastSequence + 1
-        FROM dbo.TimeSeqIdCounter WITH (UPDLOCK, HOLDLOCK)
-        WHERE
-            ScopeName = @ScopeName
-            AND SecondBucket = @SecondBucket;
-
-        IF @Sequence IS NULL
-        BEGIN
-            SET @Sequence = 0;
-
-            INSERT dbo.TimeSeqIdCounter
-            (
-                ScopeName,
-                SecondBucket,
-                LastSequence
-            )
-            VALUES
-            (
-                @ScopeName,
-                @SecondBucket,
-                @Sequence
-            );
-        END
-        ELSE
-        BEGIN
-            IF @Sequence > 1023
-            BEGIN
-                THROW 51023, 'TimeSeqId sequence exhausted for this scope and second.', 1;
-            END;
-
-            UPDATE dbo.TimeSeqIdCounter
-            SET LastSequence = @Sequence
-            WHERE
-                ScopeName = @ScopeName
-                AND SecondBucket = @SecondBucket;
-        END;
-
-        SET @Id = dbo.TimeSeqId_Make(@CreatedAt, @Sequence);
-
-        COMMIT TRANSACTION;
-    END TRY
-    BEGIN CATCH
-        IF XACT_STATE() <> 0
-            ROLLBACK TRANSACTION;
-
-        THROW;
-    END CATCH;
-END;
-GO
-
-
-/*
-    ----------------------------------------------------------------------------------------------------
-    10. Optional example table
-    ----------------------------------------------------------------------------------------------------
-
-    Uncomment this section in a scratch database if you want a quick test table.
-
-    In real applications, use this pattern in your own tables.
+    In real applications, use this pattern in your own tables. The trigger treats Id like an identity:
+    callers should not provide it. The trigger allows multi-row automatic ID assignment when enough
+    sequence values remain in the current local second. Multi-row sequence assignment order is not
+    guaranteed. If sequence order matters, set @MaxAutomaticIdsPerInsert to 1 or use a loader/procedure
+    with an explicit ordinal. Bulk/backfill processes that need explicit IDs should use a purpose-built
+    loader or temporarily replace/disable the trigger.
 */
 
 /*
@@ -786,12 +618,111 @@ CREATE TABLE dbo.ExampleThing
     IdText AS dbo.TimeSeqId_Format(Id)
 );
 GO
+
+CREATE OR ALTER TRIGGER dbo.TR_ExampleThing_TimeSeqId
+ON dbo.ExampleThing
+INSTEAD OF INSERT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @InsertedRowCount int;
+    DECLARE @MaxAutomaticIdsPerInsert int = 1024; -- Change this to 1 to allow only single-row inserts.
+    DECLARE @CreatedAt datetime2(0);
+    DECLARE @FirstSequence int;
+
+    SELECT
+        @InsertedRowCount = COUNT(*)
+    FROM inserted;
+
+    IF EXISTS
+    (
+        SELECT 1
+        FROM inserted
+        WHERE Id IS NOT NULL
+    )
+    BEGIN
+        THROW 51032, 'dbo.ExampleThing.Id is generated automatically and should not be specified.', 1;
+    END;
+
+    IF @InsertedRowCount > @MaxAutomaticIdsPerInsert
+    BEGIN
+        THROW 51030, 'dbo.ExampleThing automatic TimeSeqId assignment received too many rows.', 1;
+    END;
+
+    IF @InsertedRowCount > 0
+    BEGIN
+        DECLARE @Now datetime2(7) = SYSDATETIME();
+        DECLARE @Low dbo.TimeSeqId;
+        DECLARE @High dbo.TimeSeqId;
+        DECLARE @LastId dbo.TimeSeqId;
+
+        SET @CreatedAt =
+            DATETIME2FROMPARTS
+            (
+                DATEPART(year, @Now),
+                DATEPART(month, @Now),
+                DATEPART(day, @Now),
+                DATEPART(hour, @Now),
+                DATEPART(minute, @Now),
+                DATEPART(second, @Now),
+                0,
+                0
+            );
+
+        SET @Low = dbo.TimeSeqId_Make(@CreatedAt, 0);
+        SET @High = dbo.TimeSeqId_Make(@CreatedAt, 1023);
+
+        SELECT TOP (1)
+            @LastId = Id
+        FROM dbo.ExampleThing WITH (UPDLOCK, HOLDLOCK)
+        WHERE
+            Id >= @Low
+            AND Id <= @High
+        ORDER BY Id DESC;
+
+        SET @FirstSequence = ISNULL(dbo.TimeSeqId_GetSequence(@LastId), -1) + 1;
+
+        IF @FirstSequence + @InsertedRowCount - 1 > 1023
+        BEGIN
+            THROW 51031, 'dbo.ExampleThing TimeSeqId sequence exhausted for the current local second.', 1;
+        END;
+    END;
+
+    ;WITH RowsToInsert AS
+    (
+        SELECT
+            Id,
+            Name,
+            /*
+                SQL Server does not guarantee the caller's multi-row insert order here. These row
+                offsets are only for assigning distinct IDs within the current second. If sequence order
+                matters, set @MaxAutomaticIdsPerInsert to 1 or use a loader/procedure with an explicit
+                ordinal column.
+            */
+            CONVERT
+            (
+                int,
+                ROW_NUMBER() OVER (ORDER BY (SELECT 0)) - 1
+            ) AS AutomaticRowIndex
+        FROM inserted
+    )
+    INSERT dbo.ExampleThing
+    (
+        Id,
+        Name
+    )
+    SELECT
+        dbo.TimeSeqId_Make(@CreatedAt, @FirstSequence + AutomaticRowIndex),
+        Name
+    FROM RowsToInsert;
+END;
 */
 
 
 /*
     ----------------------------------------------------------------------------------------------------
-    11. Optional parse test
+    9. Optional parse test
     ----------------------------------------------------------------------------------------------------
 */
 
@@ -821,7 +752,7 @@ GO
 
 /*
     ----------------------------------------------------------------------------------------------------
-    12. Optional sort test
+    10. Optional sort test
     ----------------------------------------------------------------------------------------------------
 
     Uncomment this section after creating dbo.ExampleThing.
@@ -829,10 +760,13 @@ GO
     It inserts deliberately scrambled values and verifies that ORDER BY Id matches:
 
         ORDER BY CreatedAt, SequenceInSecond
+
+    The trigger is disabled during this test because the test uses a multi-row explicit insert.
 */
 
 /*
 DELETE FROM dbo.ExampleThing;
+DISABLE TRIGGER dbo.TR_ExampleThing_TimeSeqId ON dbo.ExampleThing;
 
 INSERT dbo.ExampleThing
 (
@@ -885,38 +819,28 @@ SELECT
         THEN 'FAIL: binary sort does not match decoded sort'
         ELSE 'PASS: binary sort matches decoded sort'
     END AS SortTestResult;
+
+ENABLE TRIGGER dbo.TR_ExampleThing_TimeSeqId ON dbo.ExampleThing;
 GO
 */
 
 
 /*
     ----------------------------------------------------------------------------------------------------
-    13. Optional generation test
+    11. Optional trigger generation test
     ----------------------------------------------------------------------------------------------------
 
     Uncomment after creating dbo.ExampleThing.
 */
 
 /*
-DECLARE @Id dbo.TimeSeqId;
-DECLARE @CreatedAt datetime2(0);
-DECLARE @Sequence int;
-
-EXEC dbo.TimeSeqId_GetNext
-    @ScopeName = N'dbo.ExampleThing',
-    @Id = @Id OUTPUT,
-    @CreatedAt = @CreatedAt OUTPUT,
-    @Sequence = @Sequence OUTPUT;
-
 INSERT dbo.ExampleThing
 (
-    Id,
     Name
 )
 VALUES
 (
-    @Id,
-    N'Generated by dbo.TimeSeqId_GetNext'
+    N'Generated by dbo.TR_ExampleThing_TimeSeqId'
 );
 
 SELECT

@@ -106,9 +106,9 @@ namespace MDDFoundation
                         XmlSerializer ser = new XmlSerializer(typeof(FileHashes));
                         r = (FileHashes)ser.Deserialize(stream);
                     }
-                    catch (Exception ex)
+                    catch (Exception)
                     {
-                        throw ex;
+                        throw;
                     }
                 }
             }

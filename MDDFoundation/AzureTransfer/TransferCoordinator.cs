@@ -1064,12 +1064,12 @@ namespace MDDFoundation
     internal sealed class TransferWork
     {
         public WorkKind Kind;
-        public TransferManifest Manifest;  // always set
-        public string LocalPath;
-        public ManifestChunk Chunk;      // set for chunk work
+        public TransferManifest Manifest = null;  // always set
+        public string LocalPath = null;
+        public ManifestChunk Chunk = null;      // set for chunk work
         public int Priority;             // lower == higher priority
-        public Action<FileCopyProgress> ProgressCallback;
-        public TimeSpan ProgressCallbackInterval;
+        public Action<FileCopyProgress> ProgressCallback = null;
+        public TimeSpan ProgressCallbackInterval = default;
     }
 
 }

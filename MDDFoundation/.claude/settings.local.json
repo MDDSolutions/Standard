@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la C:/Dev/Standard/)",
+      "Bash(ls -la C:/Dev/ 2>&1 | head -40)",
+      "Bash(ls -la C:/Temp/*.tmp* C:/Temp/*.state* 2>/dev/null | head -20; echo \"---\"; ls -la C:/Temp/ 2>/dev/null | head -10)"
+    ]
+  }
+}

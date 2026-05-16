@@ -191,13 +191,13 @@ namespace MDDFoundation
         {
             if (sizeInBytes < 1024)
                 return $"{sizeInBytes} bytes";
-            else if (sizeInBytes < 1024 * 1024)
+            else if (sizeInBytes < 1024 * 1024 * 10)
                 return $"{sizeInBytes / 1024.0:F2} KB";
-            else if (sizeInBytes < 1024 * 1024 * 1024)
+            else if (sizeInBytes < 1024L * 1024 * 1024 * 10)
                 return $"{sizeInBytes / (1024.0 * 1024):F2} MB";
-            else if (sizeInBytes < 1024L * 1024 * 1024 * 1024)
+            else if (sizeInBytes < 1024L * 1024 * 1024 * 1024 * 10)
                 return $"{sizeInBytes / (1024.0 * 1024 * 1024):F2} GB";
-            else if (sizeInBytes < 1024L * 1024 * 1024 * 1024 * 1024)
+            else if (sizeInBytes < 1024L * 1024 * 1024 * 1024 * 1024 * 10)
                 return $"{sizeInBytes / (1024.0 * 1024 * 1024 * 1024):F2} TB";
             else
                 return $"{sizeInBytes / (1024.0 * 1024 * 1024 * 1024 * 1024):F2} PB"; // Petabytes

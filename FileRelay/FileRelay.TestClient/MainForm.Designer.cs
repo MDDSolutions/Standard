@@ -30,6 +30,7 @@ partial class MainForm
         lblRate = new Label();
         rtbStatus = new RichTextBox();
         btnNewTransfer = new Button();
+        btnTestCopy = new Button();
         ((System.ComponentModel.ISupportInitialize)nudParallel).BeginInit();
         ((System.ComponentModel.ISupportInitialize)nudBandwidth).BeginInit();
         SuspendLayout();
@@ -216,11 +217,22 @@ partial class MainForm
         btnNewTransfer.Text = "New Transfer";
         btnNewTransfer.Click += btnNewTransfer_Click;
         // 
+        // btnTestCopy
+        // 
+        btnTestCopy.Location = new Point(851, 65);
+        btnTestCopy.Name = "btnTestCopy";
+        btnTestCopy.Size = new Size(112, 34);
+        btnTestCopy.TabIndex = 18;
+        btnTestCopy.Text = "Test Copy";
+        btnTestCopy.UseVisualStyleBackColor = true;
+        btnTestCopy.Click += btnTestCopy_Click;
+        // 
         // MainForm
         // 
         AutoScaleDimensions = new SizeF(10F, 25F);
         AutoScaleMode = AutoScaleMode.Font;
         ClientSize = new Size(1101, 285);
+        Controls.Add(btnTestCopy);
         Controls.Add(lblServer);
         Controls.Add(txtServerUrl);
         Controls.Add(lblAppId);
@@ -269,4 +281,5 @@ partial class MainForm
     private Label           lblRate               = null!;
     private RichTextBox     rtbStatus             = null!;
     private Button          btnNewTransfer        = null!;
+    private Button btnTestCopy;
 }

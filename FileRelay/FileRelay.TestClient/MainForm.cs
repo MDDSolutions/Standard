@@ -1,6 +1,7 @@
-using System.Net.Http.Json;
 using FileRelay.Client;
 using FileRelay.Core;
+using MDDFoundation;
+using System.Net.Http.Json;
 
 namespace FileRelay.TestClient;
 
@@ -26,13 +27,13 @@ public partial class MainForm : Form
     private FileRelayClient CreateClient()
     {
         _client?.Dispose();
-        var appId  = _settings.AppId.Length  > 0 ? _settings.AppId  : null;
+        var appId = _settings.AppId.Length > 0 ? _settings.AppId : null;
         var apiKey = _settings.SeedKey.Length > 0 ? _settings.SeedKey : null;
         _client = new FileRelayClient(new Uri(_settings.ServerUrl), appId: appId, apiKey: apiKey,
             allowUntrustedCertificate: _settings.AllowUntrustedCert)
         {
             ParallelConnections = _settings.ParallelConnections,
-            ThrottleMBps        = _settings.ThrottleMBps,
+            ThrottleMBps = _settings.ThrottleMBps,
         };
         return _client;
     }
@@ -45,23 +46,23 @@ public partial class MainForm : Form
 
     private void ApplySettings()
     {
-        txtServerUrl.Text              = _settings.ServerUrl;
-        txtAppId.Text                  = _settings.AppId;
-        txtApiKey.Text                 = _settings.SeedKey;
-        nudParallel.Value              = Math.Clamp(_settings.ParallelConnections, (int)nudParallel.Minimum, (int)nudParallel.Maximum);
-        nudBandwidth.Value             = (decimal)Math.Clamp(_settings.ThrottleMBps, (double)nudBandwidth.Minimum, (double)nudBandwidth.Maximum);
-        chkAllowUntrustedCert.Checked  = _settings.AllowUntrustedCert;
+        txtServerUrl.Text = _settings.ServerUrl;
+        txtAppId.Text = _settings.AppId;
+        txtApiKey.Text = _settings.SeedKey;
+        nudParallel.Value = Math.Clamp(_settings.ParallelConnections, (int)nudParallel.Minimum, (int)nudParallel.Maximum);
+        nudBandwidth.Value = (decimal)Math.Clamp(_settings.ThrottleMBps, (double)nudBandwidth.Minimum, (double)nudBandwidth.Maximum);
+        chkAllowUntrustedCert.Checked = _settings.AllowUntrustedCert;
     }
 
     private void WireSettingsEvents()
     {
         // Connection-level changes require a new client.
         txtServerUrl.Validated += (_, _) => { _settings.ServerUrl = txtServerUrl.Text; _settings.Save(); InvalidateClient(); };
-        txtAppId.Validated     += (_, _) => { _settings.AppId     = txtAppId.Text;     _settings.Save(); InvalidateClient(); };
-        txtApiKey.Validated    += (_, _) => { _settings.SeedKey   = txtApiKey.Text;    _settings.Save(); InvalidateClient(); };
+        txtAppId.Validated += (_, _) => { _settings.AppId = txtAppId.Text; _settings.Save(); InvalidateClient(); };
+        txtApiKey.Validated += (_, _) => { _settings.SeedKey = txtApiKey.Text; _settings.Save(); InvalidateClient(); };
 
         // Performance settings can be updated on the existing client.
-        nudParallel.Validated  += (_, _) =>
+        nudParallel.Validated += (_, _) =>
         {
             _settings.ParallelConnections = (int)nudParallel.Value;
             _settings.Save();
@@ -109,10 +110,10 @@ public partial class MainForm : Form
 
     internal (string ServerUrl, string? AppId, string? ApiKey, bool AllowUntrustedCert) GetConnectionSettings()
     {
-        var appId  = txtAppId.Text.Trim();
+        var appId = txtAppId.Text.Trim();
         var apiKey = txtApiKey.Text.Trim();
         return (txtServerUrl.Text,
-                appId.Length  > 0 ? appId  : null,
+                appId.Length > 0 ? appId : null,
                 apiKey.Length > 0 ? apiKey : null,
                 chkAllowUntrustedCert.Checked);
     }
@@ -136,11 +137,11 @@ public partial class MainForm : Form
     private void UpdateControlState()
     {
         var active = _client?.ActiveUploads > 0;
-        txtServerUrl.Enabled          = !active;
-        txtAppId.Enabled              = !active;
-        txtApiKey.Enabled             = !active;
-        nudParallel.Enabled           = !active;
-        nudBandwidth.Enabled          = !active;
+        txtServerUrl.Enabled = !active;
+        txtAppId.Enabled = !active;
+        txtApiKey.Enabled = !active;
+        nudParallel.Enabled = !active;
+        nudBandwidth.Enabled = !active;
         chkAllowUntrustedCert.Enabled = !active;
     }
 
@@ -215,7 +216,7 @@ public partial class MainForm : Form
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             var info = await FileRelayClient.PingAsync(new Uri(serverUrl), appId, apiKey, cts.Token, allowUntrustedCert);
             var build = info.BuildTime.HasValue ? info.BuildTime.Value.ToString("yyyy-MM-dd HH:mm") : "unknown";
-            var ver   = info.AssemblyVersion ?? "?";
+            var ver = info.AssemblyVersion ?? "?";
             AppendStatus($"Server build: {build}  v{ver}");
         }
         catch (Exception ex)
@@ -227,6 +228,35 @@ public partial class MainForm : Form
         {
             btnTest.Enabled = true;
         }
+    }
+
+    private async void btnTestCopy_Click(object sender, EventArgs e)
+    {
+        var pqChunked = new FileCopyProgress
+        {
+            FileName = @"hhs_10148_x264.mp4",
+            Callback = (x) => AppendStatus(x.ToString()),
+            ProgressReportInterval = TimeSpan.FromSeconds(10),
+            SourceFile = new FileInfo(@"C:\Capture\hhs_10148_x264.mp4"),
+            Destinations =
+            [ new FileInfo(@"\\mdd-qnap02\Other\Temp\hhs_10148_x264.mp4"),
+              new FileInfo(@"\\mdd-qnap04\Other\Temp\hhs_10148_x264.mp4") ],
+            Overwrite = true,
+            Token = CancellationToken.None,
+            MoveFile = false,
+            HashMode = FileCopyHashMode.NoHash,
+            Resumable = true,
+            BufferSize = 1024 * 1024,
+            ChunkSizeBytes = 50L * 1024 * 1024,
+            ParallelChunks = 4,
+            VerifyChunkWrites = false,
+            ChunkStateFlushInterval = TimeSpan.FromSeconds(10),
+            FullFlushChunkState = false,
+            OperationDuring = "Chunked copying (QNAP02+QNAP04)",
+            OperationComplete = "Chunked copy to QNAP02+QNAP04 complete"
+        };
+
+        await FileCopyExtensions.CopyToAsyncSequentialReadChunked(pqChunked);
     }
 }
 

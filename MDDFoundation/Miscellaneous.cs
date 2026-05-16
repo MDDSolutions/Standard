@@ -97,6 +97,7 @@ namespace MDDFoundation
                 {
                     if (progressreportinterval == default) progressreportinterval = TimeSpan.FromSeconds(1);
                     readprogress = new FileCopyProgress { OperationDuring = "Reading hash for", OperationComplete = "Hash read", FileSizeBytes = tgt.Length, FileName = tgt.Name, Stopwatch = Stopwatch.StartNew() };
+                    progresscallback(readprogress);
                 }
 
                 using (FileStream fs = new FileStream(tgt.FullName, FileMode.Open, FileAccess.Read, FileShare.Read, 8192))
@@ -341,7 +342,7 @@ namespace MDDFoundation
             catch (Exception ex)
             {
                 if (!(ex is OperationCanceledException))
-                    throw ex;
+                    throw;
             }
             finally
             {
@@ -549,7 +550,7 @@ namespace MDDFoundation
             catch (Exception ex)
             {
                 if (!(ex is OperationCanceledException))
-                    throw ex;
+                    throw;
             }
             finally
             {
@@ -585,7 +586,7 @@ namespace MDDFoundation
             if (keySizeInBytes != 16 && keySizeInBytes != 24 && keySizeInBytes != 32)
                 throw new ArgumentException("Key size must be 128, 192, or 256 bits.", nameof(keySizeInBytes));
 
-            using (RNGCryptoServiceProvider rng = new RNGCryptoServiceProvider())
+            using (RandomNumberGenerator rng = RandomNumberGenerator.Create())
             {
                 byte[] keyBytes = new byte[keySizeInBytes];
                 rng.GetBytes(keyBytes);
@@ -912,7 +913,7 @@ namespace MDDFoundation
                         interimexception?.Invoke(ex,numretries);
                     }
                     else
-                        throw ex;
+                        throw;
                 }
             }
         }
@@ -934,7 +935,7 @@ namespace MDDFoundation
                         interimexception?.Invoke(ex, numretries);
                     }
                     else
-                        throw ex;
+                        throw;
                 }
             }
         }
@@ -1078,9 +1079,9 @@ namespace MDDFoundation
                     return new DriveInfo(root).AvailableFreeSpace;
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                throw ex;
+                throw;
             }
         }
         public static DateTime BuildTime() => BuildTime(Assembly.GetExecutingAssembly());

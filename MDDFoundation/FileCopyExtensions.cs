@@ -1,21 +1,35 @@
-﻿// File: FileCopyExtensions.cs
+// File: FileCopyExtensions.cs
 using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace MDDFoundation
 {
+    public enum FileCopyHashMode
+    {
+        NoHash = 0,
+        FastNativeHashWithResumeReread = 1,
+        SlowStatefulHashForWanResume = 2,
+        NoHashOnResume = 3
+    }
+
     public static class FileCopyExtensions
     {
         // --------------------------------------------------------------------
         // Public API
         // --------------------------------------------------------------------
 
-        public static long TargetBytes = 1000L * 1024 * 1024; // 1000 MiB
+        public const string CopyToAsyncSequentialReadChunkedVersion = "CopyToAsyncSequentialReadChunked v0.4-fastsha1resume";
+        private const int FileRelayStreamBufferSize = 4096;
+        private static readonly ConcurrentBag<byte[]> ChunkBufferPool = new ConcurrentBag<byte[]>();
 
         /// <summary>
         /// Single-destination overload (wraps multicast).
@@ -48,24 +62,30 @@ namespace MDDFoundation
         }
 
         /// <summary>
-        /// Multicast resumable copy with resumable SHA1(file) hashing.
+        /// Multicast resumable copy. The source is read once, sequentially, while chunks are written
+        /// to all destinations with bounded parallelism.
         ///
         /// Deterministic per-destination temp + state:
         ///   tmp   = destination.FullName + ".tmp"
-        ///   state = destination.FullName + ".tmp.state"
-        ///
-        /// Resume model:
-        /// - Temp files are ALWAYS preallocated to source length when resumable==true (to avoid relying on Length at all).
-        /// - The ONLY progress signal is the sidecar state file.
-        /// - Resume offset is the MIN committed length across destinations.
-        /// - Hash resume uses the SHA1 state snapshot stored in the state file for that MIN committed length.
-        /// - On resume, all destinations are normalized to that offset:
-        ///     * seek tmp streams to resumeOffset
-        ///     * overwrite every destination's state file to exactly resumeOffset + chosen SHA1 state
+        ///   state = destination.FullName + ".tmp.chunks.state"
         ///
         /// Hashing:
-        /// - If computehash is true, we compute EXACT SHA1(file).
-        /// - If resuming, we restore SHA1 internal state and continue hashing from resumeOffset without rereading.
+        /// - Completed chunks are tracked with SHA256 chunk hashes for resumability.
+        /// - FileCopyProgress.Hash is the legacy SHA1(file) hash when requested.
+        /// - FastNativeHashWithResumeReread uses platform SHA1 for the normal hot path and
+        ///   rereads the source only if a resumed copy could not hash the whole file in one pass.
+        /// - SlowStatefulHashForWanResume uses the slower exportable SHA1 implementation so a
+        ///   WAN/expensive-source resume can continue hashing without rereading the prefix.
+        /// - NoHashOnResume computes SHA1 only for a fresh copy; resumed copies may finish with
+        ///   Hash empty rather than rereading an expensive source.
+        ///
+        /// Implementation note:
+        /// - The copy workers intentionally use synchronous FileStream reads/writes inside
+        ///   Task.Run workers. In testing, .NET Framework 4.8 async FileStream writes over SMB
+        ///   were consistently below line speed, while synchronous writes from the same process
+        ///   matched robocopy/CopyFileEx behavior. .NET 8 async FileStream did not show the same
+        ///   SMB penalty, but MDDFoundation is still used by .NET Framework callers, so this method
+        ///   keeps the sync I/O path as the shared default.
         /// </summary>
         public static Task<FileCopyProgress> CopyToAsync(
             this FileInfo file,
@@ -90,7 +110,7 @@ namespace MDDFoundation
                 Overwrite = overwrite,
                 Token = token,
                 MoveFile = MoveFile,
-                ComputeHash = computehash,
+                HashMode = computehash ? FileCopyHashMode.FastNativeHashWithResumeReread : FileCopyHashMode.NoHash,
                 Resumable = resumable,
                 BufferSize = bufferSize,
                 MaxUsage = maxUsage
@@ -98,7 +118,12 @@ namespace MDDFoundation
             return CopyToAsync(copyprogress);
         }
 
-        public static async Task<FileCopyProgress> CopyToAsync(FileCopyProgress copyprogress)
+        public static Task<FileCopyProgress> CopyToAsync(FileCopyProgress copyprogress)
+        {
+            return CopyToAsyncSequentialReadChunked(copyprogress);
+        }
+
+        public static async Task<FileCopyProgress> CopyToAsyncSequentialReadChunked(FileCopyProgress copyprogress)
         {
             if (copyprogress == null) throw new ArgumentNullException(nameof(copyprogress));
             copyprogress.Stopwatch = Stopwatch.StartNew();
@@ -108,33 +133,23 @@ namespace MDDFoundation
             if (copyprogress.Destinations == null) throw new ArgumentNullException(nameof(copyprogress.Destinations));
             if (copyprogress.Destinations.Length == 0) throw new ArgumentException("At least one destination is required.", nameof(copyprogress.Destinations));
             if (!copyprogress.SourceFile.Exists) throw new IOException($"Source file {copyprogress.SourceFile.FullName} does not exist");
+
             copyprogress.FileSizeBytes = copyprogress.SourceFile.Length;
             if (copyprogress.BufferSize <= 0) copyprogress.BufferSize = 1024 * 1024;
-            if (copyprogress.MaxUsage < 0 || copyprogress.MaxUsage > 1) copyprogress.MaxUsage = 1;
+            if (copyprogress.ChunkSizeBytes <= 0) copyprogress.ChunkSizeBytes = 50L * 1024 * 1024;
+            if (copyprogress.ParallelChunks <= 0) copyprogress.ParallelChunks = 4;
+            if (copyprogress.PipelineBufferCount <= 0) copyprogress.PipelineBufferCount = Math.Max(1, copyprogress.ParallelChunks);
+            if (copyprogress.ProgressReportInterval == default) copyprogress.ProgressReportInterval = TimeSpan.FromSeconds(1);
 
-            // Sanity: no null copyprogress.Destinations, no dup full names
+            var runtime = RuntimeInformation.FrameworkDescription.Replace(";", ",");
+            var arch = RuntimeInformation.ProcessArchitecture;
+            var hashMode = copyprogress.HashMode;
+            var computeHash = hashMode != FileCopyHashMode.NoHash;
+            copyprogress.DiagnosticInfo = $"{CopyToAsyncSequentialReadChunkedVersion}; runtime={runtime}; arch={arch}; io=sync; chunk={copyprogress.ChunkSizeBytes / 1024 / 1024}MiB; parallel={copyprogress.ParallelChunks}; buffer={copyprogress.BufferSize / 1024}KiB; queuedChunks={copyprogress.PipelineBufferCount}; streamBuffer={FileRelayStreamBufferSize / 1024}KiB; stateFlush={copyprogress.ChunkStateFlushInterval.TotalSeconds:N0}s; fullStateFlush={copyprogress.FullFlushChunkState}; verify={copyprogress.VerifyChunkWrites}; hashMode={hashMode}";
+
             if (copyprogress.Destinations.Any(d => d == null)) throw new ArgumentException("copyprogress.Destinations contains a null entry.", nameof(copyprogress.Destinations));
             var dup = copyprogress.Destinations.GroupBy(d => d.FullName, StringComparer.OrdinalIgnoreCase).FirstOrDefault(g => g.Count() > 1);
             if (dup != null) throw new ArgumentException($"Duplicate destination path: {dup.Key}", nameof(copyprogress.Destinations));
-
-            if (copyprogress.ProgressReportInterval == default) copyprogress.ProgressReportInterval = TimeSpan.FromSeconds(1);
-
-            long commitinterval = Convert.ToInt64(copyprogress.ProgressReportInterval.TotalMilliseconds * 60 * Stopwatch.Frequency / 1000);
-            var lastcommit = Stopwatch.GetTimestamp();
-            long blocks = (TargetBytes + copyprogress.BufferSize - 1) / copyprogress.BufferSize; // ceiling division
-            int maxcommitblocks = (blocks <= 0) ? 1 : (blocks > int.MaxValue ? int.MaxValue : (int)blocks);
-
-
-            DutyCycleThrottle? throttle = null;
-            if (copyprogress.MaxUsage > 0 && copyprogress.MaxUsage < 1)
-            {
-                var window = copyprogress.ProgressReportInterval;
-                // You might want a minimum window like 250ms
-                if (window < TimeSpan.FromMilliseconds(250)) window = TimeSpan.FromMilliseconds(250);
-
-                throttle = new DutyCycleThrottle(copyprogress.MaxUsage, window);
-            }
-
 
             foreach (var d in copyprogress.Destinations)
             {
@@ -145,331 +160,529 @@ namespace MDDFoundation
                     throw new IOException($"Destination file {d.FullName} exists (and overwrite was not specified)");
             }
 
-
-            long len = copyprogress.SourceFile.Length;
-
-
             copyprogress.UpdateAndMaybeCallback(0);
 
-            byte[] finalHash = Array.Empty<byte>();
-            bool toolatetocancel = false;
-
             var targets = copyprogress.Destinations.Select(d => new CopyTarget(d)).ToArray();
+            var statePaths = targets.Select(t => ChunkedCopyStatePath(t)).ToArray();
+            var totalChunks = checked((int)((copyprogress.FileSizeBytes + copyprogress.ChunkSizeBytes - 1) / copyprogress.ChunkSizeBytes));
+            var states = new ChunkedCopyState[targets.Length];
 
-            FileStream? source = null;
-            FileStream[]? tempStreams = null;
+            bool toolatetocancel = false;
+            object stateLock = new object();
+            object progressLock = new object();
+            long reportedBytes = 0;
+            var chunkBytesConfirmed = new long[totalChunks];
+            var chunkDone = new bool[totalChunks];
+            var stateFlushTimer = Stopwatch.StartNew();
+            var diagnostics = new ChunkedCopyDiagnostics(targets.Length);
+            var workQueue = new BlockingCollection<SequentialChunkWork>(copyprogress.PipelineBufferCount);
+            byte[] finalWholeHash = Array.Empty<byte>();
+            byte[]? sha1ResumeState = null;
+            int sha1ResumeChunkCount = 0;
+            int sha1CommittedChunkCount = 0;
+            byte[][]? sha1StateAfterChunk = hashMode == FileCopyHashMode.SlowStatefulHashForWanResume ? new byte[totalChunks][] : null;
 
             try
             {
-                copyprogress.Token.ThrowIfCancellationRequested();
-
-                // Decide resume (min committed) and which SHA1 state to use (from a destination at min committed)
-                long resumeOffset = 0;
-                CopyResumeState? chosenStateAtResume = null;
-
-                if (copyprogress.Resumable)
+                for (int i = 0; i < targets.Length; i++)
                 {
-                    var resume = CopyResumeLogic.TryComputeMinCommittedResume(copyprogress.SourceFile, targets, copyprogress.BufferSize, copyprogress.ComputeHash);
-
-                    if (resume.CanResume)
+                    if (!copyprogress.Resumable)
                     {
-                        resumeOffset = resume.ResumeOffset;
-                        chosenStateAtResume = resume.StateAtResume; // includes SHA1 snapshot iff computehash
-                        copyprogress.BytesStart = resumeOffset;
-                        copyprogress.BytesCopied = resumeOffset;
-                        copyprogress.OperationDuring = "Resuming copy";
-                        copyprogress.UpdateAndMaybeCallback(0);
-                        copyprogress.OperationDuring = "Copying";   
+                        SafeDeleteFile(targets[i].TempPath);
+                        SafeDeleteFile(targets[i].StatePath);
+                        SafeDeleteFile(statePaths[i]);
                     }
-                    else
-                    {
-                        // Restart from 0: clear old artifacts to avoid mixing generations
-                        foreach (var t in targets)
-                        {
-                            SafeDeleteFile(t.TempPath);
-                            SafeDeleteFile(t.StatePath);
-                        }
-                        resumeOffset = 0;
-                        chosenStateAtResume = null;
-                    }
-                }
-                else
-                {
-                    // Not resumable => clear old artifacts
-                    foreach (var t in targets)
-                    {
-                        SafeDeleteFile(t.TempPath);
-                        SafeDeleteFile(t.StatePath);
-                    }
-                }
 
-                // Open source
-                source = new FileStream(
-                    copyprogress.SourceFile.FullName,
-                    FileMode.Open,
-                    FileAccess.Read,
-                    FileShare.Read,
-                    copyprogress.BufferSize,
-                    useAsync: true);
+                    var tempInfo = new FileInfo(targets[i].TempPath);
+                    var canResumeTarget = copyprogress.Resumable && tempInfo.Exists && tempInfo.Length == copyprogress.FileSizeBytes;
 
-                // Open tmp streams (exclusive)
-                tempStreams = targets
-                    .Select(t => new FileStream(
-                        t.TempPath,
+                    states[i] = canResumeTarget
+                        ? ChunkedCopyStateFile.TryRead(statePaths[i], copyprogress.SourceFile, copyprogress.ChunkSizeBytes, totalChunks)
+                            ?? ChunkedCopyState.Create(copyprogress.SourceFile, copyprogress.ChunkSizeBytes, totalChunks)
+                        : ChunkedCopyState.Create(copyprogress.SourceFile, copyprogress.ChunkSizeBytes, totalChunks);
+
+                    using (var temp = new FileStream(
+                        targets[i].TempPath,
                         FileMode.OpenOrCreate,
                         FileAccess.ReadWrite,
-                        FileShare.None,
-                        copyprogress.BufferSize,
-                        options: FileOptions.Asynchronous | FileOptions.SequentialScan))
-                    .ToArray();
-
-                // ALWAYS preallocate tmp files when copyprogress.Resumable (so length is never meaningful)
-                if (copyprogress.Resumable)
-                {
-                    foreach (var (ts, idx) in tempStreams.Select((s, i) => (s, i)))
+                        FileShare.ReadWrite,
+                        FileRelayStreamBufferSize,
+                        FileOptions.None))
                     {
+                        if (temp.Length != copyprogress.FileSizeBytes)
+                            temp.SetLength(copyprogress.FileSizeBytes);
+                    }
+                }
+
+                for (int chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++)
+                {
+                    var hash = FindConfirmedChunkHash(states, chunkIndex);
+                    if (hash != null)
+                    {
+                        chunkDone[chunkIndex] = true;
+                        chunkBytesConfirmed[chunkIndex] = ChunkLength(chunkIndex, copyprogress.FileSizeBytes, copyprogress.ChunkSizeBytes);
+                    }
+                }
+
+                if (hashMode == FileCopyHashMode.SlowStatefulHashForWanResume && copyprogress.Resumable)
+                {
+                    sha1ResumeChunkCount = FindConfirmedSha1Prefix(states, chunkDone, out sha1ResumeState);
+                    sha1CommittedChunkCount = sha1ResumeChunkCount;
+
+                    if (sha1ResumeChunkCount > 0 && sha1ResumeState != null)
+                    {
+                        for (int i = 0; i < states.Length; i++)
+                            states[i].SetSha1State(sha1ResumeChunkCount, sha1ResumeState);
+                    }
+                }
+
+                copyprogress.BytesStart = chunkBytesConfirmed.Sum();
+                copyprogress.BytesCopied = copyprogress.BytesStart;
+                reportedBytes = copyprogress.BytesCopied;
+                if (copyprogress.BytesCopied > 0)
+                    copyprogress.UpdateAndMaybeCallback(0);
+
+                void ReportProgress()
+                {
+                    lock (progressLock)
+                    {
+                        var confirmed = chunkBytesConfirmed.Sum();
+                        if (confirmed > reportedBytes)
+                        {
+                            copyprogress.UpdateAndMaybeCallback(confirmed - reportedBytes);
+                            reportedBytes = confirmed;
+                        }
+                    }
+                }
+
+                void UpdateSha1PrefixState()
+                {
+                    if (hashMode != FileCopyHashMode.SlowStatefulHashForWanResume || sha1StateAfterChunk == null) return;
+
+                    var prefix = FindContiguousDonePrefix(chunkDone);
+                    if (prefix <= sha1CommittedChunkCount) return;
+
+                    var blob = sha1StateAfterChunk[prefix - 1];
+                    if (blob == null) return;
+
+                    sha1CommittedChunkCount = prefix;
+                    for (int i = 0; i < states.Length; i++)
+                        states[i].SetSha1State(prefix, blob);
+                }
+
+                void FlushChunkStates()
+                {
+                    if (!copyprogress.Resumable) return;
+                    for (int i = 0; i < states.Length; i++)
+                        ChunkedCopyStateFile.WriteAtomic(statePaths[i], states[i], copyprogress.FullFlushChunkState);
+                    stateFlushTimer.Restart();
+                }
+
+                using var copyCts = CancellationTokenSource.CreateLinkedTokenSource(copyprogress.Token);
+
+                // One source reader keeps remote-source copies friendly: no competing range reads
+                // against an SMB/NAS source, and the whole-file SHA1 can be computed during that
+                // same pass. The bounded BlockingCollection provides backpressure when any
+                // destination is slower than the source.
+                var readerTask = Task.Run(() =>
+                {
+                    try
+                    {
+                        using var source = new FileStream(
+                            copyprogress.SourceFile.FullName,
+                            FileMode.Open,
+                            FileAccess.Read,
+                            FileShare.Read,
+                            copyprogress.BufferSize,
+                            FileOptions.SequentialScan);
+
+                        Sha1Stateful? statefulWholeSha = null;
+                        HashAlgorithm? nativeWholeSha = null;
+                        var scratch = new byte[copyprogress.BufferSize];
+                        var firstChunkIndex = 0;
+
+                        if (computeHash)
+                        {
+                            if (hashMode == FileCopyHashMode.SlowStatefulHashForWanResume)
+                            {
+                                statefulWholeSha = new Sha1Stateful();
+                                if (sha1ResumeChunkCount > 0 && sha1ResumeState != null)
+                                {
+                                    statefulWholeSha.ImportState(sha1ResumeState);
+                                    firstChunkIndex = sha1ResumeChunkCount;
+                                    source.Seek(ChunkOffset(firstChunkIndex, copyprogress.ChunkSizeBytes), SeekOrigin.Begin);
+                                }
+                                else
+                                {
+                                    statefulWholeSha.Reset();
+                                }
+                            }
+                            else if (hashMode == FileCopyHashMode.FastNativeHashWithResumeReread ||
+                                     (hashMode == FileCopyHashMode.NoHashOnResume && copyprogress.BytesStart == 0))
+                            {
+                                nativeWholeSha = SHA1.Create();
+                            }
+                        }
+
                         try
                         {
-                            ts.SetLength(len);
+                            for (int chunkIndex = firstChunkIndex; chunkIndex < totalChunks; chunkIndex++)
+                            {
+                                copyCts.Token.ThrowIfCancellationRequested();
+                                var offset = ChunkOffset(chunkIndex, copyprogress.ChunkSizeBytes);
+                                var length = ChunkLength(chunkIndex, copyprogress.FileSizeBytes, copyprogress.ChunkSizeBytes);
+                                var chunkBuffer = chunkDone[chunkIndex] ? null : RentChunkBuffer(checked((int)length));
+                                var chunkWritten = 0;
+                                var remaining = length;
+
+                                using var chunkSha = SHA256.Create();
+
+                                while (remaining > 0)
+                                {
+                                    var readSize = (int)Math.Min(scratch.Length, remaining);
+                                    var readTicks = Stopwatch.GetTimestamp();
+                                    var read = TimedRead(source, scratch, 0, readSize, copyCts.Token);
+                                    diagnostics.AddRead(Stopwatch.GetTimestamp() - readTicks);
+                                    if (read == 0) throw new EndOfStreamException("Unexpected end of file during sequential chunked copy.");
+
+                                    var hashTicks = Stopwatch.GetTimestamp();
+                                    statefulWholeSha?.Update(scratch, 0, read);
+                                    nativeWholeSha?.TransformBlock(scratch, 0, read, null, 0);
+                                    chunkSha.TransformBlock(scratch, 0, read, null, 0);
+                                    diagnostics.AddHash(Stopwatch.GetTimestamp() - hashTicks);
+
+                                    if (chunkBuffer != null)
+                                    {
+                                        Buffer.BlockCopy(scratch, 0, chunkBuffer, chunkWritten, read);
+                                        chunkWritten += read;
+                                    }
+
+                                    remaining -= read;
+                                }
+
+                                var finalHashTicks = Stopwatch.GetTimestamp();
+                                chunkSha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+                                diagnostics.AddHash(Stopwatch.GetTimestamp() - finalHashTicks);
+
+                                if (statefulWholeSha != null && sha1StateAfterChunk != null)
+                                {
+                                    sha1StateAfterChunk[chunkIndex] = statefulWholeSha.ExportState();
+                                    if (chunkDone[chunkIndex])
+                                    {
+                                        lock (stateLock)
+                                        {
+                                            UpdateSha1PrefixState();
+                                        }
+                                    }
+                                }
+
+                                if (chunkBuffer != null)
+                                {
+                                    workQueue.Add(new SequentialChunkWork(
+                                        chunkIndex,
+                                        offset,
+                                        chunkWritten,
+                                        chunkBuffer,
+                                        chunkSha.Hash ?? Array.Empty<byte>()),
+                                        copyCts.Token);
+                                }
+                            }
+
+                            if (statefulWholeSha != null)
+                            {
+                                var finalHashTicks = Stopwatch.GetTimestamp();
+                                finalWholeHash = statefulWholeSha.FinalizeHash();
+                                diagnostics.AddHash(Stopwatch.GetTimestamp() - finalHashTicks);
+                            }
+                            else if (nativeWholeSha != null)
+                            {
+                                var finalHashTicks = Stopwatch.GetTimestamp();
+                                nativeWholeSha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+                                finalWholeHash = nativeWholeSha.Hash ?? Array.Empty<byte>();
+                                diagnostics.AddHash(Stopwatch.GetTimestamp() - finalHashTicks);
+                            }
                         }
-                        catch (IOException ioEx)
+                        finally
                         {
-                            ThrowDiskFullOrWrap(ioEx, targets[idx].Destination, $"preallocating '{len}' bytes");
+                            nativeWholeSha?.Dispose();
                         }
                     }
-                }
+                    finally
+                    {
+                        workQueue.CompleteAdding();
+                    }
+                }, copyCts.Token);
 
-                // Position streams
-                source.Seek(resumeOffset, SeekOrigin.Begin);
-                foreach (var ts in tempStreams)
-                    ts.Seek(resumeOffset, SeekOrigin.Begin);
-
-                // Hash setup (resumable SHA1)
-                Sha1Stateful? sha1 = null;
-                if (copyprogress.ComputeHash)
+                var workers = Enumerable.Range(0, Math.Min(copyprogress.ParallelChunks, Math.Max(1, totalChunks))).Select(_ => Task.Run(async () =>
                 {
-                    sha1 = new Sha1Stateful();
-
-                    if (resumeOffset > 0)
+                    try
                     {
-                        if (chosenStateAtResume == null || !chosenStateAtResume.HashEnabled || chosenStateAtResume.Sha1StateBlob == null)
-                            throw new IOException("Resumable hashing requested, but SHA1 state was missing at the chosen resume point.");
-
-                        sha1.ImportState(chosenStateAtResume.Sha1StateBlob);
-                    }
-                    else
-                    {
-                        sha1.Reset();
-                    }
-                }
-
-                // Normalize: overwrite all destination state files to match the chosen resumeOffset + chosen hash snapshot.
-                // This makes future resumes deterministic even if some copyprogress.Destinations were ahead.
-                if (copyprogress.Resumable)
-                {
-                    CopyResumeState normalized = CopyResumeState.Create(copyprogress.SourceFile, copyprogress.BufferSize, resumeOffset, sha1);
-                    var normalizeWrites = targets.Select(t => CopyResumeStateFile.WriteAtomicAsync(t.StatePath, normalized, copyprogress.Token)).ToArray();
-                    await Task.WhenAll(normalizeWrites).ConfigureAwait(false);
-                    chosenStateAtResume = normalized;
-                }
-
-                // ==========================
-                //      PIPELINED COPY
-                // ==========================
-
-                byte[] bufferA = new byte[copyprogress.BufferSize];
-                byte[] bufferB = new byte[copyprogress.BufferSize];
-                int readA = 0, readB = 0;
-                bool swap = false;
-
-
-
-                Task[]? writers = null;
-                int blocksSinceCommit = 0;
-                var lastProgress = TimeSpan.Zero; // currently unused but kept in case you hook it later
-
-                while (true)
-                {
-                    copyprogress.Token.ThrowIfCancellationRequested();
-
-                    throttle?.StartBusy();
-
-                    if (swap)
-                    {
-                        readA = await source.ReadAsync(bufferA, 0, bufferA.Length, copyprogress.Token).ConfigureAwait(false);
-                        if (readA == 0) break;
-                    }
-                    else
-                    {
-                        readB = await source.ReadAsync(bufferB, 0, bufferB.Length, copyprogress.Token).ConfigureAwait(false);
-                        if (readB == 0) break;
-                    }
-
-                    // Ensure previous writes are done before we re-use either buffer.
-                    if (writers != null) await CompleteWrites(writers).ConfigureAwait(false);
-
-                    writers = new Task[tempStreams.Length];
-                    for (int i = 0; i < tempStreams.Length; i++)
-                    {
-                        var stream = tempStreams[i];
-                        var destInfo = targets[i].Destination;
-                        try
+                        foreach (var work in workQueue.GetConsumingEnumerable(copyCts.Token))
                         {
-                            writers[i] = stream.WriteAsync(swap ? bufferA : bufferB, 0, swap ? readA : readB, copyprogress.Token);
+                            try
+                            {
+                                await WriteOrderedChunkToTargetsAsync(targets, work.Offset, work.Buffer, work.Count, copyprogress.BufferSize, copyprogress.VerifyChunkWrites, work.Hash, diagnostics, copyCts.Token).ConfigureAwait(false);
+                                var hashText = Convert.ToBase64String(work.Hash);
+
+                                lock (stateLock)
+                                {
+                                    for (int i = 0; i < states.Length; i++)
+                                        states[i].ChunkHashes[work.ChunkIndex] = hashText;
+
+                                    chunkDone[work.ChunkIndex] = true;
+                                    chunkBytesConfirmed[work.ChunkIndex] = work.Count;
+                                    UpdateSha1PrefixState();
+
+                                    if (stateFlushTimer.Elapsed >= copyprogress.ChunkStateFlushInterval)
+                                        FlushChunkStates();
+                                }
+
+                                ReportProgress();
+                            }
+                            finally
+                            {
+                                ReturnChunkBuffer(work.Buffer);
+                            }
                         }
-                        catch (IOException ioEx)
-                        {
-                            ThrowDiskFullOrWrap(ioEx, destInfo, $"writing to '{destInfo.DirectoryName}'");
-                            throw; // not reached; ThrowDiskFullOrWrap throws
-                        }
                     }
-
-                    // Hash synchronously while the destination writes are already in flight.
-                    // In the common case where storage is the bottleneck, this overlaps CPU work
-                    // with I/O without the overhead/complexity of Task.Run.
-                    if (sha1 != null)
+                    catch
                     {
-                        var bufToHash = swap ? bufferA : bufferB;
-                        var countToHash = swap ? readA : readB;
-                        sha1.Update(bufToHash, 0, countToHash);
+                        copyCts.Cancel();
+                        throw;
                     }
+                }, copyCts.Token)).ToArray();
 
-                    // Progress
-                    copyprogress.UpdateAndMaybeCallback(swap ? readA : readB);
-                    blocksSinceCommit++;
+                await Task.WhenAll(workers.Concat(new[] { readerTask })).ConfigureAwait(false);
 
-                    if (copyprogress.Resumable && (blocksSinceCommit >= maxcommitblocks || (Stopwatch.GetTimestamp() - lastcommit) >= commitinterval))
-                    {
-                        if (Debugger.IsAttached)
-                            Debug.WriteLine($"{DateTime.Now:u}-CopyToAsync: committing at {MinPosition(tempStreams)} bytes after {blocksSinceCommit} blocks.");
-
-                        await CompleteWrites(writers).ConfigureAwait(false);
-
-                        await FlushAllCommittedAsync(tempStreams, copyprogress.Token, false).ConfigureAwait(false);
-
-                        long committed = MinPosition(tempStreams); // min across all targets
-                        var st = CopyResumeState.Create(copyprogress.SourceFile, copyprogress.BufferSize, committed, sha1);
-                        var stateWrites = targets.Select(t => CopyResumeStateFile.WriteAtomicAsync(t.StatePath, st, copyprogress.Token)).ToArray();
-                        await Task.WhenAll(stateWrites).ConfigureAwait(false);
-
-                        blocksSinceCommit = 0;
-                        lastcommit = Stopwatch.GetTimestamp();
-                        if (Debugger.IsAttached)
-                            Debug.WriteLine($"{DateTime.Now:u}-CopyToAsync: commit complete.");
-                    }
-
-                    if (throttle != null)
-                        await throttle.ThrottleIfNeededAsync(copyprogress.Token).ConfigureAwait(false);
-
-                    // Swap buffers: next becomes current for the next iteration
-                    swap = !swap;
-                }
-
-                await CompleteWrites(writers).ConfigureAwait(false);
-
-                await FlushAllCommittedAsync(tempStreams, copyprogress.Token, true).ConfigureAwait(false);
-
-                if (copyprogress.Resumable)
+                if (computeHash &&
+                    finalWholeHash.Length == 0 &&
+                    hashMode == FileCopyHashMode.FastNativeHashWithResumeReread &&
+                    copyprogress.BytesStart > 0)
                 {
-                    long committed = MinPosition(tempStreams);
-                    var st = CopyResumeState.Create(copyprogress.SourceFile, copyprogress.BufferSize, committed, sha1);
-                    var stateWrites = targets.Select(t => CopyResumeStateFile.WriteAtomicAsync(t.StatePath, st, copyprogress.Token)).ToArray();
-                    await Task.WhenAll(stateWrites).ConfigureAwait(false);
-                }
-
-                if (sha1 != null)
-                {
-                    finalHash = sha1.FinalizeHash();
-                    copyprogress.Hash = finalHash;
+                    var hashTicks = Stopwatch.GetTimestamp();
+                    finalWholeHash = ComputeWholeFileSha1(copyprogress.SourceFile.FullName, copyprogress.BufferSize, copyprogress.Token);
+                    diagnostics.AddHash(Stopwatch.GetTimestamp() - hashTicks);
                 }
 
                 copyprogress.Token.ThrowIfCancellationRequested();
+                lock (stateLock)
+                {
+                    FlushChunkStates();
+                }
                 toolatetocancel = true;
 
-                // Dispose streams before rename
-                foreach (var ts in tempStreams) ts.Dispose();
-                tempStreams = null;
-                source.Dispose();
-                source = null;
-
-                // Swap into place (delete destination if overwrite)
-                foreach (var t in targets)
+                foreach (var target in targets)
                 {
-                    if (t.Destination.Exists) t.Destination.Delete();
+                    if (target.Destination.Exists) target.Destination.Delete();
                 }
 
-                foreach (var t in targets)
+                foreach (var target in targets)
                 {
-                    var tmpFi = new FileInfo(t.TempPath);
+                    var tmpFi = new FileInfo(target.TempPath);
                     tmpFi.Refresh();
                     if (!tmpFi.Exists)
-                        throw new IOException($"CopyToAsync: expected temp file missing: {tmpFi.FullName}");
+                        throw new IOException($"CopyToAsyncSequentialReadChunked: expected temp file missing: {tmpFi.FullName}");
 
-                    tmpFi.MoveTo(t.Destination.FullName);
-                }
-
-                // Verify existence + set times + cleanup state
-                foreach (var t in targets)
-                {
-                    var waitloop = 0;
-                    while (!t.Destination.Exists)
+                    tmpFi.MoveTo(target.Destination.FullName);
+                    target.Destination.Refresh();
+                    int retries = 0;
+                    while (!target.Destination.Exists && retries < 6)
                     {
-                        waitloop++;
                         await Task.Delay(100, copyprogress.Token).ConfigureAwait(false);
-                        t.Destination.Refresh();
-                        if (waitloop > 10)
-                            throw new Exception($"CopyToAsync: file {copyprogress.SourceFile.Name} - copy completed, but it did not appear in the destination '{t.Destination.FullName}'");
+                        target.Destination.Refresh();
+                        retries++;
                     }
-
-                    File.SetCreationTime(t.Destination.FullName, copyprogress.SourceFile.CreationTime);
-                    File.SetLastWriteTime(t.Destination.FullName, copyprogress.SourceFile.LastWriteTime);
-                    File.SetLastAccessTime(t.Destination.FullName, copyprogress.SourceFile.LastAccessTime);
-
-                    SafeDeleteFile(t.StatePath);
+                    if (!target.Destination.Exists)
+                        throw new Exception($"CopyToAsyncSequentialReadChunked: file {copyprogress.SourceFile.Name} - copy completed, but it did not appear in the destination '{target.Destination.FullName}'");
                 }
+
+                foreach (var target in targets)
+                {
+                    File.SetCreationTime(target.Destination.FullName, copyprogress.SourceFile.CreationTime);
+                    File.SetLastWriteTime(target.Destination.FullName, copyprogress.SourceFile.LastWriteTime);
+                    File.SetLastAccessTime(target.Destination.FullName, copyprogress.SourceFile.LastAccessTime);
+                    SafeDeleteFile(ChunkedCopyStatePath(target));
+                }
+
+                copyprogress.BytesCopied = copyprogress.FileSizeBytes;
+                copyprogress.Hash = computeHash ? finalWholeHash : Array.Empty<byte>();
 
                 if (copyprogress.MoveFile) copyprogress.SourceFile.Delete();
 
-                copyprogress.BytesCopied = len;
+                copyprogress.DiagnosticSummary = diagnostics.ToString();
                 copyprogress.IsCompleted = true;
-                if (copyprogress.Callback != null)
-                    copyprogress.Callback(copyprogress);
-
+                copyprogress.Callback?.Invoke(copyprogress);
                 return copyprogress;
             }
             catch (OperationCanceledException)
             {
                 copyprogress.Cancelled = true;
                 copyprogress.IsCompleted = false;
-                if (copyprogress.Callback != null)
-                    copyprogress.Callback(copyprogress);
-
-                // Keep tmp+state for resume
+                copyprogress.Callback?.Invoke(copyprogress);
                 throw;
             }
             finally
             {
-                try { source?.Dispose(); } catch { }
+                workQueue.Dispose();
 
-                if (tempStreams != null)
-                {
-                    foreach (var ts in tempStreams)
-                    {
-                        try { ts?.Dispose(); } catch { }
-                    }
-                }
-
-                // If not resumable and not completed, cleanup tmp/state
                 if (!toolatetocancel && !copyprogress.Resumable)
                 {
-                    foreach (var t in targets)
+                    foreach (var target in targets)
                     {
-                        SafeDeleteFile(t.TempPath);
-                        SafeDeleteFile(t.StatePath);
+                        SafeDeleteFile(target.TempPath);
+                        SafeDeleteFile(target.StatePath);
+                        SafeDeleteFile(ChunkedCopyStatePath(target));
                     }
                 }
             }
         }
+
+        public static async Task<FileCopyProgress> CopyToAsyncWindowsNative(FileCopyProgress copyprogress)
+        {
+            if (copyprogress == null) throw new ArgumentNullException(nameof(copyprogress));
+            copyprogress.Stopwatch = Stopwatch.StartNew();
+            if (copyprogress.SourceFile == null) throw new ArgumentException("copyprogress.SourceFile must be set to the source file.", nameof(copyprogress));
+            copyprogress.FileName = copyprogress.SourceFile.Name;
+
+            if (copyprogress.Destinations == null) throw new ArgumentNullException(nameof(copyprogress.Destinations));
+            if (copyprogress.Destinations.Length == 0) throw new ArgumentException("At least one destination is required.", nameof(copyprogress.Destinations));
+            if (!copyprogress.SourceFile.Exists) throw new IOException($"Source file {copyprogress.SourceFile.FullName} does not exist");
+            if (copyprogress.ComputeHash) throw new NotSupportedException("CopyToAsyncWindowsNative does not compute hashes yet.");
+
+            copyprogress.FileSizeBytes = copyprogress.SourceFile.Length;
+            if (copyprogress.ProgressReportInterval == default) copyprogress.ProgressReportInterval = TimeSpan.FromSeconds(1);
+
+            if (copyprogress.Destinations.Any(d => d == null)) throw new ArgumentException("copyprogress.Destinations contains a null entry.", nameof(copyprogress.Destinations));
+            var dup = copyprogress.Destinations.GroupBy(d => d.FullName, StringComparer.OrdinalIgnoreCase).FirstOrDefault(g => g.Count() > 1);
+            if (dup != null) throw new ArgumentException($"Duplicate destination path: {dup.Key}", nameof(copyprogress.Destinations));
+
+            foreach (var destination in copyprogress.Destinations)
+            {
+                if (destination.Directory == null || !destination.Directory.Exists)
+                    throw new IOException($"Destination folder {destination.DirectoryName} does not exist or is not available");
+
+                if (destination.Exists && !copyprogress.Overwrite)
+                    throw new IOException($"Destination file {destination.FullName} exists (and overwrite was not specified)");
+            }
+
+            copyprogress.UpdateAndMaybeCallback(0);
+
+            var targets = copyprogress.Destinations.Select(d => new CopyTarget(d)).ToArray();
+            foreach (var target in targets)
+            {
+                SafeDeleteFile(target.TempPath);
+                SafeDeleteFile(target.StatePath);
+            }
+
+            var destinationBytes = new long[targets.Length];
+            long reportedBytes = 0;
+            object progressLock = new object();
+            bool completed = false;
+
+            void ReportProgress()
+            {
+                lock (progressLock)
+                {
+                    long minWritten = destinationBytes.Min();
+                    if (minWritten > reportedBytes)
+                    {
+                        copyprogress.UpdateAndMaybeCallback(minWritten - reportedBytes);
+                        reportedBytes = minWritten;
+                    }
+                }
+            }
+
+            try
+            {
+                var flags = COPY_FILE_NO_BUFFERING;
+                var copyTasks = targets.Select((target, destinationIndex) => Task.Run(() =>
+                {
+                    int cancel = 0;
+                    CopyProgressRoutine progress = (totalFileSize, totalBytesTransferred, streamSize, streamBytesTransferred, streamNumber, callbackReason, sourceFile, destinationFile, data) =>
+                    {
+                        if (copyprogress.Token.IsCancellationRequested)
+                        {
+                            cancel = 1;
+                            return CopyProgressResult.PROGRESS_CANCEL;
+                        }
+
+                        Interlocked.Exchange(ref destinationBytes[destinationIndex], totalBytesTransferred);
+                        ReportProgress();
+
+                        return CopyProgressResult.PROGRESS_CONTINUE;
+                    };
+
+                    try
+                    {
+                        if (!CopyFileEx(copyprogress.SourceFile.FullName, target.TempPath, progress, IntPtr.Zero, ref cancel, flags))
+                        {
+                            var error = Marshal.GetLastWin32Error();
+                            if (cancel != 0 || copyprogress.Token.IsCancellationRequested || error == ERROR_REQUEST_ABORTED)
+                                throw new OperationCanceledException(copyprogress.Token);
+
+                            throw new Win32Exception(error, $"CopyFileEx failed copying '{copyprogress.SourceFile.FullName}' to '{target.TempPath}'");
+                        }
+                    }
+                    finally
+                    {
+                        GC.KeepAlive(progress);
+                    }
+                }, copyprogress.Token)).ToArray();
+
+                await Task.WhenAll(copyTasks).ConfigureAwait(false);
+
+                copyprogress.Token.ThrowIfCancellationRequested();
+
+                foreach (var target in targets)
+                {
+                    if (target.Destination.Exists) target.Destination.Delete();
+                }
+
+                foreach (var target in targets)
+                {
+                    var tmpFi = new FileInfo(target.TempPath);
+                    tmpFi.Refresh();
+                    if (!tmpFi.Exists)
+                        throw new IOException($"CopyToAsyncWindowsNative: expected temp file missing: {tmpFi.FullName}");
+
+                    tmpFi.MoveTo(target.Destination.FullName);
+                }
+
+                foreach (var target in targets)
+                {
+                    File.SetCreationTime(target.Destination.FullName, copyprogress.SourceFile.CreationTime);
+                    File.SetLastWriteTime(target.Destination.FullName, copyprogress.SourceFile.LastWriteTime);
+                    File.SetLastAccessTime(target.Destination.FullName, copyprogress.SourceFile.LastAccessTime);
+                }
+
+                if (copyprogress.MoveFile) copyprogress.SourceFile.Delete();
+
+                completed = true;
+                copyprogress.BytesCopied = copyprogress.FileSizeBytes;
+                copyprogress.IsCompleted = true;
+                copyprogress.Callback?.Invoke(copyprogress);
+                return copyprogress;
+            }
+            catch (OperationCanceledException)
+            {
+                copyprogress.Cancelled = true;
+                copyprogress.IsCompleted = false;
+                copyprogress.Callback?.Invoke(copyprogress);
+                throw;
+            }
+            finally
+            {
+                if (!completed)
+                {
+                    foreach (var target in targets)
+                    {
+                        SafeDeleteFile(target.TempPath);
+                        SafeDeleteFile(target.StatePath);
+                    }
+                }
+            }
+        }
+
         public static bool IsImmutable(this FileInfo fi)
         {
             if (!fi.Exists) throw new FileNotFoundException($"File {fi.FullName} not found");
@@ -492,46 +705,236 @@ namespace MDDFoundation
             return fi.IsImmutable();
         }
 
-        private static async Task CompleteWrites(Task[]? writers)
-        {
-            if (writers != null)
-            {
-                var sw = Stopwatch.StartNew();
-                await Task.WhenAll(writers).ConfigureAwait(false);
-                sw.Stop();
-                if (Debugger.IsAttached && sw.ElapsedMilliseconds > 200)
-                    Debug.WriteLine($"{DateTime.Now:u}-CopyToAsync: all writes completed in {sw.ElapsedMilliseconds} ms.");
-            }
-        }
-
-        // --------------------------------------------------------------------
+                // --------------------------------------------------------------------
         // IO helpers
         // --------------------------------------------------------------------
 
-        private static async Task FlushAllCommittedAsync(FileStream[] streams, CancellationToken token, bool fullflush = false)
-        {
-            var sw = Stopwatch.StartNew();
-            var flushes = streams.Select(s => s.FlushAsync(token)).ToArray();
-            await Task.WhenAll(flushes).ConfigureAwait(false);
+                        private static long ChunkOffset(int chunkIndex, long chunkSizeBytes)
+            => checked(chunkIndex * chunkSizeBytes);
 
-            if (fullflush)
+        private static long ChunkLength(int chunkIndex, long fileSizeBytes, long chunkSizeBytes)
+        {
+            var offset = ChunkOffset(chunkIndex, chunkSizeBytes);
+            return Math.Max(0, Math.Min(chunkSizeBytes, fileSizeBytes - offset));
+        }
+
+        private static string ChunkedCopyStatePath(CopyTarget target)
+            => target.TempPath + ".chunks.state";
+
+        private static string? FindConfirmedChunkHash(ChunkedCopyState[] states, int chunkIndex)
+        {
+            string? hash = null;
+            foreach (var state in states)
+            {
+                var candidate = state.ChunkHashes[chunkIndex];
+                if (string.IsNullOrWhiteSpace(candidate)) return null;
+                if (hash == null)
+                    hash = candidate;
+                else if (!string.Equals(hash, candidate, StringComparison.Ordinal))
+                    return null;
+            }
+
+            return hash;
+        }
+
+        private static int FindContiguousDonePrefix(bool[] chunkDone)
+        {
+            var prefix = 0;
+            while (prefix < chunkDone.Length && chunkDone[prefix])
+                prefix++;
+            return prefix;
+        }
+
+        private static int FindConfirmedSha1Prefix(ChunkedCopyState[] states, bool[] chunkDone, out byte[]? stateBlob)
+        {
+            stateBlob = null;
+            if (states.Length == 0) return 0;
+
+            var prefix = states.Min(s =>
+                s.HashEnabled && s.HashAlgorithmId == 1 && s.Sha1StateBlob.Length > 0
+                    ? s.Sha1PrefixChunkCount
+                    : 0);
+
+            prefix = Math.Min(prefix, FindContiguousDonePrefix(chunkDone));
+            if (prefix <= 0) return 0;
+
+            var chosen = states
+                .Where(s => s.HashEnabled && s.HashAlgorithmId == 1 && s.Sha1PrefixChunkCount == prefix)
+                .Select(s => s.Sha1StateBlob)
+                .FirstOrDefault(b => b.Length > 0);
+
+            if (chosen == null || !CanImportSha1State(chosen))
+                return 0;
+
+            stateBlob = chosen;
+            return prefix;
+        }
+
+        private static bool CanImportSha1State(byte[] blob)
+        {
+            try
+            {
+                var sha = new Sha1Stateful();
+                sha.ImportState(blob);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static async Task WriteOrderedChunkToTargetsAsync(
+            CopyTarget[] targets,
+            long offset,
+            byte[] buffer,
+            int count,
+            int bufferSize,
+            bool verifyChunkWrites,
+            byte[] expectedHash,
+            ChunkedCopyDiagnostics diagnostics,
+            CancellationToken token)
+        {
+            var streams = new FileStream[targets.Length];
+            try
+            {
+                // Do not change these streams to async/overlapped I/O casually. The .NET Framework
+                // async FileStream implementation was the bottleneck in our SMB tests; synchronous
+                // writes issued from bounded worker tasks reached expected gigabit throughput.
+                // .NET 8 async I/O was much better, but this file must behave well for both runtimes.
+                for (int i = 0; i < targets.Length; i++)
+                {
+                    streams[i] = new FileStream(
+                        targets[i].TempPath,
+                        FileMode.Open,
+                        FileAccess.Write,
+                        FileShare.ReadWrite,
+                        FileRelayStreamBufferSize,
+                        FileOptions.None);
+                    streams[i].Seek(offset, SeekOrigin.Begin);
+                }
+
+                var written = 0;
+                while (written < count)
+                {
+                    token.ThrowIfCancellationRequested();
+                    var writeCount = Math.Min(bufferSize, count - written);
+                    for (int targetIndex = 0; targetIndex < streams.Length; targetIndex++)
+                        TimedWrite(streams[targetIndex], buffer, written, writeCount, token, diagnostics, targetIndex);
+
+                    written += writeCount;
+                }
+
+                var flushTicks = Stopwatch.GetTimestamp();
+                var flushes = streams.Select(s => s.FlushAsync(token)).ToArray();
+                await Task.WhenAll(flushes).ConfigureAwait(false);
+                diagnostics.AddFlush(Stopwatch.GetTimestamp() - flushTicks);
+
+                foreach (var s in streams)
+                {
+                    try { s.Dispose(); } catch { }
+                }
+
+                if (verifyChunkWrites)
+                {
+                    foreach (var target in targets)
+                    {
+                        var destHash = await ComputeRangeSha256Async(target.TempPath, offset, count, bufferSize, token).ConfigureAwait(false);
+                        if (!expectedHash.SequenceEqual(destHash))
+                            throw new IOException($"Chunk verification failed for '{target.Destination.FullName}' at offset {offset}.");
+                    }
+                }
+            }
+            finally
             {
                 foreach (var s in streams)
                 {
-                    try { s.Flush(true); } catch { /* platform/fs may not support */ }
+                    try { s?.Dispose(); } catch { }
                 }
             }
-            sw.Stop();
-            if (Debugger.IsAttached && sw.ElapsedMilliseconds > 200)
-                Debug.WriteLine($"{DateTime.Now:u}-CopyToAsync: all flushes completed in {sw.ElapsedMilliseconds} ms.");
         }
 
-        private static long MinPosition(FileStream[] streams)
+        private static int TimedRead(FileStream stream, byte[] buffer, int offset, int count, CancellationToken token)
         {
-            long committed = streams[0].Position;
-            for (int i = 1; i < streams.Length; i++)
-                committed = Math.Min(committed, streams[i].Position);
-            return committed;
+            token.ThrowIfCancellationRequested();
+            return stream.Read(buffer, offset, count);
+        }
+
+        private static byte[] RentChunkBuffer(int minimumLength)
+        {
+            while (ChunkBufferPool.TryTake(out var buffer))
+            {
+                if (buffer.Length >= minimumLength)
+                    return buffer;
+            }
+
+            return new byte[minimumLength];
+        }
+
+        private static void ReturnChunkBuffer(byte[] buffer)
+        {
+            if (buffer.Length > 0)
+                ChunkBufferPool.Add(buffer);
+        }
+
+        private static void TimedWrite(FileStream stream, byte[] buffer, int offset, int count, CancellationToken token, ChunkedCopyDiagnostics diagnostics, int targetIndex)
+        {
+            var writeTicks = Stopwatch.GetTimestamp();
+            token.ThrowIfCancellationRequested();
+            stream.Write(buffer, offset, count);
+            diagnostics.AddWrite(targetIndex, Stopwatch.GetTimestamp() - writeTicks);
+        }
+
+        private static async Task<byte[]> ComputeRangeSha256Async(string path, long offset, long length, int bufferSize, CancellationToken token)
+        {
+            using var sha = SHA256.Create();
+            var buffer = new byte[bufferSize];
+            var remaining = length;
+            using var source = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite,
+                bufferSize,
+                FileOptions.Asynchronous | FileOptions.RandomAccess);
+
+            source.Seek(offset, SeekOrigin.Begin);
+            while (remaining > 0)
+            {
+                token.ThrowIfCancellationRequested();
+                var read = await source.ReadAsync(buffer, 0, (int)Math.Min(buffer.Length, remaining), token).ConfigureAwait(false);
+                if (read == 0) throw new EndOfStreamException("Unexpected end of file during chunk verification.");
+                sha.TransformBlock(buffer, 0, read, null, 0);
+                remaining -= read;
+            }
+
+            sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+            return sha.Hash ?? Array.Empty<byte>();
+        }
+
+        private static byte[] ComputeWholeFileSha1(string path, int bufferSize, CancellationToken token)
+        {
+            using var sha = SHA1.Create();
+            var buffer = new byte[bufferSize];
+
+            using var source = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                bufferSize,
+                FileOptions.SequentialScan);
+
+            while (true)
+            {
+                token.ThrowIfCancellationRequested();
+                var read = source.Read(buffer, 0, buffer.Length);
+                if (read == 0) break;
+                sha.TransformBlock(buffer, 0, read, null, 0);
+            }
+
+            sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+            return sha.Hash ?? Array.Empty<byte>();
         }
 
         private static void SafeDeleteFile(string path)
@@ -566,61 +969,125 @@ namespace MDDFoundation
         // Per-destination mapping
         // --------------------------------------------------------------------
 
-        private sealed class CopyTarget
-        {
-            public FileInfo Destination { get; }
-            public string TempPath { get; }
-            public string StatePath { get; }
+        private const int COPY_FILE_NO_BUFFERING = 0x00001000;
+        private const int ERROR_REQUEST_ABORTED = 1235;
 
-            public CopyTarget(FileInfo destination)
-            {
-                Destination = destination ?? throw new ArgumentNullException(nameof(destination));
-                TempPath = destination.FullName + ".tmp";
-                StatePath = TempPath + ".state";
-            }
+        private delegate CopyProgressResult CopyProgressRoutine(
+            long totalFileSize,
+            long totalBytesTransferred,
+            long streamSize,
+            long streamBytesTransferred,
+            uint streamNumber,
+            CopyProgressCallbackReason callbackReason,
+            IntPtr sourceFile,
+            IntPtr destinationFile,
+            IntPtr data);
+
+        private enum CopyProgressResult : uint
+        {
+            PROGRESS_CONTINUE = 0,
+            PROGRESS_CANCEL = 1,
+            PROGRESS_STOP = 2,
+            PROGRESS_QUIET = 3
         }
 
-        // --------------------------------------------------------------------
-        // Resume state file (binary; includes optional SHA1 internal state)
-        // --------------------------------------------------------------------
-
-        private sealed class CopyResumeState
+        private enum CopyProgressCallbackReason : uint
         {
-            public const int Magic = unchecked((int)0x4D444443); // "MDDC"
-            public const int Version = 2; // hash-state support
+            CALLBACK_CHUNK_FINISHED = 0,
+            CALLBACK_STREAM_SWITCH = 1
+        }
 
-            public long CommittedLength;
-            public int BufferSize;
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool CopyFileEx(
+            string existingFileName,
+            string newFileName,
+            CopyProgressRoutine progressRoutine,
+            IntPtr data,
+            ref int cancel,
+            int copyFlags);
+
+        private sealed class ChunkedCopyState
+        {
+            public const int Magic = unchecked((int)0x4D44434B); // "MDDK"
+            public const int Version = 2;
+
             public long SourceLength;
             public long SourceLastWriteUtcTicks;
-
+            public long ChunkSizeBytes;
+            public int TotalChunks;
+            public string?[] ChunkHashes = Array.Empty<string?>();
             public bool HashEnabled;
-            public int HashAlgorithmId;      // 1 = SHA1
-            public byte[] Sha1StateBlob = Array.Empty<byte>();     // Sha1Stateful.ExportState()
+            public int HashAlgorithmId;
+            public int Sha1PrefixChunkCount;
+            public byte[] Sha1StateBlob = Array.Empty<byte>();
 
-            public static CopyResumeState Create(FileInfo source, int bufferSize, long committedLength, Sha1Stateful? sha1OrNull)
+            public static ChunkedCopyState Create(FileInfo source, long chunkSizeBytes, int totalChunks)
             {
-                var st = new CopyResumeState
+                return new ChunkedCopyState
                 {
-                    CommittedLength = committedLength,
-                    BufferSize = bufferSize,
                     SourceLength = source.Length,
-                    SourceLastWriteUtcTicks = source.LastWriteTimeUtc.Ticks
+                    SourceLastWriteUtcTicks = source.LastWriteTimeUtc.Ticks,
+                    ChunkSizeBytes = chunkSizeBytes,
+                    TotalChunks = totalChunks,
+                    ChunkHashes = new string?[totalChunks]
                 };
+            }
 
-                if (sha1OrNull != null)
-                {
-                    st.HashEnabled = true;
-                    st.HashAlgorithmId = 1;
-                    st.Sha1StateBlob = sha1OrNull.ExportState();
-                }
-                return st;
+            public void SetSha1State(int prefixChunkCount, byte[] stateBlob)
+            {
+                HashEnabled = true;
+                HashAlgorithmId = 1;
+                Sha1PrefixChunkCount = prefixChunkCount;
+                Sha1StateBlob = stateBlob;
             }
         }
 
-        private static class CopyResumeStateFile
+        private sealed class ChunkedCopyDiagnostics
         {
-            public static CopyResumeState? TryRead(string statePath)
+            private long readTicks;
+            private long hashTicks;
+            private long flushTicks;
+            private readonly long[] writeTicksByTarget;
+
+            public ChunkedCopyDiagnostics(int targetCount)
+            {
+                writeTicksByTarget = new long[targetCount];
+            }
+
+            public void AddRead(long ticks) => Interlocked.Add(ref readTicks, ticks);
+            public void AddHash(long ticks) => Interlocked.Add(ref hashTicks, ticks);
+            public void AddFlush(long ticks) => Interlocked.Add(ref flushTicks, ticks);
+            public void AddWrite(int targetIndex, long ticks) => Interlocked.Add(ref writeTicksByTarget[targetIndex], ticks);
+
+            public override string ToString()
+            {
+                static double Seconds(long ticks) => ticks / (double)Stopwatch.Frequency;
+                var writes = string.Join(", ", writeTicksByTarget.Select((ticks, index) => $"w{index + 1}={Seconds(Volatile.Read(ref writeTicksByTarget[index])):N1}s"));
+                return $"read={Seconds(Volatile.Read(ref readTicks)):N1}s; hash={Seconds(Volatile.Read(ref hashTicks)):N1}s; {writes}; flush={Seconds(Volatile.Read(ref flushTicks)):N1}s";
+            }
+        }
+
+        private sealed class SequentialChunkWork
+        {
+            public SequentialChunkWork(int chunkIndex, long offset, int count, byte[] buffer, byte[] hash)
+            {
+                ChunkIndex = chunkIndex;
+                Offset = offset;
+                Count = count;
+                Buffer = buffer;
+                Hash = hash;
+            }
+
+            public int ChunkIndex { get; }
+            public long Offset { get; }
+            public int Count { get; }
+            public byte[] Buffer { get; }
+            public byte[] Hash { get; }
+        }
+
+        private static class ChunkedCopyStateFile
+        {
+            public static ChunkedCopyState? TryRead(string statePath, FileInfo source, long chunkSizeBytes, int totalChunks)
             {
                 if (!File.Exists(statePath)) return null;
 
@@ -629,34 +1096,56 @@ namespace MDDFoundation
                     using var fs = new FileStream(statePath, FileMode.Open, FileAccess.Read, FileShare.Read);
                     using var br = new BinaryReader(fs);
 
-                    int magic = br.ReadInt32();
-                    int ver = br.ReadInt32();
+                    var magic = br.ReadInt32();
+                    var version = br.ReadInt32();
+                    if (magic != ChunkedCopyState.Magic) return null;
+                    if (version != 1 && version != ChunkedCopyState.Version) return null;
 
-                    if (magic != CopyResumeState.Magic) return null;
-                    if (ver != CopyResumeState.Version) return null;
-
-                    var s = new CopyResumeState
+                    var state = new ChunkedCopyState
                     {
-                        CommittedLength = br.ReadInt64(),
-                        BufferSize = br.ReadInt32(),
                         SourceLength = br.ReadInt64(),
                         SourceLastWriteUtcTicks = br.ReadInt64(),
-                        HashEnabled = br.ReadBoolean(),
-                        HashAlgorithmId = br.ReadInt32()
+                        ChunkSizeBytes = br.ReadInt64(),
+                        TotalChunks = br.ReadInt32()
                     };
 
-                    int blobLen = br.ReadInt32();
-                    if (blobLen < 0 || blobLen > 4096) return null;
-                    if (blobLen > 0)
-                        s.Sha1StateBlob = br.ReadBytes(blobLen);
+                    if (state.SourceLength != source.Length) return null;
+                    if (state.SourceLastWriteUtcTicks != source.LastWriteTimeUtc.Ticks) return null;
+                    if (state.ChunkSizeBytes != chunkSizeBytes) return null;
+                    if (state.TotalChunks != totalChunks) return null;
+                    if (state.TotalChunks < 0 || state.TotalChunks > 10_000_000) return null;
 
-                    if (s.HashEnabled)
+                    state.ChunkHashes = new string?[state.TotalChunks];
+                    for (int i = 0; i < state.TotalChunks; i++)
                     {
-                        if (s.HashAlgorithmId != 1) return null;
-                        if (s.Sha1StateBlob == null || s.Sha1StateBlob.Length == 0) return null;
+                        var hasHash = br.ReadBoolean();
+                        if (!hasHash) continue;
+                        var hash = br.ReadString();
+                        if (string.IsNullOrWhiteSpace(hash)) return null;
+                        state.ChunkHashes[i] = hash;
                     }
 
-                    return s;
+                    if (version >= 2)
+                    {
+                        state.HashEnabled = br.ReadBoolean();
+                        state.HashAlgorithmId = br.ReadInt32();
+                        state.Sha1PrefixChunkCount = br.ReadInt32();
+                        var blobLength = br.ReadInt32();
+
+                        if (state.Sha1PrefixChunkCount < 0 || state.Sha1PrefixChunkCount > state.TotalChunks) return null;
+                        if (blobLength < 0 || blobLength > 4096) return null;
+                        state.Sha1StateBlob = blobLength > 0 ? br.ReadBytes(blobLength) : Array.Empty<byte>();
+
+                        if (state.HashEnabled)
+                        {
+                            if (state.HashAlgorithmId != 1) return null;
+                            if (state.Sha1PrefixChunkCount <= 0) return null;
+                            if (state.Sha1StateBlob.Length == 0) return null;
+                            if (!CanImportSha1State(state.Sha1StateBlob)) return null;
+                        }
+                    }
+
+                    return state;
                 }
                 catch
                 {
@@ -664,37 +1153,44 @@ namespace MDDFoundation
                 }
             }
 
-            public static async Task WriteAtomicAsync(string statePath, CopyResumeState state, CancellationToken token)
+            public static void WriteAtomic(string statePath, ChunkedCopyState state, bool fullFlush)
             {
-                string newPath = statePath + ".new";
+                var newPath = statePath + ".new";
 
                 using (var fs = new FileStream(newPath, FileMode.Create, FileAccess.Write, FileShare.None))
                 using (var bw = new BinaryWriter(fs))
                 {
-                    bw.Write(CopyResumeState.Magic);
-                    bw.Write(CopyResumeState.Version);
-
-                    bw.Write(state.CommittedLength);
-                    bw.Write(state.BufferSize);
+                    bw.Write(ChunkedCopyState.Magic);
+                    bw.Write(ChunkedCopyState.Version);
                     bw.Write(state.SourceLength);
                     bw.Write(state.SourceLastWriteUtcTicks);
+                    bw.Write(state.ChunkSizeBytes);
+                    bw.Write(state.TotalChunks);
+
+                    for (int i = 0; i < state.TotalChunks; i++)
+                    {
+                        var hash = state.ChunkHashes[i];
+                        bw.Write(!string.IsNullOrWhiteSpace(hash));
+                        if (!string.IsNullOrWhiteSpace(hash))
+                            bw.Write(hash);
+                    }
 
                     bw.Write(state.HashEnabled);
                     bw.Write(state.HashAlgorithmId);
-
+                    bw.Write(state.Sha1PrefixChunkCount);
+                    bw.Write(state.Sha1StateBlob?.Length ?? 0);
                     if (state.Sha1StateBlob != null && state.Sha1StateBlob.Length > 0)
-                    {
-                        bw.Write(state.Sha1StateBlob.Length);
                         bw.Write(state.Sha1StateBlob);
+
+                    bw.Flush();
+                    if (fullFlush)
+                    {
+                        try { fs.Flush(true); } catch { /* platform/fs may not support */ }
                     }
                     else
                     {
-                        bw.Write(0);
+                        fs.Flush();
                     }
-
-                    bw.Flush();
-                    await fs.FlushAsync(token).ConfigureAwait(false);
-                    try { fs.Flush(true); } catch { /* ignore */ }
                 }
 
                 if (File.Exists(statePath))
@@ -715,106 +1211,22 @@ namespace MDDFoundation
             }
         }
 
-        private static class CopyResumeLogic
+        private sealed class CopyTarget
         {
-            internal readonly struct MinResumeDecision
+            public FileInfo Destination { get; }
+            public string TempPath { get; }
+            public string StatePath { get; }
+
+            public CopyTarget(FileInfo destination)
             {
-                public bool CanResume { get; }
-                public long ResumeOffset { get; }
-                public CopyResumeState? StateAtResume { get; }
-
-                public MinResumeDecision(bool canResume, long resumeOffset, CopyResumeState? stateAtResume)
-                {
-                    CanResume = canResume;
-                    ResumeOffset = resumeOffset;
-                    StateAtResume = stateAtResume;
-                }
-            }
-
-            /// <summary>
-            /// Choose resumeOffset = min(committedLength) across destinations.
-            /// Choose SHA1 state snapshot from a destination whose committedLength == that min.
-            /// Does NOT require destinations to have identical committed lengths; we normalize after selection.
-            /// </summary>
-            public static MinResumeDecision TryComputeMinCommittedResume(FileInfo source, CopyTarget[] targets, int bufferSize, bool computehash)
-            {
-                CopyResumeState[] states = new CopyResumeState[targets.Length];
-
-                long? minCommitted = null;
-
-                for (int i = 0; i < targets.Length; i++)
-                {
-                    var t = targets[i];
-
-                    if (!File.Exists(t.StatePath))
-                        return new MinResumeDecision(false, 0, null);
-
-                    var st = CopyResumeStateFile.TryRead(t.StatePath);
-                    if (st == null)
-                        return new MinResumeDecision(false, 0, null);
-
-                    // Validate source identity + parameters
-                    //if (st.BufferSize != bufferSize) return new MinResumeDecision(false, 0, null);
-                    // BufferSize does NOT affect resume correctness; it only affects throughput/behavior.
-                    // We keep it for observability but do not require it to match.
-
-                    if (st.SourceLength != source.Length) return new MinResumeDecision(false, 0, null);
-                    if (st.SourceLastWriteUtcTicks != source.LastWriteTimeUtc.Ticks) return new MinResumeDecision(false, 0, null);
-
-                    // Validate hash requirements
-                    if (computehash)
-                    {
-                        if (!st.HashEnabled) return new MinResumeDecision(false, 0, null);
-                        if (st.HashAlgorithmId != 1) return new MinResumeDecision(false, 0, null);
-                        if (st.Sha1StateBlob == null || st.Sha1StateBlob.Length == 0) return new MinResumeDecision(false, 0, null);
-                    }
-
-                    if (st.CommittedLength < 0) return new MinResumeDecision(false, 0, null);
-
-                    states[i] = st;
-
-                    minCommitted = minCommitted.HasValue ? Math.Min(minCommitted.Value, st.CommittedLength) : st.CommittedLength;
-                }
-
-                if (!minCommitted.HasValue || minCommitted.Value <= 0)
-                    return new MinResumeDecision(false, 0, null);
-
-                long min = minCommitted.Value;
-
-                // Find a state at exactly min committed length
-                // (There should always be at least one, by definition of min.)
-                CopyResumeState? chosen = null;
-                for (int i = 0; i < states.Length; i++)
-                {
-                    if (states[i].CommittedLength == min)
-                    {
-                        chosen = states[i];
-                        break;
-                    }
-                }
-
-                if (chosen == null)
-                    return new MinResumeDecision(false, 0, null);
-
-                // If hashing is required, ensure chosen has SHA1 state (already validated).
-                // Also sanity check state blob is structurally valid by attempting import into a throwaway SHA1.
-                if (computehash)
-                {
-                    try
-                    {
-                        var tmp = new Sha1Stateful();
-                        tmp.ImportState(chosen.Sha1StateBlob);
-                    }
-                    catch
-                    {
-                        return new MinResumeDecision(false, 0, null);
-                    }
-                }
-
-                return new MinResumeDecision(true, min, chosen);
+                Destination = destination ?? throw new ArgumentNullException(nameof(destination));
+                TempPath = destination.FullName + ".tmp";
+                StatePath = TempPath + ".state";
             }
         }
+
     }
+
     public class FileCopyProgress
     {
         public FileInfo? SourceFile { get; set; }
@@ -837,17 +1249,34 @@ namespace MDDFoundation
         public long FileSizeBytes { get; set; } //legacy - pulled automatically from SourceFile
         public string OperationDuring { get; set; } = "Copying";
         public string OperationComplete { get; set; } = "Copy";
+        public string? DiagnosticInfo { get; set; }
+        public string? DiagnosticSummary { get; set; }
         public byte[]? Hash { get; set; }
 
 
         public bool Overwrite { get; set; } = false;
         public CancellationToken Token { get; set; } = default;
         public bool MoveFile { get; set; } = false;
-        public bool ComputeHash { get; set; } = false;
+        public FileCopyHashMode HashMode { get; set; } = FileCopyHashMode.NoHash;
+        public bool ComputeHash
+        {
+            get => HashMode != FileCopyHashMode.NoHash;
+            set => HashMode = value ? FileCopyHashMode.FastNativeHashWithResumeReread : FileCopyHashMode.NoHash;
+        }
         public bool Resumable { get; set; } = true;
 
         public int BufferSize { get; set; } = 1024 * 1024; // 1MB
         public double MaxUsage { get; set; } = 1;
+        public int PipelineBufferCount { get; set; } = 8;
+        public int DestinationWriterCount { get; set; } = 1;
+        public long ChunkSizeBytes { get; set; } = 50L * 1024 * 1024;
+        public int ParallelChunks { get; set; } = 4;
+        public bool OrderedChunkWrites { get; set; } = false;
+        public bool VerifyChunkWrites { get; set; } = false;
+        public TimeSpan ChunkStateFlushInterval { get; set; } = TimeSpan.FromSeconds(5);
+        public bool FullFlushChunkState { get; set; } = false;
+        public bool PreallocateDestinationFiles { get; set; } = false;
+        public bool FullFlushOnCompletion { get; set; } = true;
 
         public DateTime StartTime { get; private set; }
         private Stopwatch? stopwatch = null;
@@ -926,12 +1355,15 @@ namespace MDDFoundation
             if (Queued)
                 return $"{OperationDuring} of {FileName} queued...";
             var p = PercentComplete;
-            if (p < 1)
+            var summary = string.IsNullOrWhiteSpace(DiagnosticSummary) ? "" : $" {{{DiagnosticSummary}}}";
+            if (p == 0)
+                return $"{OperationDuring} {FileName} - {Foundation.SizeDisplay(FileSizeBytes)}";
+            else if (p < 1)
                 return $"{OperationDuring} {FileName} - {p * 100:N1}% - {RateMBPerSec:N1}MB/s...";
             else if (IsCompleted)
-                return $"{OperationComplete} of {FileName} complete in {Stopwatch?.Elapsed} - {RateMBPerSec:N1}MB/s";
+                return $"{OperationComplete} of {FileName}{summary} complete in {Stopwatch?.Elapsed} - {RateMBPerSec:N1}MB/s";
             else
-                return $"{OperationComplete} of {FileName} finishing -  {Stopwatch?.Elapsed} - {RateMBPerSec:N1}MB/s";
+                return $"{OperationComplete} of {FileName}{summary} finishing -  {Stopwatch?.Elapsed} - {RateMBPerSec:N1}MB/s";
 
         }
     }
