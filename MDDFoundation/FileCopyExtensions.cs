@@ -27,7 +27,7 @@ namespace MDDFoundation
         // Public API
         // --------------------------------------------------------------------
 
-        public const string CopyToAsyncSequentialReadChunkedVersion = "CopyToAsyncSequentialReadChunked v0.4-fastsha1resume";
+        public const string CopyToAsyncSequentialReadChunkedVersion = "CopyToAsyncSequentialReadChunked v0.7-xxhash3";
         private const int FileRelayStreamBufferSize = 4096;
         private static readonly ConcurrentBag<byte[]> ChunkBufferPool = new ConcurrentBag<byte[]>();
 
@@ -70,7 +70,7 @@ namespace MDDFoundation
         ///   state = destination.FullName + ".tmp.chunks.state"
         ///
         /// Hashing:
-        /// - Completed chunks are tracked with SHA256 chunk hashes for resumability.
+        /// - Completed chunks are tracked with XxHash3 chunk hashes for resumability.
         /// - FileCopyProgress.Hash is the legacy SHA1(file) hash when requested.
         /// - FastNativeHashWithResumeReread uses platform SHA1 for the normal hot path and
         ///   rereads the source only if a resumed copy could not hash the whole file in one pass.
@@ -335,34 +335,30 @@ namespace MDDFoundation
                                 var chunkWritten = 0;
                                 var remaining = length;
 
-                                using var chunkSha = SHA256.Create();
+                                var chunkXxh = new System.IO.Hashing.XxHash3();
 
                                 while (remaining > 0)
                                 {
                                     var readSize = (int)Math.Min(scratch.Length, remaining);
+                                    var readBuf = chunkBuffer ?? scratch;
+                                    var readBufOffset = chunkBuffer != null ? chunkWritten : 0;
+
                                     var readTicks = Stopwatch.GetTimestamp();
-                                    var read = TimedRead(source, scratch, 0, readSize, copyCts.Token);
+                                    var read = TimedRead(source, readBuf, readBufOffset, readSize, copyCts.Token);
                                     diagnostics.AddRead(Stopwatch.GetTimestamp() - readTicks);
                                     if (read == 0) throw new EndOfStreamException("Unexpected end of file during sequential chunked copy.");
 
                                     var hashTicks = Stopwatch.GetTimestamp();
-                                    statefulWholeSha?.Update(scratch, 0, read);
-                                    nativeWholeSha?.TransformBlock(scratch, 0, read, null, 0);
-                                    chunkSha.TransformBlock(scratch, 0, read, null, 0);
+                                    statefulWholeSha?.Update(readBuf, readBufOffset, read);
+                                    nativeWholeSha?.TransformBlock(readBuf, readBufOffset, read, null, 0);
+                                    chunkXxh.Append(new ReadOnlySpan<byte>(readBuf, readBufOffset, read));
                                     diagnostics.AddHash(Stopwatch.GetTimestamp() - hashTicks);
 
                                     if (chunkBuffer != null)
-                                    {
-                                        Buffer.BlockCopy(scratch, 0, chunkBuffer, chunkWritten, read);
                                         chunkWritten += read;
-                                    }
 
                                     remaining -= read;
                                 }
-
-                                var finalHashTicks = Stopwatch.GetTimestamp();
-                                chunkSha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
-                                diagnostics.AddHash(Stopwatch.GetTimestamp() - finalHashTicks);
 
                                 if (statefulWholeSha != null && sha1StateAfterChunk != null)
                                 {
@@ -383,8 +379,9 @@ namespace MDDFoundation
                                         offset,
                                         chunkWritten,
                                         chunkBuffer,
-                                        chunkSha.Hash ?? Array.Empty<byte>()),
+                                        chunkXxh.GetHashAndReset()),
                                         copyCts.Token);
+                                    diagnostics.SamplePeakHeap();
                                 }
                             }
 
@@ -412,6 +409,16 @@ namespace MDDFoundation
                         workQueue.CompleteAdding();
                     }
                 }, copyCts.Token);
+
+                // Belt-and-suspenders: if the reader transitions to faulted/cancelled before its
+                // body's finally runs (JIT exception from a missing dependency, pre-execution
+                // cancellation, etc.) the workers would block forever on GetConsumingEnumerable.
+                // Make sure CompleteAdding fires no matter how the reader ends.
+                _ = readerTask.ContinueWith(
+                    _ => { try { workQueue.CompleteAdding(); } catch { } },
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
 
                 var workers = Enumerable.Range(0, Math.Min(copyprogress.ParallelChunks, Math.Max(1, totalChunks))).Select(_ => Task.Run(async () =>
                 {
@@ -442,6 +449,7 @@ namespace MDDFoundation
                             finally
                             {
                                 ReturnChunkBuffer(work.Buffer);
+                                diagnostics.SamplePeakHeap();
                             }
                         }
                     }
@@ -509,7 +517,10 @@ namespace MDDFoundation
 
                 if (copyprogress.MoveFile) copyprogress.SourceFile.Delete();
 
-                copyprogress.DiagnosticSummary = diagnostics.ToString();
+                var endHeapMiB = GC.GetTotalMemory(false) / 1024 / 1024;
+                var poolBuffers = ChunkBufferPool.ToArray();
+                var poolMiB = poolBuffers.Sum(b => (long)b.Length) / 1024 / 1024;
+                copyprogress.DiagnosticSummary = $"{diagnostics}; endHeap={endHeapMiB}MiB; pool={poolBuffers.Length}buf/{poolMiB}MiB";
                 copyprogress.IsCompleted = true;
                 copyprogress.Callback?.Invoke(copyprogress);
                 return copyprogress;
@@ -839,7 +850,7 @@ namespace MDDFoundation
                 {
                     foreach (var target in targets)
                     {
-                        var destHash = await ComputeRangeSha256Async(target.TempPath, offset, count, bufferSize, token).ConfigureAwait(false);
+                        var destHash = await ComputeRangeXxHash3Async(target.TempPath, offset, count, bufferSize, token).ConfigureAwait(false);
                         if (!expectedHash.SequenceEqual(destHash))
                             throw new IOException($"Chunk verification failed for '{target.Destination.FullName}' at offset {offset}.");
                     }
@@ -885,9 +896,9 @@ namespace MDDFoundation
             diagnostics.AddWrite(targetIndex, Stopwatch.GetTimestamp() - writeTicks);
         }
 
-        private static async Task<byte[]> ComputeRangeSha256Async(string path, long offset, long length, int bufferSize, CancellationToken token)
+        private static async Task<byte[]> ComputeRangeXxHash3Async(string path, long offset, long length, int bufferSize, CancellationToken token)
         {
-            using var sha = SHA256.Create();
+            var xxh = new System.IO.Hashing.XxHash3();
             var buffer = new byte[bufferSize];
             var remaining = length;
             using var source = new FileStream(
@@ -904,12 +915,11 @@ namespace MDDFoundation
                 token.ThrowIfCancellationRequested();
                 var read = await source.ReadAsync(buffer, 0, (int)Math.Min(buffer.Length, remaining), token).ConfigureAwait(false);
                 if (read == 0) throw new EndOfStreamException("Unexpected end of file during chunk verification.");
-                sha.TransformBlock(buffer, 0, read, null, 0);
+                xxh.Append(new ReadOnlySpan<byte>(buffer, 0, read));
                 remaining -= read;
             }
 
-            sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
-            return sha.Hash ?? Array.Empty<byte>();
+            return xxh.GetHashAndReset();
         }
 
         private static byte[] ComputeWholeFileSha1(string path, int bufferSize, CancellationToken token)
@@ -1047,6 +1057,7 @@ namespace MDDFoundation
             private long readTicks;
             private long hashTicks;
             private long flushTicks;
+            private long peakHeapBytes;
             private readonly long[] writeTicksByTarget;
 
             public ChunkedCopyDiagnostics(int targetCount)
@@ -1059,11 +1070,25 @@ namespace MDDFoundation
             public void AddFlush(long ticks) => Interlocked.Add(ref flushTicks, ticks);
             public void AddWrite(int targetIndex, long ticks) => Interlocked.Add(ref writeTicksByTarget[targetIndex], ticks);
 
+            public void SamplePeakHeap()
+            {
+                var current = GC.GetTotalMemory(false);
+                long previous;
+                do
+                {
+                    previous = Volatile.Read(ref peakHeapBytes);
+                    if (current <= previous) return;
+                } while (Interlocked.CompareExchange(ref peakHeapBytes, current, previous) != previous);
+            }
+
+            public long PeakHeapBytes => Volatile.Read(ref peakHeapBytes);
+
             public override string ToString()
             {
                 static double Seconds(long ticks) => ticks / (double)Stopwatch.Frequency;
                 var writes = string.Join(", ", writeTicksByTarget.Select((ticks, index) => $"w{index + 1}={Seconds(Volatile.Read(ref writeTicksByTarget[index])):N1}s"));
-                return $"read={Seconds(Volatile.Read(ref readTicks)):N1}s; hash={Seconds(Volatile.Read(ref hashTicks)):N1}s; {writes}; flush={Seconds(Volatile.Read(ref flushTicks)):N1}s";
+                var peakMiB = Volatile.Read(ref peakHeapBytes) / 1024 / 1024;
+                return $"read={Seconds(Volatile.Read(ref readTicks)):N1}s; hash={Seconds(Volatile.Read(ref hashTicks)):N1}s; {writes}; flush={Seconds(Volatile.Read(ref flushTicks)):N1}s; peakHeap={peakMiB}MiB";
             }
         }
 
@@ -1265,7 +1290,7 @@ namespace MDDFoundation
         }
         public bool Resumable { get; set; } = true;
 
-        public int BufferSize { get; set; } = 1024 * 1024; // 1MB
+        public int BufferSize { get; set; } = 1024 * 1024 * 4; // 4MB
         public double MaxUsage { get; set; } = 1;
         public int PipelineBufferCount { get; set; } = 8;
         public int DestinationWriterCount { get; set; } = 1;
@@ -1356,8 +1381,9 @@ namespace MDDFoundation
                 return $"{OperationDuring} of {FileName} queued...";
             var p = PercentComplete;
             var summary = string.IsNullOrWhiteSpace(DiagnosticSummary) ? "" : $" {{{DiagnosticSummary}}}";
+            var info = string.IsNullOrWhiteSpace(DiagnosticInfo) ? "" : $" [{DiagnosticInfo}]";
             if (p == 0)
-                return $"{OperationDuring} {FileName} - {Foundation.SizeDisplay(FileSizeBytes)}";
+                return $"{OperationDuring} {FileName} - {Foundation.SizeDisplay(FileSizeBytes)}{info}";
             else if (p < 1)
                 return $"{OperationDuring} {FileName} - {p * 100:N1}% - {RateMBPerSec:N1}MB/s...";
             else if (IsCompleted)
