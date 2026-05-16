@@ -27,7 +27,7 @@ namespace MDDFoundation
         // Public API
         // --------------------------------------------------------------------
 
-        public const string CopyToAsyncSequentialReadChunkedVersion = "CopyToAsyncSequentialReadChunked v0.7-xxhash3";
+        public const string CopyToAsyncSequentialReadChunkedVersion = "CopyToAsyncSequentialReadChunked v0.9-hashpipeline";
         private const int FileRelayStreamBufferSize = 4096;
         private static readonly ConcurrentBag<byte[]> ChunkBufferPool = new ConcurrentBag<byte[]>();
 
@@ -80,12 +80,16 @@ namespace MDDFoundation
         ///   Hash empty rather than rereading an expensive source.
         ///
         /// Implementation note:
-        /// - The copy workers intentionally use synchronous FileStream reads/writes inside
-        ///   Task.Run workers. In testing, .NET Framework 4.8 async FileStream writes over SMB
-        ///   were consistently below line speed, while synchronous writes from the same process
-        ///   matched robocopy/CopyFileEx behavior. .NET 8 async FileStream did not show the same
-        ///   SMB penalty, but MDDFoundation is still used by .NET Framework callers, so this method
-        ///   keeps the sync I/O path as the shared default.
+        /// - Three-stage pipeline running on dedicated threads:
+        ///     reader (sync source I/O) -> hasher (SHA1 + per-chunk XxHash3) -> workers
+        ///     (sync destination writes). Each stage processes chunks in order. Bounded
+        ///     BlockingCollections between stages give backpressure.
+        /// - All I/O is synchronous. On .NET Framework 4.8, async FileStream over SMB
+        ///   consistently under-performs sync I/O (we measured both reads and writes losing
+        ///   30-50% throughput). Sync I/O matches robocopy/CopyFileEx behavior. .NET 8 async
+        ///   I/O doesn't have the same penalty, but this code is shared with .NET Framework
+        ///   callers so sync is the default for both runtimes; the pipeline gets its
+        ///   read/hash/write overlap from thread-level parallelism instead.
         /// </summary>
         public static Task<FileCopyProgress> CopyToAsync(
             this FileInfo file,
@@ -145,7 +149,7 @@ namespace MDDFoundation
             var arch = RuntimeInformation.ProcessArchitecture;
             var hashMode = copyprogress.HashMode;
             var computeHash = hashMode != FileCopyHashMode.NoHash;
-            copyprogress.DiagnosticInfo = $"{CopyToAsyncSequentialReadChunkedVersion}; runtime={runtime}; arch={arch}; io=sync; chunk={copyprogress.ChunkSizeBytes / 1024 / 1024}MiB; parallel={copyprogress.ParallelChunks}; buffer={copyprogress.BufferSize / 1024}KiB; queuedChunks={copyprogress.PipelineBufferCount}; streamBuffer={FileRelayStreamBufferSize / 1024}KiB; stateFlush={copyprogress.ChunkStateFlushInterval.TotalSeconds:N0}s; fullStateFlush={copyprogress.FullFlushChunkState}; verify={copyprogress.VerifyChunkWrites}; hashMode={hashMode}";
+            copyprogress.DiagnosticInfo = $"{CopyToAsyncSequentialReadChunkedVersion}; runtime={runtime}; arch={arch}; io=sync; pipeline=read+hash+write; chunk={copyprogress.ChunkSizeBytes / 1024 / 1024}MiB; parallel={copyprogress.ParallelChunks}; buffer={copyprogress.BufferSize / 1024}KiB; queuedChunks={copyprogress.PipelineBufferCount}; streamBuffer={FileRelayStreamBufferSize / 1024}KiB; stateFlush={copyprogress.ChunkStateFlushInterval.TotalSeconds:N0}s; fullStateFlush={copyprogress.FullFlushChunkState}; verify={copyprogress.VerifyChunkWrites}; hashMode={hashMode}";
 
             if (copyprogress.Destinations.Any(d => d == null)) throw new ArgumentException("copyprogress.Destinations contains a null entry.", nameof(copyprogress.Destinations));
             var dup = copyprogress.Destinations.GroupBy(d => d.FullName, StringComparer.OrdinalIgnoreCase).FirstOrDefault(g => g.Count() > 1);
@@ -175,6 +179,7 @@ namespace MDDFoundation
             var chunkDone = new bool[totalChunks];
             var stateFlushTimer = Stopwatch.StartNew();
             var diagnostics = new ChunkedCopyDiagnostics(targets.Length);
+            var hashQueue = new BlockingCollection<HashWork>(copyprogress.PipelineBufferCount);
             var workQueue = new BlockingCollection<SequentialChunkWork>(copyprogress.PipelineBufferCount);
             byte[] finalWholeHash = Array.Empty<byte>();
             byte[]? sha1ResumeState = null;
@@ -280,10 +285,11 @@ namespace MDDFoundation
 
                 using var copyCts = CancellationTokenSource.CreateLinkedTokenSource(copyprogress.Token);
 
-                // One source reader keeps remote-source copies friendly: no competing range reads
-                // against an SMB/NAS source, and the whole-file SHA1 can be computed during that
-                // same pass. The bounded BlockingCollection provides backpressure when any
-                // destination is slower than the source.
+                // Three-stage pipeline: reader (sync source I/O) -> hasher (SHA1 + per-chunk
+                // XxHash3) -> workers (sync destination writes). Each stage runs on its own
+                // thread, so the wall-clock cost is the slowest stage rather than the sum.
+                // Bounded BlockingCollections between stages provide backpressure when any
+                // downstream stage falls behind the source.
                 var readerTask = Task.Run(() =>
                 {
                     try
@@ -296,10 +302,63 @@ namespace MDDFoundation
                             copyprogress.BufferSize,
                             FileOptions.SequentialScan);
 
+                        // When the stateful resume mode pre-loaded a partial SHA1 state into the
+                        // hasher, skip past the chunks whose state is already captured.
+                        var firstChunkIndex = 0;
+                        if (computeHash && hashMode == FileCopyHashMode.SlowStatefulHashForWanResume
+                            && sha1ResumeChunkCount > 0 && sha1ResumeState != null)
+                        {
+                            firstChunkIndex = sha1ResumeChunkCount;
+                            source.Seek(ChunkOffset(firstChunkIndex, copyprogress.ChunkSizeBytes), SeekOrigin.Begin);
+                        }
+
+                        for (int chunkIndex = firstChunkIndex; chunkIndex < totalChunks; chunkIndex++)
+                        {
+                            copyCts.Token.ThrowIfCancellationRequested();
+                            var offset = ChunkOffset(chunkIndex, copyprogress.ChunkSizeBytes);
+                            var length = ChunkLength(chunkIndex, copyprogress.FileSizeBytes, copyprogress.ChunkSizeBytes);
+                            var kept = !chunkDone[chunkIndex];
+
+                            // Always rent a buffer: the hasher needs the bytes even for
+                            // already-done chunks when SHA1 is being computed.
+                            var chunkBuffer = RentChunkBuffer(checked((int)length));
+                            var totalRead = 0;
+                            while (totalRead < length)
+                            {
+                                var readSize = (int)Math.Min(copyprogress.BufferSize, length - totalRead);
+                                var readTicks = Stopwatch.GetTimestamp();
+                                var n = source.Read(chunkBuffer, totalRead, readSize);
+                                diagnostics.AddRead(Stopwatch.GetTimestamp() - readTicks);
+                                if (n == 0) throw new EndOfStreamException("Unexpected end of file during sequential chunked copy.");
+                                totalRead += n;
+                            }
+
+                            hashQueue.Add(new HashWork(chunkIndex, offset, totalRead, chunkBuffer, kept), copyCts.Token);
+                            diagnostics.SamplePeakHeap();
+                        }
+                    }
+                    finally
+                    {
+                        hashQueue.CompleteAdding();
+                    }
+                }, copyCts.Token);
+
+                // Belt-and-suspenders: if the reader transitions to faulted/cancelled before its
+                // body's finally runs (JIT exception, pre-execution cancellation, etc.) the hasher
+                // would block forever on GetConsumingEnumerable. Make sure CompleteAdding fires
+                // no matter how the reader ends.
+                _ = readerTask.ContinueWith(
+                    _ => { try { hashQueue.CompleteAdding(); } catch { } },
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+
+                var hasherTask = Task.Run(() =>
+                {
+                    try
+                    {
                         Sha1Stateful? statefulWholeSha = null;
                         HashAlgorithm? nativeWholeSha = null;
-                        var scratch = new byte[copyprogress.BufferSize];
-                        var firstChunkIndex = 0;
 
                         if (computeHash)
                         {
@@ -307,15 +366,9 @@ namespace MDDFoundation
                             {
                                 statefulWholeSha = new Sha1Stateful();
                                 if (sha1ResumeChunkCount > 0 && sha1ResumeState != null)
-                                {
                                     statefulWholeSha.ImportState(sha1ResumeState);
-                                    firstChunkIndex = sha1ResumeChunkCount;
-                                    source.Seek(ChunkOffset(firstChunkIndex, copyprogress.ChunkSizeBytes), SeekOrigin.Begin);
-                                }
                                 else
-                                {
                                     statefulWholeSha.Reset();
-                                }
                             }
                             else if (hashMode == FileCopyHashMode.FastNativeHashWithResumeReread ||
                                      (hashMode == FileCopyHashMode.NoHashOnResume && copyprogress.BytesStart == 0))
@@ -326,62 +379,39 @@ namespace MDDFoundation
 
                         try
                         {
-                            for (int chunkIndex = firstChunkIndex; chunkIndex < totalChunks; chunkIndex++)
+                            foreach (var hw in hashQueue.GetConsumingEnumerable(copyCts.Token))
                             {
-                                copyCts.Token.ThrowIfCancellationRequested();
-                                var offset = ChunkOffset(chunkIndex, copyprogress.ChunkSizeBytes);
-                                var length = ChunkLength(chunkIndex, copyprogress.FileSizeBytes, copyprogress.ChunkSizeBytes);
-                                var chunkBuffer = chunkDone[chunkIndex] ? null : RentChunkBuffer(checked((int)length));
-                                var chunkWritten = 0;
-                                var remaining = length;
+                                var hashTicks = Stopwatch.GetTimestamp();
+                                statefulWholeSha?.Update(hw.Buffer, 0, hw.Count);
+                                nativeWholeSha?.TransformBlock(hw.Buffer, 0, hw.Count, null, 0);
 
-                                var chunkXxh = new System.IO.Hashing.XxHash3();
-
-                                while (remaining > 0)
+                                if (hw.Kept)
                                 {
-                                    var readSize = (int)Math.Min(scratch.Length, remaining);
-                                    var readBuf = chunkBuffer ?? scratch;
-                                    var readBufOffset = chunkBuffer != null ? chunkWritten : 0;
-
-                                    var readTicks = Stopwatch.GetTimestamp();
-                                    var read = TimedRead(source, readBuf, readBufOffset, readSize, copyCts.Token);
-                                    diagnostics.AddRead(Stopwatch.GetTimestamp() - readTicks);
-                                    if (read == 0) throw new EndOfStreamException("Unexpected end of file during sequential chunked copy.");
-
-                                    var hashTicks = Stopwatch.GetTimestamp();
-                                    statefulWholeSha?.Update(readBuf, readBufOffset, read);
-                                    nativeWholeSha?.TransformBlock(readBuf, readBufOffset, read, null, 0);
-                                    chunkXxh.Append(new ReadOnlySpan<byte>(readBuf, readBufOffset, read));
+                                    var chunkXxh = new System.IO.Hashing.XxHash3();
+                                    chunkXxh.Append(new ReadOnlySpan<byte>(hw.Buffer, 0, hw.Count));
+                                    var chunkHash = chunkXxh.GetHashAndReset();
                                     diagnostics.AddHash(Stopwatch.GetTimestamp() - hashTicks);
 
-                                    if (chunkBuffer != null)
-                                        chunkWritten += read;
-
-                                    remaining -= read;
+                                    workQueue.Add(new SequentialChunkWork(hw.ChunkIndex, hw.Offset, hw.Count, hw.Buffer, chunkHash), copyCts.Token);
+                                    diagnostics.SamplePeakHeap();
+                                }
+                                else
+                                {
+                                    diagnostics.AddHash(Stopwatch.GetTimestamp() - hashTicks);
+                                    // Already-done chunk: workers don't need it, return the buffer to the pool.
+                                    ReturnChunkBuffer(hw.Buffer);
                                 }
 
                                 if (statefulWholeSha != null && sha1StateAfterChunk != null)
                                 {
-                                    sha1StateAfterChunk[chunkIndex] = statefulWholeSha.ExportState();
-                                    if (chunkDone[chunkIndex])
+                                    sha1StateAfterChunk[hw.ChunkIndex] = statefulWholeSha.ExportState();
+                                    if (chunkDone[hw.ChunkIndex])
                                     {
                                         lock (stateLock)
                                         {
                                             UpdateSha1PrefixState();
                                         }
                                     }
-                                }
-
-                                if (chunkBuffer != null)
-                                {
-                                    workQueue.Add(new SequentialChunkWork(
-                                        chunkIndex,
-                                        offset,
-                                        chunkWritten,
-                                        chunkBuffer,
-                                        chunkXxh.GetHashAndReset()),
-                                        copyCts.Token);
-                                    diagnostics.SamplePeakHeap();
                                 }
                             }
 
@@ -410,11 +440,7 @@ namespace MDDFoundation
                     }
                 }, copyCts.Token);
 
-                // Belt-and-suspenders: if the reader transitions to faulted/cancelled before its
-                // body's finally runs (JIT exception from a missing dependency, pre-execution
-                // cancellation, etc.) the workers would block forever on GetConsumingEnumerable.
-                // Make sure CompleteAdding fires no matter how the reader ends.
-                _ = readerTask.ContinueWith(
+                _ = hasherTask.ContinueWith(
                     _ => { try { workQueue.CompleteAdding(); } catch { } },
                     CancellationToken.None,
                     TaskContinuationOptions.ExecuteSynchronously,
@@ -460,7 +486,7 @@ namespace MDDFoundation
                     }
                 }, copyCts.Token)).ToArray();
 
-                await Task.WhenAll(workers.Concat(new[] { readerTask })).ConfigureAwait(false);
+                await Task.WhenAll(workers.Concat(new[] { readerTask, hasherTask })).ConfigureAwait(false);
 
                 if (computeHash &&
                     finalWholeHash.Length == 0 &&
@@ -534,6 +560,7 @@ namespace MDDFoundation
             }
             finally
             {
+                hashQueue.Dispose();
                 workQueue.Dispose();
 
                 if (!toolatetocancel && !copyprogress.Resumable)
@@ -865,12 +892,6 @@ namespace MDDFoundation
             }
         }
 
-        private static int TimedRead(FileStream stream, byte[] buffer, int offset, int count, CancellationToken token)
-        {
-            token.ThrowIfCancellationRequested();
-            return stream.Read(buffer, offset, count);
-        }
-
         private static byte[] RentChunkBuffer(int minimumLength)
         {
             while (ChunkBufferPool.TryTake(out var buffer))
@@ -1108,6 +1129,24 @@ namespace MDDFoundation
             public int Count { get; }
             public byte[] Buffer { get; }
             public byte[] Hash { get; }
+        }
+
+        private sealed class HashWork
+        {
+            public HashWork(int chunkIndex, long offset, int count, byte[] buffer, bool kept)
+            {
+                ChunkIndex = chunkIndex;
+                Offset = offset;
+                Count = count;
+                Buffer = buffer;
+                Kept = kept;
+            }
+
+            public int ChunkIndex { get; }
+            public long Offset { get; }
+            public int Count { get; }
+            public byte[] Buffer { get; }
+            public bool Kept { get; }
         }
 
         private static class ChunkedCopyStateFile
