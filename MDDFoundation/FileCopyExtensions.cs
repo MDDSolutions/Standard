@@ -73,36 +73,6 @@ namespace MDDFoundation
         }
 
         /// <summary>
-        /// Single-destination overload (wraps multicast).
-        /// </summary>
-        /// 
-        public static Task<FileCopyProgress> CopyToAsync(
-            this FileInfo file,
-            FileInfo destination,
-            bool overwrite,
-            CancellationToken token,
-            bool MoveFile = false,
-            Action<FileCopyProgress>? progresscallback = null,
-            TimeSpan progressreportinterval = default,
-            bool computehash = false,
-            bool resumable = true,
-            int bufferSize = 1024 * 1024,
-            double maxUsage = 1)
-        {
-            return file.CopyToAsync(
-                [destination],
-                overwrite,
-                token,
-                MoveFile,
-                progresscallback,
-                progressreportinterval,
-                computehash,
-                resumable,
-                bufferSize,
-                maxUsage);
-        }
-
-        /// <summary>
         /// Multicast resumable copy. The source is read once, sequentially, while chunks are written
         /// to all destinations with bounded parallelism.
         ///
@@ -140,9 +110,9 @@ namespace MDDFoundation
             bool MoveFile = false,
             Action<FileCopyProgress>? progresscallback = null,
             TimeSpan progressreportinterval = default,
-            bool computehash = false,
+            FileCopyHashMode hashmode = FileCopyHashMode.FastNativeHashWithResumeReread,
             bool resumable = true,
-            int bufferSize = 1024 * 1024, // 1MB
+            FileCopyProfile profile = FileCopyProfile.Auto,
             double maxUsage = 1)
         {
             var copyprogress = new FileCopyProgress
@@ -155,13 +125,115 @@ namespace MDDFoundation
                 Overwrite = overwrite,
                 Token = token,
                 MoveFile = MoveFile,
-                HashMode = computehash ? FileCopyHashMode.FastNativeHashWithResumeReread : FileCopyHashMode.NoHash,
+                HashMode = hashmode,
                 Resumable = resumable,
-                BufferSize = bufferSize,
+                Profile = profile,
                 MaxUsage = maxUsage
             };
             return CopyToAsync(copyprogress);
         }
+
+        /// <summary>
+        /// Single-destination overload (wraps multicast).
+        /// </summary>
+        /// 
+        public static Task<FileCopyProgress> CopyToAsync(
+            this FileInfo file,
+            FileInfo destination,
+            bool overwrite,
+            CancellationToken token,
+            bool MoveFile = false,
+            Action<FileCopyProgress>? progresscallback = null,
+            TimeSpan progressreportinterval = default,
+            FileCopyHashMode hashmode = FileCopyHashMode.FastNativeHashWithResumeReread,
+            bool resumable = true,
+            FileCopyProfile profile = FileCopyProfile.Auto,
+            double maxUsage = 1)
+        {
+            var copyprogress = new FileCopyProgress
+            {
+                FileName = file.Name,
+                Callback = progresscallback,
+                ProgressReportInterval = progressreportinterval,
+                SourceFile = file,
+                Destinations = [destination],
+                Overwrite = overwrite,
+                Token = token,
+                MoveFile = MoveFile,
+                HashMode = hashmode,
+                Resumable = resumable,
+                Profile = profile,
+                MaxUsage = maxUsage
+            };
+            return CopyToAsync(copyprogress);
+        }
+
+
+
+
+        /// <summary>
+        /// DEPRECATED - use FileCopyHashMode and FileCopyProfile parameters instead
+        /// </summary>
+        /// 
+        //public static Task<FileCopyProgress> CopyToAsync(
+        //    this FileInfo file,
+        //    FileInfo destination,
+        //    bool overwrite,
+        //    CancellationToken token,
+        //    bool MoveFile = false,
+        //    Action<FileCopyProgress>? progresscallback = null,
+        //    TimeSpan progressreportinterval = default,
+        //    bool computehash = false,
+        //    bool resumable = true,
+        //    int bufferSize = 1024 * 1024,
+        //    double maxUsage = 1)
+        //{
+        //    return file.CopyToAsync(
+        //        [destination],
+        //        overwrite,
+        //        token,
+        //        MoveFile,
+        //        progresscallback,
+        //        progressreportinterval,
+        //        computehash,
+        //        resumable,
+        //        bufferSize,
+        //        maxUsage);
+        //}
+
+        /// <summary>
+        /// DEPRECATED - use FileCopyHashMode and FileCopyProfile parameters instead
+        /// </summary>
+        //public static Task<FileCopyProgress> CopyToAsync(
+        //    this FileInfo file,
+        //    FileInfo[] destinations,
+        //    bool overwrite,
+        //    CancellationToken token,
+        //    bool MoveFile = false,
+        //    Action<FileCopyProgress>? progresscallback = null,
+        //    TimeSpan progressreportinterval = default,
+        //    bool computehash = false,
+        //    bool resumable = true,
+        //    int bufferSize = 1024 * 1024, // 1MB
+        //    double maxUsage = 1)
+        //{
+        //    var copyprogress = new FileCopyProgress
+        //    {
+        //        FileName = file.Name,
+        //        Callback = progresscallback,
+        //        ProgressReportInterval = progressreportinterval,
+        //        SourceFile = file,
+        //        Destinations = destinations,
+        //        Overwrite = overwrite,
+        //        Token = token,
+        //        MoveFile = MoveFile,
+        //        HashMode = computehash ? FileCopyHashMode.FastNativeHashWithResumeReread : FileCopyHashMode.NoHash,
+        //        Resumable = resumable,
+        //        BufferSize = bufferSize,
+        //        MaxUsage = maxUsage
+        //    };
+        //    return CopyToAsync(copyprogress);
+        //}
 
         public static Task<FileCopyProgress> CopyToAsync(FileCopyProgress copyprogress)
         {
