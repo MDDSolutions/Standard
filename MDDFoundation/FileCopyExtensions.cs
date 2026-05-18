@@ -21,15 +21,56 @@ namespace MDDFoundation
         NoHashOnResume = 3
     }
 
+    /// <summary>
+    /// Selects how <see cref="FileCopyExtensions.CopyToAsyncSequentialReadChunked"/> picks
+    /// BufferSize, ChunkSizeBytes, ParallelChunks, and PipelineBufferCount.
+    ///
+    /// All values except <see cref="Manual"/> overwrite whatever those knobs are set to on
+    /// <see cref="FileCopyProgress"/>. <see cref="Manual"/> leaves them alone.
+    /// <see cref="Auto"/> inspects the source and destination paths and picks one of the
+    /// four concrete profiles below.
+    /// </summary>
+    public enum FileCopyProfile
+    {
+        /// <summary>Caller-supplied knobs win; nothing is auto-tuned.</summary>
+        Manual = 0,
+
+        /// <summary>Inspect source/destination paths and pick a concrete profile.</summary>
+        Auto = 1,
+
+        /// <summary>Local source, all local destinations. Minimal buffering.</summary>
+        LocalCopy = 2,
+
+        /// <summary>Remote source, all local destinations. Larger reads, single writer.</summary>
+        Download = 3,
+
+        /// <summary>Local source, at least one remote destination. Parallel writers.</summary>
+        Upload = 4,
+
+        /// <summary>Remote source, at least one remote destination. Large reads + parallel writers.</summary>
+        RemoteToRemote = 5,
+    }
+
     public static class FileCopyExtensions
     {
         // --------------------------------------------------------------------
         // Public API
         // --------------------------------------------------------------------
 
-        public const string CopyToAsyncSequentialReadChunkedVersion = "CopyToAsyncSequentialReadChunked v0.9-hashpipeline";
+        public const string CopyToAsyncSequentialReadChunkedVersion = "CopyToAsyncSequentialReadChunked v0.10-profiles";
         private const int FileRelayStreamBufferSize = 4096;
+        private const long MaxChunkedCopyEstimatedMemoryBytes64Bit = 800L * 1024 * 1024;
+        private const long MaxChunkedCopyEstimatedMemoryBytes32Bit = 384L * 1024 * 1024;
+        private const long MaxChunkBufferPoolBytes64Bit = 256L * 1024 * 1024;
+        private const long MaxChunkBufferPoolBytes32Bit = 96L * 1024 * 1024;
         private static readonly ConcurrentBag<byte[]> ChunkBufferPool = new ConcurrentBag<byte[]>();
+        private static long ChunkBufferPoolBytes;
+
+        public static void ClearChunkBufferPool()
+        {
+            while (ChunkBufferPool.TryTake(out var buffer))
+                Interlocked.Add(ref ChunkBufferPoolBytes, -buffer.Length);
+        }
 
         /// <summary>
         /// Single-destination overload (wraps multicast).
@@ -136,22 +177,31 @@ namespace MDDFoundation
 
             if (copyprogress.Destinations == null) throw new ArgumentNullException(nameof(copyprogress.Destinations));
             if (copyprogress.Destinations.Length == 0) throw new ArgumentException("At least one destination is required.", nameof(copyprogress.Destinations));
+            if (copyprogress.Destinations.Any(d => d == null)) throw new ArgumentException("copyprogress.Destinations contains a null entry.", nameof(copyprogress.Destinations));
             if (!copyprogress.SourceFile.Exists) throw new IOException($"Source file {copyprogress.SourceFile.FullName} does not exist");
 
             copyprogress.FileSizeBytes = copyprogress.SourceFile.Length;
+
+            // Resolve and apply the profile. Manual leaves caller-supplied knobs alone; everything
+            // else (including Auto, which detects from the paths) overwrites them.
+            var resolvedProfile = FileCopyProfileResolver.Resolve(copyprogress.Profile, copyprogress.SourceFile, copyprogress.Destinations);
+            if (resolvedProfile != FileCopyProfile.Manual)
+                FileCopyProfileResolver.Apply(resolvedProfile, copyprogress);
+            copyprogress.ResolvedProfile = resolvedProfile;
+
+            // Safety floors — only fire in Manual mode if the caller forgot to set something.
             if (copyprogress.BufferSize <= 0) copyprogress.BufferSize = 1024 * 1024;
-            if (copyprogress.ChunkSizeBytes <= 0) copyprogress.ChunkSizeBytes = 50L * 1024 * 1024;
-            if (copyprogress.ParallelChunks <= 0) copyprogress.ParallelChunks = 4;
-            if (copyprogress.PipelineBufferCount <= 0) copyprogress.PipelineBufferCount = Math.Max(1, copyprogress.ParallelChunks);
+            if (copyprogress.ChunkSizeBytes <= 0) copyprogress.ChunkSizeBytes = 32L * 1024 * 1024;
+            if (copyprogress.ParallelChunks <= 0) copyprogress.ParallelChunks = 1;
+            if (copyprogress.PipelineBufferCount <= 0) copyprogress.PipelineBufferCount = 2;
             if (copyprogress.ProgressReportInterval == default) copyprogress.ProgressReportInterval = TimeSpan.FromSeconds(1);
+            GuardChunkedCopyEstimatedMemory(copyprogress);
 
             var runtime = RuntimeInformation.FrameworkDescription.Replace(";", ",");
             var arch = RuntimeInformation.ProcessArchitecture;
             var hashMode = copyprogress.HashMode;
             var computeHash = hashMode != FileCopyHashMode.NoHash;
-            copyprogress.DiagnosticInfo = $"{CopyToAsyncSequentialReadChunkedVersion}; runtime={runtime}; arch={arch}; io=sync; pipeline=read+hash+write; chunk={copyprogress.ChunkSizeBytes / 1024 / 1024}MiB; parallel={copyprogress.ParallelChunks}; buffer={copyprogress.BufferSize / 1024}KiB; queuedChunks={copyprogress.PipelineBufferCount}; streamBuffer={FileRelayStreamBufferSize / 1024}KiB; stateFlush={copyprogress.ChunkStateFlushInterval.TotalSeconds:N0}s; fullStateFlush={copyprogress.FullFlushChunkState}; verify={copyprogress.VerifyChunkWrites}; hashMode={hashMode}";
-
-            if (copyprogress.Destinations.Any(d => d == null)) throw new ArgumentException("copyprogress.Destinations contains a null entry.", nameof(copyprogress.Destinations));
+            copyprogress.DiagnosticInfo = $"{CopyToAsyncSequentialReadChunkedVersion}; runtime={runtime}; arch={arch}; profile={resolvedProfile}; io=sync; pipeline=read+hash+write; chunk={copyprogress.ChunkSizeBytes / 1024 / 1024}MiB; parallel={copyprogress.ParallelChunks}; buffer={copyprogress.BufferSize / 1024}KiB; queuedChunks={copyprogress.PipelineBufferCount}; streamBuffer={FileRelayStreamBufferSize / 1024}KiB; stateFlush={copyprogress.ChunkStateFlushInterval.TotalSeconds:N0}s; fullStateFlush={copyprogress.FullFlushChunkState}; verify={copyprogress.VerifyChunkWrites}; hashMode={hashMode}";
             var dup = copyprogress.Destinations.GroupBy(d => d.FullName, StringComparer.OrdinalIgnoreCase).FirstOrDefault(g => g.Count() > 1);
             if (dup != null) throw new ArgumentException($"Duplicate destination path: {dup.Key}", nameof(copyprogress.Destinations));
 
@@ -572,6 +622,9 @@ namespace MDDFoundation
                         SafeDeleteFile(ChunkedCopyStatePath(target));
                     }
                 }
+
+                if (copyprogress.ReleaseChunkBuffersOnCompletion)
+                    ClearChunkBufferPool();
             }
         }
 
@@ -737,6 +790,80 @@ namespace MDDFoundation
                 return true;
             }
         }
+
+        private static void GuardChunkedCopyEstimatedMemory(FileCopyProgress copyprogress)
+        {
+            TrimChunkBufferPoolToBudget(GetMaxChunkBufferPoolBytes());
+
+            var limitBytes = GetMaxChunkedCopyEstimatedMemoryBytes();
+            var estimatedBytes = EstimateChunkedCopyMemoryBytes(
+                copyprogress.ChunkSizeBytes,
+                copyprogress.ParallelChunks,
+                copyprogress.PipelineBufferCount,
+                copyprogress.BufferSize,
+                copyprogress.Destinations?.Length ?? 0);
+
+            if (estimatedBytes <= limitBytes)
+                return;
+
+            var chunkBuffers = EstimateChunkBufferCount(copyprogress.ParallelChunks, copyprogress.PipelineBufferCount);
+            throw new ArgumentOutOfRangeException(
+                nameof(copyprogress),
+                $"CopyToAsyncSequentialReadChunked estimated peak buffer memory is {FormatMiB(estimatedBytes)}, above the guard limit of {FormatMiB(limitBytes)} for a {(Environment.Is64BitProcess ? "64-bit" : "32-bit")} process. " +
+                $"Parameters: ChunkSizeBytes={copyprogress.ChunkSizeBytes:N0}, ParallelChunks={copyprogress.ParallelChunks}, PipelineBufferCount={copyprogress.PipelineBufferCount}, BufferSize={copyprogress.BufferSize:N0}, Profile={copyprogress.ResolvedProfile}, RetainedPool={FormatMiB(Interlocked.Read(ref ChunkBufferPoolBytes))}. " +
+                $"Estimated chunk buffers = (2 * PipelineBufferCount + ParallelChunks + 2) = {chunkBuffers}. Reduce ChunkSizeBytes, ParallelChunks, or PipelineBufferCount.");
+        }
+
+        private static long GetMaxChunkedCopyEstimatedMemoryBytes()
+        {
+            return Environment.Is64BitProcess
+                ? MaxChunkedCopyEstimatedMemoryBytes64Bit
+                : MaxChunkedCopyEstimatedMemoryBytes32Bit;
+        }
+
+        private static long GetMaxChunkBufferPoolBytes()
+        {
+            return Environment.Is64BitProcess
+                ? MaxChunkBufferPoolBytes64Bit
+                : MaxChunkBufferPoolBytes32Bit;
+        }
+
+        private static long EstimateChunkedCopyMemoryBytes(long chunkSizeBytes, int parallelChunks, int pipelineBufferCount, int bufferSize, int destinationCount)
+        {
+            if (chunkSizeBytes <= 0 || parallelChunks <= 0 || pipelineBufferCount <= 0)
+                return 0;
+
+            try
+            {
+                checked
+                {
+                    var chunkBuffers = EstimateChunkBufferCount(parallelChunks, pipelineBufferCount);
+                    var chunkBytes = chunkBuffers * chunkSizeBytes;
+                    var streamBytes = Math.Max(0, bufferSize) + (long)Math.Max(0, destinationCount) * FileRelayStreamBufferSize;
+                    return chunkBytes + streamBytes;
+                }
+            }
+            catch (OverflowException)
+            {
+                return long.MaxValue;
+            }
+        }
+
+        private static long EstimateChunkBufferCount(int parallelChunks, int pipelineBufferCount)
+        {
+            checked
+            {
+                return 2L * pipelineBufferCount + parallelChunks + 2;
+            }
+        }
+
+        private static string FormatMiB(long bytes)
+        {
+            if (bytes == long.MaxValue)
+                return "more than 8,796,093,022,207 MiB";
+
+            return $"{bytes / 1024.0 / 1024.0:N0} MiB";
+        }
         public static bool IsImmutable(this FileEntry fe)
         {
             var fi = new FileInfo(fe.FullName);
@@ -896,6 +1023,7 @@ namespace MDDFoundation
         {
             while (ChunkBufferPool.TryTake(out var buffer))
             {
+                Interlocked.Add(ref ChunkBufferPoolBytes, -buffer.Length);
                 if (buffer.Length >= minimumLength)
                     return buffer;
             }
@@ -905,8 +1033,33 @@ namespace MDDFoundation
 
         private static void ReturnChunkBuffer(byte[] buffer)
         {
-            if (buffer.Length > 0)
+            if (buffer.Length <= 0)
+                return;
+
+            // During an active copy the pool is allowed to grow up to the per-copy memory
+            // ceiling so workers don't starve while cycling buffers in and out. Between copies
+            // TrimChunkBufferPoolToBudget snips it back to the smaller MaxChunkBufferPool budget.
+            var inFlightLimit = GetMaxChunkedCopyEstimatedMemoryBytes();
+            if (buffer.Length > inFlightLimit)
+                return;
+
+            var newPoolBytes = Interlocked.Add(ref ChunkBufferPoolBytes, buffer.Length);
+            if (newPoolBytes <= inFlightLimit)
+            {
                 ChunkBufferPool.Add(buffer);
+                return;
+            }
+
+            Interlocked.Add(ref ChunkBufferPoolBytes, -buffer.Length);
+        }
+
+        private static void TrimChunkBufferPoolToBudget(long budgetBytes)
+        {
+            while (Interlocked.Read(ref ChunkBufferPoolBytes) > budgetBytes &&
+                   ChunkBufferPool.TryTake(out var buffer))
+            {
+                Interlocked.Add(ref ChunkBufferPoolBytes, -buffer.Length);
+            }
         }
 
         private static void TimedWrite(FileStream stream, byte[] buffer, int offset, int count, CancellationToken token, ChunkedCopyDiagnostics diagnostics, int targetIndex)
@@ -1322,6 +1475,16 @@ namespace MDDFoundation
         public CancellationToken Token { get; set; } = default;
         public bool MoveFile { get; set; } = false;
         public FileCopyHashMode HashMode { get; set; } = FileCopyHashMode.NoHash;
+
+        /// <summary>
+        /// Selects how the chunked copy picks its tuning knobs. Defaults to <see cref="FileCopyProfile.Auto"/>,
+        /// which inspects the source/destination paths. Set to <see cref="FileCopyProfile.Manual"/> to keep
+        /// caller-supplied BufferSize / ChunkSizeBytes / ParallelChunks / PipelineBufferCount values.
+        /// </summary>
+        public FileCopyProfile Profile { get; set; } = FileCopyProfile.Auto;
+
+        /// <summary>The concrete profile that was actually applied. Populated by the copy method.</summary>
+        public FileCopyProfile ResolvedProfile { get; set; } = FileCopyProfile.Manual;
         public bool ComputeHash
         {
             get => HashMode != FileCopyHashMode.NoHash;
@@ -1341,6 +1504,7 @@ namespace MDDFoundation
         public bool FullFlushChunkState { get; set; } = false;
         public bool PreallocateDestinationFiles { get; set; } = false;
         public bool FullFlushOnCompletion { get; set; } = true;
+        public bool ReleaseChunkBuffersOnCompletion { get; set; } = false;
 
         public DateTime StartTime { get; private set; }
         private Stopwatch? stopwatch = null;
