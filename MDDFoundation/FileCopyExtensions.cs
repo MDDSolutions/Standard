@@ -680,6 +680,12 @@ namespace MDDFoundation
                 copyprogress.Callback?.Invoke(copyprogress);
                 throw;
             }
+            catch (Exception ex)
+            {
+                copyprogress.SetError(ex);
+                copyprogress.Callback?.Invoke(copyprogress);
+                throw;
+            }
             finally
             {
                 hashQueue.Dispose();
@@ -830,6 +836,12 @@ namespace MDDFoundation
             {
                 copyprogress.Cancelled = true;
                 copyprogress.IsCompleted = false;
+                copyprogress.Callback?.Invoke(copyprogress);
+                throw;
+            }
+            catch (Exception ex)
+            {
+                copyprogress.SetError(ex);
                 copyprogress.Callback?.Invoke(copyprogress);
                 throw;
             }
@@ -1593,6 +1605,32 @@ namespace MDDFoundation
         public bool Cancelled { get; set; } = false;
         public bool IsCompleted { get; set; } = false;
         public bool IncompleteButNotError { get; set; } = false;
+        public Exception? ErrorException { get; private set; }
+        public string? ErrorMessage { get; private set; }
+        public bool HasError => ErrorException != null;
+
+        public void SetError(Exception exception)
+        {
+            ErrorException = exception ?? throw new ArgumentNullException(nameof(exception));
+            ErrorMessage = BuildErrorMessage(exception);
+            IsCompleted = false;
+        }
+
+        private static string BuildErrorMessage(Exception exception)
+        {
+            var message = exception.Message;
+            var inner = exception.InnerException;
+            while (inner != null)
+            {
+                if (!string.IsNullOrWhiteSpace(inner.Message) &&
+                    !string.Equals(message, inner.Message, StringComparison.Ordinal))
+                    message += $" -> {inner.Message}";
+
+                inner = inner.InnerException;
+            }
+
+            return message;
+        }
 
 
         //integrated callback - added 2025-10-28 for AzureTransferCoordinator
@@ -1650,13 +1688,15 @@ namespace MDDFoundation
         }
         public override string ToString()
         {
+            var summary = string.IsNullOrWhiteSpace(DiagnosticSummary) ? "" : $" {{{DiagnosticSummary}}}";
+            var info = string.IsNullOrWhiteSpace(DiagnosticInfo) ? "" : $" [{DiagnosticInfo}]";
             if (Cancelled)
                 return $"{OperationDuring} of {FileName} cancelled";
+            if (HasError)
+                return $"{OperationComplete} of {FileName} failed: {ErrorMessage}{info}";
             if (Queued)
                 return $"{OperationDuring} of {FileName} queued...";
             var p = PercentComplete;
-            var summary = string.IsNullOrWhiteSpace(DiagnosticSummary) ? "" : $" {{{DiagnosticSummary}}}";
-            var info = string.IsNullOrWhiteSpace(DiagnosticInfo) ? "" : $" [{DiagnosticInfo}]";
             if (p == 0)
                 return $"{OperationDuring} {FileName} - {Foundation.SizeDisplay(FileSizeBytes)}{info}";
             else if (p < 1)

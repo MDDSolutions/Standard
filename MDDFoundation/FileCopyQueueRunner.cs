@@ -331,6 +331,12 @@ namespace MDDFoundation
                     {
                         // Prefer the FileCopyProgress object to carry the failure state,
                         // but still make noise if the underlying method throws.
+                        if (job.CopyProgress != null && !job.CopyProgress.HasError)
+                        {
+                            job.CopyProgress.SetError(ex);
+                            InvokeSafely(() => job.CopyProgress.Callback?.Invoke(job.CopyProgress), "FileCopyProgress.Callback", job.CopyProgress);
+                        }
+
                         ReportListenerException(
                             new Exception($"Unhandled exception while copying '{job.CopyProgress?.SourceFile?.FullName}'.", ex));
                     }
