@@ -37,7 +37,8 @@ namespace MDDFoundation
         const string defaultfilename = "ConfigurationSettings.xml";
         public void Save()
         {
-            using (Stream stream = File.Create(FullFileName(FileName)))
+            var fullname = FullFileName(FileName);
+            using (Stream stream = File.Create(fullname))
             {
                 XmlSerializer ser = new XmlSerializer(this.GetType());
                 ser.Serialize(stream, this);
@@ -122,7 +123,37 @@ namespace MDDFoundation
             // If it's not rooted (relative or just a bare filename), resolve it next to the app
             if (!Path.IsPathRooted(filename))
             {
-                var baseDir = AppContext.BaseDirectory; // works in single-file too
+                var baseDir = AppContext.BaseDirectory;
+                var currentDir = baseDir;
+
+                // Walk up the directory tree looking for the config file
+                while (currentDir != null)
+                {
+                    try
+                    {
+                        var testPath = Path.Combine(currentDir, filename);
+                        if (File.Exists(testPath))
+                        {
+                            return testPath;
+                        }
+
+                        // Move to parent directory
+                        var parent = Directory.GetParent(currentDir);
+                        currentDir = parent?.FullName;
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                        // Hit a permission issue, stop searching
+                        break;
+                    }
+                    catch (IOException)
+                    {
+                        // Other I/O error, stop searching
+                        break;
+                    }
+                }
+
+                // File not found in any parent directory, return path in base directory
                 return Path.Combine(baseDir, filename);
             }
 
