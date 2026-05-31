@@ -874,6 +874,10 @@ namespace MDDFoundation
                 return true;
             }
         }
+        public static Task<bool> IsImmutableAsync(this FileInfo fi)
+        {
+            return Task.Run(fi.IsImmutable);
+        }
 
         private static void GuardChunkedCopyEstimatedMemory(FileCopyProgress copyprogress)
         {

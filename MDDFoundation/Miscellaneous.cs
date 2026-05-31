@@ -1084,6 +1084,10 @@ namespace MDDFoundation
                 throw;
             }
         }
+        public static Task<long> GetFreeSpaceAsync(string path)
+        {
+            return Task.Run(() => GetFreeSpace(path));
+        }
         public static DateTime BuildTime() => BuildTime(Assembly.GetExecutingAssembly());
 
         public static DateTime BuildTime(Assembly assembly)
