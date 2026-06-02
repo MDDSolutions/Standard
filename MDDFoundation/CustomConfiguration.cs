@@ -255,9 +255,9 @@ namespace MDDFoundation
                 filename = defaultfilename;
             }
 
-            var appBaseDirectory = NormalizeDirectory(AppContext.BaseDirectory);
-            var layout = ResolveAppLayout(appBaseDirectory);
-            var appRootDirectory = layout.appRootDirectory;
+            var appPaths = FoundationAppPaths.Current;
+            var appBaseDirectory = appPaths.AppBaseDirectory;
+            var appRootDirectory = appPaths.AppRootDirectory;
             var configDirectory = Path.Combine(appRootDirectory, options.ConfigDirectoryName);
             var format = ResolveFormat(filename, options.Format);
             var fullFileName = Path.IsPathRooted(filename)
@@ -265,7 +265,9 @@ namespace MDDFoundation
                 : Path.GetFullPath(Path.Combine(configDirectory, filename));
 
             return new CustomConfigurationPathInfo(filename, fullFileName, appBaseDirectory, appRootDirectory,
-                configDirectory, layout.appLayout, format);
+                configDirectory, appPaths.IsLauncherManaged
+                    ? CustomConfigurationAppLayout.LauncherVersionDirectory
+                    : CustomConfigurationAppLayout.Normal, format);
         }
 
         internal static JsonSerializerOptions CreateDefaultJsonOptions()
@@ -506,42 +508,6 @@ namespace MDDFoundation
         {
             return string.Equals(extension, ".xml", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(extension, ".json", StringComparison.OrdinalIgnoreCase);
-        }
-
-        static (string appRootDirectory, CustomConfigurationAppLayout appLayout) ResolveAppLayout(string appBaseDirectory)
-        {
-            var baseDir = new DirectoryInfo(appBaseDirectory);
-            var versionsDir = baseDir.Parent;
-            var appRootDir = versionsDir?.Parent;
-
-            if (versionsDir != null
-                && appRootDir != null
-                && string.Equals(versionsDir.Name, "versions", StringComparison.OrdinalIgnoreCase)
-                && !IsPathRootDirectory(appRootDir.FullName))
-            {
-                return (NormalizeDirectory(appRootDir.FullName), CustomConfigurationAppLayout.LauncherVersionDirectory);
-            }
-
-            return (appBaseDirectory, CustomConfigurationAppLayout.Normal);
-        }
-
-        static bool IsPathRootDirectory(string path)
-        {
-            var fullPath = NormalizeDirectory(path);
-            var root = Path.GetPathRoot(fullPath);
-            return !string.IsNullOrWhiteSpace(root)
-                && string.Equals(TrimDirectorySeparators(fullPath), TrimDirectorySeparators(root),
-                    StringComparison.OrdinalIgnoreCase);
-        }
-
-        static string NormalizeDirectory(string path)
-        {
-            return Path.GetFullPath(path);
-        }
-
-        static string TrimDirectorySeparators(string path)
-        {
-            return path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         }
 
         static bool IsConfigurationParseException(Exception ex)
