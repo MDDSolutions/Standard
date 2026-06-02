@@ -16,7 +16,9 @@ namespace MDDFoundation
             AppBaseDirectory = appBaseDirectory;
             AppRootDirectory = appRootDirectory;
             AppLayout = appLayout;
-            ConfigDirectory = Path.Combine(appRootDirectory, "config");
+            ConfigDirectory = appLayout == FoundationAppLayout.LauncherVersionDirectory
+                ? Path.Combine(appRootDirectory, "config")
+                : appBaseDirectory;
             LogDirectory = appLayout == FoundationAppLayout.LauncherVersionDirectory
                 ? Path.Combine(appRootDirectory, "logs")
                 : appBaseDirectory;
@@ -61,7 +63,11 @@ namespace MDDFoundation
             }
 
             var paths = Current;
-            return Path.GetFullPath(Path.Combine(paths.AppRootDirectory, configDirectoryName, fileName));
+            var configDirectory = paths.IsLauncherManaged
+                ? Path.Combine(paths.AppRootDirectory, configDirectoryName)
+                : paths.AppBaseDirectory;
+
+            return Path.GetFullPath(Path.Combine(configDirectory, fileName));
         }
 
         public static string ResolveLogFile(string fileName)

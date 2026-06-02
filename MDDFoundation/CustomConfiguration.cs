@@ -258,7 +258,9 @@ namespace MDDFoundation
             var appPaths = FoundationAppPaths.Current;
             var appBaseDirectory = appPaths.AppBaseDirectory;
             var appRootDirectory = appPaths.AppRootDirectory;
-            var configDirectory = Path.Combine(appRootDirectory, options.ConfigDirectoryName);
+            var configDirectory = appPaths.IsLauncherManaged
+                ? Path.Combine(appRootDirectory, options.ConfigDirectoryName)
+                : appBaseDirectory;
             var format = ResolveFormat(filename, options.Format);
             var fullFileName = Path.IsPathRooted(filename)
                 ? Path.GetFullPath(filename)
