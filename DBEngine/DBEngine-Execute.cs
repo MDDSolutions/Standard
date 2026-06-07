@@ -106,7 +106,7 @@ namespace MDDDataAccess
             catch (Exception ex)
             {
                 if (LogErrors) LogError(cmd, start, ex);
-                throw ex;
+                throw;
             }
         }
         private async Task<SqlDataReader> ExecuteReaderAsync(SqlCommand cmd, CancellationToken token, CommandBehavior behavior = default)
