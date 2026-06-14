@@ -1,4 +1,5 @@
 ﻿using System;
+using MDDFoundation;
 using System.ComponentModel;
 using System.IO;
 using System.Net.Sockets;
@@ -77,37 +78,11 @@ namespace MDDNetComm
         internal static SemaphoreSlim mutex = new SemaphoreSlim(1, 1);
         internal static void Log(string LogStr, bool Initialize = false)
         {
-            DirectoryInfo logfiledir = (new FileInfo(System.Reflection.Assembly.GetExecutingAssembly().Location)).Directory;
-            string CurLogFile = Path.Combine(logfiledir.FullName, "NetComm_log.txt");
-            bool Finished = false;
-            bool WriteHeader = !File.Exists(CurLogFile) || LogStr == "";
-            if (!WriteHeader && Initialize)
-            {
-                File.Delete(CurLogFile);
-                WriteHeader = true;
-            }
-            while (!Finished)
-            {
-                try
-                {
-                    using (StreamWriter writer = File.AppendText(CurLogFile))
-                    {
-                        if (WriteHeader)
-                            writer.WriteLine(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.FFF") + " -- NetComm Log File");
-                        if (LogStr != "")
-                            writer.WriteLine(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.FFF") + " -- " + LogStr);
-                    }
-                    Finished = true;
-                }
-                catch (Exception ex)
-                {
-                    if (ex.Message.Contains("because it is being used by another process"))
-                        Thread.Sleep(50);
-                    else
-                        throw ex;
-                }
-
-            }
+            const string logFileName = "NetComm_log.txt";
+            if (Initialize || !File.Exists(Foundation.LogFileFullName(logFileName)) || LogStr == "")
+                Foundation.Log("NetComm Log File", Initialize, logFileName);
+            if (LogStr != "")
+                Foundation.Log(LogStr, false, logFileName);
         }
         //public static void SynchronizedInvoke(this ISynchronizeInvoke sync, Action action)
         //{

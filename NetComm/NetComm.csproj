@@ -5,4 +5,8 @@
     <RootNamespace>MDDNetComm</RootNamespace>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\MDDFoundation\MDDFoundation.csproj" />
+  </ItemGroup>
+
 </Project>
