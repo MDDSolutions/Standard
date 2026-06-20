@@ -33,7 +33,7 @@ namespace MDDDataAccess
                         }
                         catch (Exception ex)
                         {
-                            throw ex;
+                            throw;
                         }
                     }
                 }
@@ -93,7 +93,7 @@ namespace MDDDataAccess
                         }
                         catch (Exception ex)
                         {
-                            throw ex;
+                            throw;
                         }
                     }
                 }
@@ -161,7 +161,7 @@ namespace MDDDataAccess
                         }
                         catch (Exception ex)
                         {
-                            throw ex;
+                            throw;
                         }
                     }
                 }
@@ -300,7 +300,7 @@ namespace MDDDataAccess
                         }
                         catch (Exception ex)
                         {
-                            throw ex;
+                            throw;
                         }
                     }
                 }
@@ -413,7 +413,7 @@ namespace MDDDataAccess
                         }
                         catch (Exception ex)
                         {
-                            throw ex;
+                            throw;
                         }
                     }
                 }
@@ -479,7 +479,7 @@ namespace MDDDataAccess
                         }
                         catch (Exception ex)
                         {
-                            throw ex;
+                            throw;
                         }
                     }
                 }
@@ -541,7 +541,7 @@ namespace MDDDataAccess
                         }
                         catch (Exception ex)
                         {
-                            throw ex;
+                            throw;
                         }
                     }
                 }
@@ -590,7 +590,7 @@ namespace MDDDataAccess
                         }
                         catch (Exception ex)
                         {
-                            throw ex;
+                            throw;
                         }
                     }
                 }
@@ -712,7 +712,7 @@ namespace MDDDataAccess
                         }
                         catch (Exception ex)
                         {
-                            throw ex;
+                            throw;
                         }
                     }
                 }
@@ -766,7 +766,7 @@ namespace MDDDataAccess
                         }
                         catch (Exception ex)
                         {
-                            throw ex;
+                            throw;
                         }
                     }
                 }
@@ -832,7 +832,7 @@ namespace MDDDataAccess
                         }
                         catch (Exception ex)
                         {
-                            throw ex;
+                            throw;
                         }
                     }
                 }
@@ -898,7 +898,7 @@ namespace MDDDataAccess
                         }
                         catch (Exception ex)
                         {
-                            throw ex;
+                            throw;
                         }
                     }
                 }
@@ -961,7 +961,7 @@ namespace MDDDataAccess
                         }
                         catch (Exception ex)
                         {
-                            throw ex;
+                            throw;
                         }
                     }
                 }
@@ -1007,7 +1007,7 @@ namespace MDDDataAccess
                         catch (Exception ex)
                         {
                             DBEngine.PrintExecStatement(cmd);
-                            throw ex;
+                            throw;
                         }
                     }
                 }
@@ -1061,7 +1061,7 @@ namespace MDDDataAccess
                         }
                         catch (Exception ex)
                         {
-                            throw ex;
+                            throw;
                         }
                     }
                 }
@@ -1123,7 +1123,7 @@ namespace MDDDataAccess
                         }
                         catch (Exception ex)
                         {
-                            throw ex;
+                            throw;
                         }
                     }
                 }
