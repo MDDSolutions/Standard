@@ -1,4 +1,4 @@
-﻿using MDDFoundation;
+using MDDFoundation;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;

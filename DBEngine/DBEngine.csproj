@@ -6,7 +6,7 @@
 	<Deterministic>false</Deterministic>
 	  
 	<LangVersion>latestMajor</LangVersion>
-	<Nullable>enable</Nullable>
+	<Nullable>annotations</Nullable>
 	<ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 

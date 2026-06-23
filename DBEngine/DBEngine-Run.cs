@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Data;
@@ -31,7 +31,7 @@ namespace MDDDataAccess
                         {
                             await ExecuteNonQueryAsync(cmd, CancellationToken).ConfigureAwait(false);
                         }
-                        catch (Exception ex)
+                        catch (Exception)
                         {
                             throw;
                         }
@@ -91,7 +91,7 @@ namespace MDDDataAccess
                         {
                             ExecuteNonQuery(cmd);
                         }
-                        catch (Exception ex)
+                        catch (Exception)
                         {
                             throw;
                         }
@@ -159,7 +159,7 @@ namespace MDDDataAccess
                                 progresscallback(progress);
                             }
                         }
-                        catch (Exception ex)
+                        catch (Exception)
                         {
                             throw;
                         }
@@ -298,7 +298,7 @@ namespace MDDDataAccess
                                 progresscallback(progress);
                             }
                         }
-                        catch (Exception ex)
+                        catch (Exception)
                         {
                             throw;
                         }
@@ -411,7 +411,7 @@ namespace MDDDataAccess
                             }
                             return l;
                         }
-                        catch (Exception ex)
+                        catch (Exception)
                         {
                             throw;
                         }
@@ -477,7 +477,7 @@ namespace MDDDataAccess
                                 }
                             }
                         }
-                        catch (Exception ex)
+                        catch (Exception)
                         {
                             throw;
                         }
@@ -539,7 +539,7 @@ namespace MDDDataAccess
                                 }
                             }
                         }
-                        catch (Exception ex)
+                        catch (Exception)
                         {
                             throw;
                         }
@@ -588,7 +588,7 @@ namespace MDDDataAccess
                             }
                             await Task.WhenAll(tasks.Where(x => x != null).Select(x => x.Item2)).ConfigureAwait(false);
                         }
-                        catch (Exception ex)
+                        catch (Exception)
                         {
                             throw;
                         }
@@ -710,7 +710,7 @@ namespace MDDDataAccess
                                 }
                             }
                         }
-                        catch (Exception ex)
+                        catch (Exception)
                         {
                             throw;
                         }
@@ -764,7 +764,7 @@ namespace MDDDataAccess
                                 }
                             }
                         }
-                        catch (Exception ex)
+                        catch (Exception)
                         {
                             throw;
                         }
@@ -830,7 +830,7 @@ namespace MDDDataAccess
                             }
                             return h;
                         }
-                        catch (Exception ex)
+                        catch (Exception)
                         {
                             throw;
                         }
@@ -896,7 +896,7 @@ namespace MDDDataAccess
                             }
                             return h;
                         }
-                        catch (Exception ex)
+                        catch (Exception)
                         {
                             throw;
                         }
@@ -959,7 +959,7 @@ namespace MDDDataAccess
                             }
                             return l;
                         }
-                        catch (Exception ex)
+                        catch (Exception)
                         {
                             throw;
                         }
@@ -1004,7 +1004,7 @@ namespace MDDDataAccess
                                 }
                             }
                         }
-                        catch (Exception ex)
+                        catch (Exception)
                         {
                             DBEngine.PrintExecStatement(cmd);
                             throw;
@@ -1059,7 +1059,7 @@ namespace MDDDataAccess
                                 while (rdr.NextResult()) { while (rdr.Read()) { } }
                             }
                         }
-                        catch (Exception ex)
+                        catch (Exception)
                         {
                             throw;
                         }
@@ -1121,7 +1121,7 @@ namespace MDDDataAccess
                                 }
                             }
                         }
-                        catch (Exception ex)
+                        catch (Exception)
                         {
                             throw;
                         }

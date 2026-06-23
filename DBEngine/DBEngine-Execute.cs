@@ -1,4 +1,4 @@
-﻿using MDDFoundation;
+using MDDFoundation;
 using System;
 using System.Collections;
 using System.Collections.Concurrent;
@@ -122,7 +122,7 @@ namespace MDDDataAccess
             catch (Exception ex)
             {
                 if (LogErrors) LogError(cmd, start, ex);
-                throw ex;
+                throw;
             }
         }
         private async Task ExecuteNonQueryAsync(SqlCommand cmd, CancellationToken token)
@@ -136,7 +136,7 @@ namespace MDDDataAccess
             catch (Exception ex)
             {
                 if (LogErrors) LogError(cmd, start, ex);
-                throw ex;
+                throw;
             }
         }
         private void PostExecution(SqlCommand cmd, int start)
@@ -166,7 +166,7 @@ namespace MDDDataAccess
             catch (Exception ex)
             {
                 if (LogErrors) LogError(cmd, start, ex);
-                throw ex;
+                throw;
             }
         }
         private void LogError(SqlCommand cmd, int start, Exception ex)
@@ -192,7 +192,7 @@ namespace MDDDataAccess
             catch (Exception ex)
             {
                 if (LogErrors) LogError(cmd, start, ex);
-                throw ex;
+                throw;
             }
         }
         private async Task<object> ExecuteScalarAsync(SqlCommand cmd, CancellationToken token)
@@ -207,7 +207,7 @@ namespace MDDDataAccess
             catch (Exception ex)
             {
                 if (LogErrors) LogError(cmd, start, ex);
-                throw ex;
+                throw;
             }
         }
         private string Debugcmd(SqlCommand cmd, int elapsed)
@@ -234,7 +234,7 @@ namespace MDDDataAccess
         public int Elapsed { get; set; }
         public static byte CalculateSeverity(int elapsed)
         {
-            double k = 200.0 / Math.Log(301.0); // ≈ 35.044
+            double k = 200.0 / Math.Log(301.0); // � 35.044
             double severity = k * Math.Log(1 + elapsed / 100.0);
             return (byte)Math.Min(255, Math.Floor(severity));
         }

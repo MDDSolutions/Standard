@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Data;
 using System.Reflection;
 using System.Collections;
@@ -84,9 +84,9 @@ namespace MDDDataAccess
 
                             return l;
                         }
-                        catch (Exception ex)
+                        catch (Exception)
                         {
-                            throw ex;
+                            throw;
                         }
                     }
                 }

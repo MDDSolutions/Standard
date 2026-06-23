@@ -1,4 +1,4 @@
-﻿using Microsoft.SqlServer.Server;
+using Microsoft.SqlServer.Server;
 using System;
 using System.Collections;
 using System.Collections.Concurrent;
@@ -425,10 +425,10 @@ namespace MDDDataAccess
                 Console.WriteLine(str);
                 return str;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 if (suppresserror) return $"EXEC {cmd.CommandText} -- could not generate parameter list";
-                throw ex;
+                throw;
             }
         }
         public static string PrintSqlValue(object obj)

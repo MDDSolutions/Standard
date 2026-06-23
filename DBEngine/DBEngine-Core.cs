@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Data;
@@ -128,7 +128,7 @@ namespace MDDDataAccess
                 if (ex.Message.StartsWith("A network-related or instance-specific error occurred while establishing a connection to SQL Server"))
                     throw new Exception($"Unable to connect to {connectionstring.DataSource}");
                 else
-                    throw ex;
+                    throw;
             }
         }
         public async Task<SqlConnection> GetConnectionAsync(CancellationToken CancellationToken, int ConnectionTimeout = -1, string ApplicationName = null)
@@ -178,7 +178,7 @@ namespace MDDDataAccess
                 if (ex.Message.StartsWith("A network-related or instance-specific error occurred while establishing a connection to SQL Server"))
                     throw new Exception($"Unable to connect to {connectionstring.DataSource}");
                 else
-                    throw ex;
+                    throw;
             }
         }
         public SqlConnection GetConnection(int ConnectionTimeout = -1, string ApplicationName = null)
@@ -238,9 +238,9 @@ namespace MDDDataAccess
 	                        SELECT '@' + c.name AS name, CAST(c.default_object_id AS BIT) AS has_default_value, c.is_identity, t.name AS type_name, c.max_length, c.precision, c.scale FROM sys.columns c JOIN sys.types t ON t.user_type_id = c.system_type_id WHERE OBJECT_ID = @id;",
                     false, -1, null, new SqlParameter("@procname", procname));
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                throw ex;
+                throw;
             }
             finally
             {
