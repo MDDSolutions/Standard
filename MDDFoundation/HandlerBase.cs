@@ -60,6 +60,10 @@ namespace MDDFoundation
         public T LoadedObject => Value;
         public bool ValidAndActive => IsActive;
     }
+    /// <summary>
+    /// Deprecated interface for loading items, to be replaced by HandlerBase<T> and GenericHandler<T>
+    /// </summary>
+    /// <typeparam name="T"></typeparam>
     public interface ILoader<T>
     {
         string LoaderType { get; }
