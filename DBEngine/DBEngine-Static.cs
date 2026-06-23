@@ -55,31 +55,34 @@ namespace MDDDataAccess
             connectionstring.Password = password;
             DefaultApplicationName = appname;
         }
-        [DebuggerBrowsable(DebuggerBrowsableState.Never)]
-        private static string applicationkey = "aYX9HMj~xHlw+0Q";
-        public static string EncryptConnectionString(string connectionstring, string userkey)
-        {
-            return Crypto.Encrypt(connectionstring, applicationkey + userkey);
-        }
-        public static DBEngine NewSecureInstance(string encryptedconnectionstring, string userkey, string inDefaultAppName)
-        {
-            var db = new DBEngine();
-            db.SecureMode = true;
-            db.SetConnectionString(Crypto.Decrypt(encryptedconnectionstring, applicationkey + userkey));
-            db.DefaultApplicationName = inDefaultAppName;
-            return db;
-        }
-        public DBEngine(string server, string database, string user, string encryptedpassword, string userkey, string appname)
-        {
-            var pw = Crypto.Decrypt(encryptedpassword, applicationkey + userkey);
-            SecureMode = true;
-            connectionstring = new SqlConnectionStringBuilder();
-            connectionstring.DataSource = server;
-            connectionstring.InitialCatalog = database;
-            connectionstring.UserID = user;
-            connectionstring.Password = pw;
-            DefaultApplicationName = appname;
-        }
+
+        //2026-06-23 - deprecated/removed with Crypto - nothing is using this...
+
+        //[DebuggerBrowsable(DebuggerBrowsableState.Never)]
+        //private static string applicationkey = "aYX9HMj~xHlw+0Q";
+        //public static string EncryptConnectionString(string connectionstring, string userkey)
+        //{
+        //    return Crypto.Encrypt(connectionstring, applicationkey + userkey);
+        //}
+        //public static DBEngine NewSecureInstance(string encryptedconnectionstring, string userkey, string inDefaultAppName)
+        //{
+        //    var db = new DBEngine();
+        //    db.SecureMode = true;
+        //    db.SetConnectionString(Crypto.Decrypt(encryptedconnectionstring, applicationkey + userkey));
+        //    db.DefaultApplicationName = inDefaultAppName;
+        //    return db;
+        //}
+        //public DBEngine(string server, string database, string user, string encryptedpassword, string userkey, string appname)
+        //{
+        //    var pw = Crypto.Decrypt(encryptedpassword, applicationkey + userkey);
+        //    SecureMode = true;
+        //    connectionstring = new SqlConnectionStringBuilder();
+        //    connectionstring.DataSource = server;
+        //    connectionstring.InitialCatalog = database;
+        //    connectionstring.UserID = user;
+        //    connectionstring.Password = pw;
+        //    DefaultApplicationName = appname;
+        //}
         public static DBEngine NewTrustedConnection(string server, string database, string inDefaultAppName)
         {
             var db = new DBEngine();
