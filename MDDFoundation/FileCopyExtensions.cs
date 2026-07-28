@@ -455,9 +455,31 @@ namespace MDDFoundation
                                 totalRead += n;
                             }
 
-                            hashQueue.Add(new HashWork(chunkIndex, offset, totalRead, chunkBuffer, kept), copyCts.Token);
+                            var queued = false;
+                            try
+                            {
+                                hashQueue.Add(
+                                    new HashWork(
+                                        chunkIndex,
+                                        offset,
+                                        totalRead,
+                                        chunkBuffer,
+                                        kept),
+                                    copyCts.Token);
+                                queued = true;
+                            }
+                            finally
+                            {
+                                if (!queued)
+                                    ReturnChunkBuffer(chunkBuffer);
+                            }
                             diagnostics.SamplePeakHeap();
                         }
+                    }
+                    catch (OperationCanceledException)
+                        when (copyCts.IsCancellationRequested)
+                    {
+                        // Cancellation is reported once by the outer copy operation.
                     }
                     finally
                     {
@@ -514,7 +536,24 @@ namespace MDDFoundation
                                     var chunkHash = chunkXxh.GetHashAndReset();
                                     diagnostics.AddHash(Stopwatch.GetTimestamp() - hashTicks);
 
-                                    workQueue.Add(new SequentialChunkWork(hw.ChunkIndex, hw.Offset, hw.Count, hw.Buffer, chunkHash), copyCts.Token);
+                                    var queued = false;
+                                    try
+                                    {
+                                        workQueue.Add(
+                                            new SequentialChunkWork(
+                                                hw.ChunkIndex,
+                                                hw.Offset,
+                                                hw.Count,
+                                                hw.Buffer,
+                                                chunkHash),
+                                            copyCts.Token);
+                                        queued = true;
+                                    }
+                                    finally
+                                    {
+                                        if (!queued)
+                                            ReturnChunkBuffer(hw.Buffer);
+                                    }
                                     diagnostics.SamplePeakHeap();
                                 }
                                 else
@@ -555,6 +594,11 @@ namespace MDDFoundation
                         {
                             nativeWholeSha?.Dispose();
                         }
+                    }
+                    catch (OperationCanceledException)
+                        when (copyCts.IsCancellationRequested)
+                    {
+                        // Cancellation is reported once by the outer copy operation.
                     }
                     finally
                     {
@@ -600,6 +644,11 @@ namespace MDDFoundation
                                 diagnostics.SamplePeakHeap();
                             }
                         }
+                    }
+                    catch (OperationCanceledException)
+                        when (copyCts.IsCancellationRequested)
+                    {
+                        // Cancellation is reported once by the outer copy operation.
                     }
                     catch
                     {
@@ -688,6 +737,11 @@ namespace MDDFoundation
             }
             finally
             {
+                while (hashQueue.TryTake(out var abandonedHashWork))
+                    ReturnChunkBuffer(abandonedHashWork.Buffer);
+                while (workQueue.TryTake(out var abandonedSequentialWork))
+                    ReturnChunkBuffer(abandonedSequentialWork.Buffer);
+
                 hashQueue.Dispose();
                 workQueue.Dispose();
 
