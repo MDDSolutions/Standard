@@ -341,17 +341,26 @@ namespace MDDDataAccess
         }
         public static SqlParameter GetParameter(Expression<Func<object?>> expression)
         {
-            string name;
-            if (expression.Body is MemberExpression)
+            var body = expression.Body;
+            while (body is UnaryExpression unaryExpression &&
+                   (body.NodeType == ExpressionType.Convert || body.NodeType == ExpressionType.ConvertChecked))
             {
-               name = ((MemberExpression)expression.Body).Member.Name;
+                body = unaryExpression.Operand;
             }
-            else
-            {
-                var op = ((UnaryExpression)expression.Body).Operand;
-                name = ((MemberExpression)op).Member.Name;
-            }
-            return new SqlParameter($"@{name}", expression.Compile().DynamicInvoke());
+
+            if (!(body is MemberExpression memberExpression))
+                throw new ArgumentException("The parameter expression must select a field or property.", nameof(expression));
+
+            var value = expression.Compile().DynamicInvoke();
+            var parameter = new SqlParameter($"@{memberExpression.Member.Name}", value ?? DBNull.Value);
+
+            // SqlParameter cannot infer a useful type from null/DBNull and defaults to
+            // NVarChar. Preserve normal runtime-value inference, but use the declared
+            // member type when no value is available.
+            if (value == null && TryGetSqlType(memberExpression.Type, out var sqlDbType))
+                parameter.SqlDbType = sqlDbType;
+
+            return parameter;
         }
         public static string PrintExecStatement(SqlCommand cmd, bool suppresserror = false)
         {

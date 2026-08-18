@@ -37,40 +37,45 @@ namespace MDDDataAccess
         }
         public static SqlDbType GetSqlType(Type type)
         {
-            switch (type)
-            {
-                case Type t when t == typeof(string):
-                    return SqlDbType.VarChar;
-                case Type t when t == typeof(long) || t == typeof(long?):
-                    return SqlDbType.BigInt;
-                case Type t when t == typeof(byte[]):
-                    return SqlDbType.Binary;
-                case Type t when t == typeof(bool) || t == typeof(bool?):
-                    return SqlDbType.Bit;
-                case Type t when t == typeof(DateTime) || t == typeof(DateTime?):
-                    return SqlDbType.DateTime;
-                case Type t when t == typeof(decimal) || t == typeof(decimal?):
-                    return SqlDbType.Decimal;
-                case Type t when t == typeof(int) || t == typeof(int?):
-                    return SqlDbType.Int;
-                case Type t when t == typeof(short) || t == typeof(short?):
-                    return SqlDbType.SmallInt;
-                case Type t when t == typeof(byte) || t == typeof(byte?):
-                    return SqlDbType.TinyInt;
-                case Type t when t == typeof(float) || t == typeof(float?):
-                    return SqlDbType.Real;
-                case Type t when t == typeof(double) || t == typeof(double?):
-                    return SqlDbType.Float;
-                case Type t when t == typeof(TimeSpan) || t == typeof(TimeSpan?):
-                    return SqlDbType.Time;
-                case Type t when t == typeof(Guid) || t == typeof(Guid?):
-                    return SqlDbType.UniqueIdentifier;
-                default:
-                    throw new Exception("Unmapped type");
-            }
+            if (TryGetSqlType(type, out var sqlDbType))
+                return sqlDbType;
+
+            throw new Exception($"Unmapped type: {type.FullName}");
 
             // Please refer to the following document to add other types
             // http://msdn.microsoft.com/en-us/library/ms131092.aspx
+        }
+        public static bool TryGetSqlType(Type type, out SqlDbType sqlDbType)
+        {
+            type = Nullable.GetUnderlyingType(type) ?? type;
+            if (type.IsEnum) type = Enum.GetUnderlyingType(type);
+
+            switch (Type.GetTypeCode(type))
+            {
+                case TypeCode.Boolean: sqlDbType = SqlDbType.Bit; return true;
+                case TypeCode.Byte: sqlDbType = SqlDbType.TinyInt; return true;
+                case TypeCode.Int16: sqlDbType = SqlDbType.SmallInt; return true;
+                case TypeCode.Int32: sqlDbType = SqlDbType.Int; return true;
+                case TypeCode.Int64: sqlDbType = SqlDbType.BigInt; return true;
+                case TypeCode.Single: sqlDbType = SqlDbType.Real; return true;
+                case TypeCode.Double: sqlDbType = SqlDbType.Float; return true;
+                case TypeCode.Decimal: sqlDbType = SqlDbType.Decimal; return true;
+                case TypeCode.DateTime: sqlDbType = SqlDbType.DateTime; return true;
+                case TypeCode.Char: sqlDbType = SqlDbType.Char; return true;
+                case TypeCode.String: sqlDbType = SqlDbType.VarChar; return true;
+            }
+
+            if (type == typeof(byte[])) sqlDbType = SqlDbType.Binary;
+            else if (type == typeof(TimeSpan)) sqlDbType = SqlDbType.Time;
+            else if (type == typeof(DateTimeOffset)) sqlDbType = SqlDbType.DateTimeOffset;
+            else if (type == typeof(Guid)) sqlDbType = SqlDbType.UniqueIdentifier;
+            else
+            {
+                sqlDbType = default;
+                return false;
+            }
+
+            return true;
         }
         public static SqlDbType GetSqlType(string sqltypename)
         {
