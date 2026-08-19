@@ -44,11 +44,12 @@ namespace MDDFoundation
             LogName = name;
             if (!string.IsNullOrWhiteSpace(logFilePath))
             {
-                // if logFilePath is relative, make it relative to the executing assembly location
+                // Assembly.Location is empty when the library is bundled into a
+                // single-file application. AppContext.BaseDirectory is stable in
+                // both bundled and conventional deployments.
                 if (!Path.IsPathRooted(logFilePath))
                 {
-                    var exeDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-                    logFilePath = Path.Combine(exeDir, logFilePath);
+                    logFilePath = Path.Combine(AppContext.BaseDirectory, logFilePath);
                 }
                 _logFilePath = logFilePath;
             }
