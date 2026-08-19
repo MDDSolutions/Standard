@@ -5,6 +5,7 @@ using System.Data;
 using System.Data.SqlClient;
 using System.Dynamic;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
 using System.Threading;
@@ -1017,6 +1018,10 @@ namespace MDDDataAccess
         public bool RunSqlUpdate<T>(T obj, string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string? ApplicationName = null, params SqlParameter[] list) where T: class, new()
         {
             return runsqlupdateinternal(obj, cmdtext, IsProcedure, ConnectionTimeout, ApplicationName, true, list);
+        }
+        public bool RunSqlUpdate<T>(T obj, string procName, int ConnectionTimeout, string? ApplicationName, params Expression<Func<object?>>[] expressions) where T : class, new()
+        {
+            return RunSqlUpdate(obj, procName, true, ConnectionTimeout, ApplicationName, AutoParam(procName, expressions));
         }
         public bool RunSqlUpdateNonStrict<T>(T obj, string cmdtext, bool IsProcedure, int ConnectionTimeout = -1, string ApplicationName = null, params SqlParameter[] list) where T: class, new()
         {

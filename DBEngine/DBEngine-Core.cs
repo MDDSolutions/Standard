@@ -1,11 +1,13 @@
 using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data;
 using System.Data.SqlClient;
 using System.Diagnostics;
 using System.Dynamic;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -16,6 +18,9 @@ namespace MDDDataAccess
 {
     public partial class DBEngine
     {
+        private readonly ConcurrentDictionary<string, IList<ProcedureParameter>> expressionProcedureParameters =
+            new ConcurrentDictionary<string, IList<ProcedureParameter>>(StringComparer.OrdinalIgnoreCase);
+
         public bool AllowAdHoc { get; set; } = false;
         public bool SqlDependencyStarted { get; set; }
 
@@ -313,6 +318,45 @@ namespace MDDDataAccess
                 sqlparams.Add(p);
             }
             return sqlparams.ToArray();
+        }
+        /// <summary>
+        /// Creates parameters for selected values using the stored procedure's parameter metadata.
+        /// The final field or property name in each expression is matched to a procedure parameter.
+        /// </summary>
+        public SqlParameter[] AutoParam(string procname, params Expression<Func<object?>>[] expressions)
+        {
+            if (string.IsNullOrWhiteSpace(procname)) throw new ArgumentException("Procedure name cannot be blank.", nameof(procname));
+            if (expressions == null) throw new ArgumentNullException(nameof(expressions));
+
+            var metadataKey = $"{connectionstring.DataSource}~{connectionstring.InitialCatalog}~{procname}";
+            var procedureParameters = expressionProcedureParameters.GetOrAdd(metadataKey, _ => ProcedureParameterList(procname));
+            var sqlParameters = new List<SqlParameter>(expressions.Length);
+            var parameterNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var expression in expressions)
+            {
+                var memberExpression = GetParameterMemberExpression(expression, nameof(expressions));
+                var memberName = memberExpression.Member.Name;
+                if (memberExpression.Member is PropertyInfo property)
+                {
+                    var dbName = property.GetCustomAttribute<DBNameAttribute>();
+                    if (dbName != null) memberName = dbName.DBName;
+                }
+
+                var parameterName = "@" + memberName.TrimStart('@');
+                if (!parameterNames.Add(parameterName))
+                    throw new ArgumentException($"The parameter '{parameterName}' was specified more than once.", nameof(expressions));
+
+                var procedureParameter = procedureParameters.FirstOrDefault(x =>
+                    x.name.TrimStart('@').Equals(parameterName.TrimStart('@'), StringComparison.OrdinalIgnoreCase));
+
+                if (procedureParameter == null)
+                    throw new ArgumentException($"The stored procedure '{procname}' does not define a parameter named '{parameterName}'.", nameof(expressions));
+
+                sqlParameters.Add(procedureParameter.CreateSqlParameter(expression.Compile().Invoke()));
+            }
+
+            return sqlParameters.ToArray();
         }
         private IList<ProcedureParameter> GetParamList(object obj, string procname)
         {

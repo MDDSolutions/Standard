@@ -32,6 +32,32 @@ namespace MDDDataAccess
         {
             return DBEngine.GetSqlType(type_name);
         }
+        public SqlParameter CreateSqlParameter(object value)
+        {
+            var parameter = new SqlParameter(name, GetSqlDbType())
+            {
+                Value = value ?? DBNull.Value,
+                Direction = is_output ? ParameterDirection.InputOutput : ParameterDirection.Input,
+                Precision = precision,
+                Scale = scale
+            };
+
+            switch (parameter.SqlDbType)
+            {
+                case SqlDbType.Binary:
+                case SqlDbType.VarBinary:
+                case SqlDbType.Char:
+                case SqlDbType.VarChar:
+                    parameter.Size = max_length;
+                    break;
+                case SqlDbType.NChar:
+                case SqlDbType.NVarChar:
+                    parameter.Size = max_length == -1 ? -1 : max_length / 2;
+                    break;
+            }
+
+            return parameter;
+        }
         public string SQLDataTypeString()
         {
             return DBEngine.GetFullSqlTypeName(type_name, max_length, precision, scale);

@@ -84,13 +84,15 @@ namespace MDDDataAccess
                 case "bigint":
                     return SqlDbType.BigInt;
                 case "binary":
-                case "varbinary":
                     return SqlDbType.Binary;
+                case "varbinary":
+                    return SqlDbType.VarBinary;
                 case "bit":
                     return SqlDbType.Bit;
                 case "char":
-                case "nchar":
                     return SqlDbType.Char;
+                case "nchar":
+                    return SqlDbType.NChar;
                 case "date":
                     return SqlDbType.Date;
                 case "datetime":
@@ -109,12 +111,15 @@ namespace MDDDataAccess
                 case "int":
                     return SqlDbType.Int;
                 case "money":
-                case "smallmoney":
                     return SqlDbType.Money;
+                case "smallmoney":
+                    return SqlDbType.SmallMoney;
                 case "ntext":
+                    return SqlDbType.NText;
                 case "text":
                     return SqlDbType.Text;
                 case "nvarchar":
+                    return SqlDbType.NVarChar;
                 case "varchar":
                     return SqlDbType.VarChar;
                 case "real":

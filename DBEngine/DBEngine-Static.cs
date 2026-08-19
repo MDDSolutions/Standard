@@ -341,17 +341,9 @@ namespace MDDDataAccess
         }
         public static SqlParameter GetParameter(Expression<Func<object?>> expression)
         {
-            var body = expression.Body;
-            while (body is UnaryExpression unaryExpression &&
-                   (body.NodeType == ExpressionType.Convert || body.NodeType == ExpressionType.ConvertChecked))
-            {
-                body = unaryExpression.Operand;
-            }
+            var memberExpression = GetParameterMemberExpression(expression, nameof(expression));
 
-            if (!(body is MemberExpression memberExpression))
-                throw new ArgumentException("The parameter expression must select a field or property.", nameof(expression));
-
-            var value = expression.Compile().DynamicInvoke();
+            var value = expression.Compile().Invoke();
             var parameter = new SqlParameter($"@{memberExpression.Member.Name}", value ?? DBNull.Value);
 
             // SqlParameter cannot infer a useful type from null/DBNull and defaults to
@@ -361,6 +353,22 @@ namespace MDDDataAccess
                 parameter.SqlDbType = sqlDbType;
 
             return parameter;
+        }
+        private static MemberExpression GetParameterMemberExpression(LambdaExpression expression, string parameterName)
+        {
+            if (expression == null) throw new ArgumentNullException(parameterName);
+
+            var body = expression.Body;
+            while (body is UnaryExpression unaryExpression &&
+                   (body.NodeType == ExpressionType.Convert || body.NodeType == ExpressionType.ConvertChecked))
+            {
+                body = unaryExpression.Operand;
+            }
+
+            if (!(body is MemberExpression memberExpression))
+                throw new ArgumentException("The parameter expression must select a field or property.", parameterName);
+
+            return memberExpression;
         }
         public static string PrintExecStatement(SqlCommand cmd, bool suppresserror = false)
         {
