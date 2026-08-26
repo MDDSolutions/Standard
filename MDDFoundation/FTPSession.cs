@@ -61,7 +61,24 @@ namespace MDDFoundation
 
             return request;
         }
-        public async Task<bool> FileExistsAsync(string filename, string folder)
+        private static CancellationTokenRegistration RegisterAbort(CancellationToken token, FtpWebRequest request)
+        {
+            return token.Register(() =>
+            {
+                try
+                {
+                    request.Abort();
+                }
+                catch
+                {
+                }
+            });
+        }
+        public Task<bool> FileExistsAsync(string filename, string folder)
+        {
+            return FileExistsAsync(filename, folder, CancellationToken.None);
+        }
+        public async Task<bool> FileExistsAsync(string filename, string folder, CancellationToken token)
         {
             bool exists = false;
             if (folder == null) folder = CurrentFolder;
@@ -69,8 +86,11 @@ namespace MDDFoundation
             var request = GetRequest(WebRequestMethods.Ftp.GetDateTimestamp, filename, folder);
             try
             {
-                await request.GetResponseAsync().ConfigureAwait(false);
-                exists = true;
+                using (RegisterAbort(token, request))
+                using (var response = await request.GetResponseAsync().ConfigureAwait(false))
+                {
+                    exists = true;
+                }
             }
             catch (WebException ex)
             {
@@ -90,8 +110,10 @@ namespace MDDFoundation
             var request = GetRequest(WebRequestMethods.Ftp.GetDateTimestamp, filename, folder);
             try
             {
-                request.GetResponse();
-                exists = true;
+                using (var response = request.GetResponse())
+                {
+                    exists = true;
+                }
             }
             catch (WebException ex)
             {
@@ -211,13 +233,18 @@ namespace MDDFoundation
             }
             return files.List.AsReadOnly();
         }
-        public async Task RenameAsync(string from, string to, string folder = null)
+        public Task RenameAsync(string from, string to, string folder = null)
+        {
+            return RenameAsync(from, to, folder, CancellationToken.None);
+        }
+        public async Task RenameAsync(string from, string to, string folder, CancellationToken token)
         {
             if (folder == null) folder = CurrentFolder;
             folder = NormalizeFolder(folder);
             var request = GetRequest(WebRequestMethods.Ftp.Rename, from, folder);
             request.RenameTo = to;
 
+            using (RegisterAbort(token, request))
             using (var response = (FtpWebResponse)await request.GetResponseAsync().ConfigureAwait(false))
             {
             }
@@ -235,10 +262,15 @@ namespace MDDFoundation
                 StatusUpdate($"{DateTime.Now:HH:mm:ss.fff}: Rename finished: {from} -> {to}", 4);
             }
         }
-        public async Task DeleteAsync(string filename, string folder = null)
+        public Task DeleteAsync(string filename, string folder = null)
+        {
+            return DeleteAsync(filename, folder, CancellationToken.None);
+        }
+        public async Task DeleteAsync(string filename, string folder, CancellationToken token)
         {
             var request = GetRequest(WebRequestMethods.Ftp.DeleteFile, filename, folder);
 
+            using (RegisterAbort(token, request))
             using (var response = (FtpWebResponse)await request.GetResponseAsync().ConfigureAwait(false))
             {
             }
@@ -331,6 +363,7 @@ namespace MDDFoundation
                 long curstart = 0;
                 if (progressreportinterval == default) progressreportinterval = TimeSpan.FromSeconds(1);
 
+                using (RegisterAbort(token, request))
                 using (var hash = SHA1.Create())
                 using (var source = file.OpenRead())
                 using (var dest = await request.GetRequestStreamAsync().ConfigureAwait(false))
@@ -348,10 +381,10 @@ namespace MDDFoundation
                             last = copyprogress.Stopwatch.Elapsed;
                             progresscallback(copyprogress);
                         }
-                        read = await source.ReadAsync(swap ? buffer : buffer2, 0, bufferSize).ConfigureAwait(false);
+                        read = await source.ReadAsync(swap ? buffer : buffer2, 0, bufferSize, token).ConfigureAwait(false);
                         if (processhash) hash.TransformBlock(swap ? buffer : buffer2, 0, read, default, default);
                         if (writer != null) await writer.ConfigureAwait(false);
-                        writer = dest.WriteAsync(swap ? buffer : buffer2, 0, read);
+                        writer = dest.WriteAsync(swap ? buffer : buffer2, 0, read, token);
                         swap = !swap;
                         copyprogress.BytesCopied += read;
                         if (msperloop > 0)
@@ -364,7 +397,7 @@ namespace MDDFoundation
                                 StatusUpdate($"UploadFile for {file.Name}: rate has been {currate} - msperloop changed to {msperloop} at block count {currentblockcount} (elapsed: {copyprogress.Stopwatch.ElapsedMilliseconds})", 5);
                                 if (msperloop <= 0) msperloop = 1;
                             }
-                            await Task.Delay(msperloop).ConfigureAwait(false);
+                            await Task.Delay(msperloop, token).ConfigureAwait(false);
                         }
                     }
                     if (writer != null) await writer.ConfigureAwait(false);
@@ -384,7 +417,7 @@ namespace MDDFoundation
                 {
                     try
                     {
-                        await DeleteAsync(tmpfile, destinationfolder).ConfigureAwait(false);
+                        await DeleteAsync(tmpfile, destinationfolder, token).ConfigureAwait(false);
                     }
                     catch (Exception)
                     {
@@ -397,11 +430,11 @@ namespace MDDFoundation
                     //    await DeleteAsync(file.Name, destinationfolder).ConfigureAwait(false);
 
                     if (breakupindex == 0)
-                        await RenameAsync(tmpfile, file.Name, destinationfolder).ConfigureAwait(false);
+                        await RenameAsync(tmpfile, file.Name, destinationfolder, token).ConfigureAwait(false);
                     else
-                        await RenameAsync(tmpfile, breakupfilename.ToString(), destinationfolder).ConfigureAwait(false);
+                        await RenameAsync(tmpfile, breakupfilename.ToString(), destinationfolder, token).ConfigureAwait(false);
 
-                    if (await FileExistsAsync(file.Name, destinationfolder).ConfigureAwait(false))
+                    if (await FileExistsAsync(file.Name, destinationfolder, token).ConfigureAwait(false))
                     {
                         var list = filelists.GetOrAdd(destinationfolder, new RemoteFileList());
                         if (!list.List.Any(x => x.FileName.Equals(file.Name, StringComparison.OrdinalIgnoreCase)))
@@ -430,7 +463,11 @@ namespace MDDFoundation
             }
             catch (Exception ex)
             {
-                if (ex.Message.Contains("(425) Can't open data connection"))
+                if (token.IsCancellationRequested)
+                {
+                    StatusUpdate($"FTPSession.UploadFileFragmentAsync canceled with status: {copyprogress}", 10);
+                }
+                else if (ex.Message.Contains("(425) Can't open data connection"))
                 {
                     StatusUpdate($"ERROR in FTPSession.UploadFileFragmentAsync: Could not open data connection for {copyprogress.FileName} - this is a recoverable error if there is retry logic calling this method - BytesCopied: {copyprogress.BytesCopied} / {copyprogress.FileSizeBytes} Complete: {copyprogress.IsCompleted}", 15);
                 }
