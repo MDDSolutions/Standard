@@ -14,7 +14,7 @@ namespace MDDNetComm
 {
     //public delegate CommMessage ProcessMessageDelegate(ClientTracker tracker, CommMessage cm);
 
-    public class TcpServer
+    public class TcpServer : IDisposable
     {
         public event EventHandler<ChangeType> ConnectionsChanged;
         public TcpServer(string inApplicationName, int inTcpListenerPort = 0)
@@ -91,17 +91,29 @@ namespace MDDNetComm
             DisplayMessage?.Invoke(st, msg);
         }
         private TcpListener tcpListener = null;
+        private bool stopped;
         private void TcpServerCallback(IAsyncResult ar)
         {
-            bool RunAgain = true;
-            TcpClient client = tcpListener.EndAcceptTcpClient(ar);
-            var netstream = client.GetStream();
-            ClientTracker st = new ClientTracker(Guid.Empty, (IPEndPoint)client.Client.RemoteEndPoint, null);
-            st.Client = client;
-            st.ReceivePacketBuffer = new byte[client.ReceiveBufferSize];
-            st.Parent = this;
-            netstream.BeginRead(st.ReceivePacketBuffer, 0, client.ReceiveBufferSize, st.ReadCallback, netstream);
-            if (RunAgain)
+            try
+            {
+                TcpClient client = tcpListener.EndAcceptTcpClient(ar);
+                var netstream = client.GetStream();
+                ClientTracker st = new ClientTracker(Guid.Empty, (IPEndPoint)client.Client.RemoteEndPoint, null);
+                st.Client = client;
+                st.ReceivePacketBuffer = new byte[client.ReceiveBufferSize];
+                st.Parent = this;
+                netstream.BeginRead(st.ReceivePacketBuffer, 0, client.ReceiveBufferSize, st.ReadCallback, netstream);
+            }
+            catch (ObjectDisposedException)
+            {
+                return;
+            }
+            catch (SocketException) when (stopped)
+            {
+                return;
+            }
+
+            if (!stopped)
                 try
                 {
                     tcpListener.BeginAcceptTcpClient(TcpServerCallback, tcpListener);
@@ -112,6 +124,21 @@ namespace MDDNetComm
                 }
         }
         public static TcpServer Default { get; set; }
+        public void Stop()
+        {
+            if (stopped) return;
+            stopped = true;
+            foreach (var tracker in trackers.Values)
+            {
+                tracker.Connected = false;
+                tracker.Client?.Close();
+            }
+            tcpListener.Stop();
+        }
+        public void Dispose()
+        {
+            Stop();
+        }
         public List<string> IPAddressInfo()
         {
             var l = new List<string>();

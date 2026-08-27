@@ -10,7 +10,7 @@ using System.Threading.Tasks;
 namespace MDDNetComm
 {
     public delegate void ProcessResponseDelegate(ServerTracker tracker, CommMessage cm);
-    public class TcpClientComm
+    public class TcpClientComm : IDisposable
     {
         public event EventHandler<ChangeType> ConnectionsChanged;
         public TcpClientComm(string inApplicationName)
@@ -77,6 +77,11 @@ namespace MDDNetComm
             var response = await SendMessage(client, new CommMessage(), st).ConfigureAwait(false);
             if (st == null) trackers.TryGetValue(response.SourceApplicationID, out st);
             return st;
+        }
+        public async Task<ServerTracker> TcpConnect(IPAddress address, int PortNumber)
+        {
+            if (address == null) throw new ArgumentNullException(nameof(address));
+            return await TcpConnect(address.ToString(), PortNumber).ConfigureAwait(false);
         }
         private int tinymessages = 0;
         internal async Task<CommMessage> SendMessage(TcpClient client, CommMessage msg, ServerTracker st)
@@ -151,5 +156,17 @@ namespace MDDNetComm
             //cm.Offset = st == null ? TimeSpan.Zero : st.TimeOffset.Average;
         }
         public static TcpClientComm Default { get; set; }
+        public void CloseConnections()
+        {
+            foreach (var tracker in trackers.Values)
+            {
+                tracker.Connected = false;
+                tracker.Client?.Close();
+            }
+        }
+        public void Dispose()
+        {
+            CloseConnections();
+        }
     }
 }
