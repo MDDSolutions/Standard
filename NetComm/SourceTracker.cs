@@ -21,8 +21,22 @@ namespace MDDNetComm
         {
             get
             {
-                return (DateTime.Now - TimeOffset.Average).AddMilliseconds(7);// + Latency;
+                return ToRemoteTime(DateTime.Now).AddMilliseconds(7);// + Latency;
             }
+        }
+        /// <summary>
+        /// Translates a timestamp created on the tracked remote machine into this machine's clock.
+        /// </summary>
+        public DateTime ToLocalTime(DateTime remoteTime)
+        {
+            return remoteTime + TimeOffset.Average;
+        }
+        /// <summary>
+        /// Translates a timestamp created on this machine into the tracked remote machine's clock.
+        /// </summary>
+        public DateTime ToRemoteTime(DateTime localTime)
+        {
+            return localTime - TimeOffset.Average;
         }
         public void Process(CommMessage cm)
         {
