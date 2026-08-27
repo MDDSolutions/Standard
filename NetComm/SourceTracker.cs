@@ -145,18 +145,37 @@ namespace MDDNetComm
             }
             finally
             {
-                if (sendresponse)
+                if (sendresponse && Connected && !Parent.IsStopped)
                 {
-                    if (resp != null)
+                    try
                     {
-                        Util.SerializeAndSendMessageBytes(resp, netstream, Client.SendBufferSize);
+                        if (resp != null)
+                        {
+                            Util.SerializeAndSendMessageBytes(resp, netstream, Client.SendBufferSize);
+                        }
+                        if (Client.ReceiveBufferSize != ReceivePacketBuffer.Length)
+                        {
+                            Util.Log($"Client ReceiveBuffer resize - {ReceivePacketBuffer.Length} -> {Client.ReceiveBufferSize}");
+                            ReceivePacketBuffer = new byte[Client.ReceiveBufferSize];
+                        }
+                        if (Connected && !Parent.IsStopped)
+                            netstream.BeginRead(ReceivePacketBuffer, 0, ReceivePacketBuffer.Length, ReadCallback, netstream);
                     }
-                    if (Client.ReceiveBufferSize != ReceivePacketBuffer.Length)
+                    catch (ObjectDisposedException)
                     {
-                        Util.Log($"Client ReceiveBuffer resize - {ReceivePacketBuffer.Length} -> {Client.ReceiveBufferSize}");
-                        ReceivePacketBuffer = new byte[Client.ReceiveBufferSize];
+                        if (!Parent.IsStopped)
+                            Parent.ClientTrackerClientDisconnected(this);
                     }
-                    netstream.BeginRead(ReceivePacketBuffer, 0, ReceivePacketBuffer.Length, ReadCallback, netstream);
+                    catch (IOException)
+                    {
+                        if (!Parent.IsStopped)
+                            Parent.ClientTrackerClientDisconnected(this);
+                    }
+                    catch (SocketException)
+                    {
+                        if (!Parent.IsStopped)
+                            Parent.ClientTrackerClientDisconnected(this);
+                    }
                 }
             }
         }

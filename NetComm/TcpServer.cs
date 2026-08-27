@@ -92,6 +92,7 @@ namespace MDDNetComm
         }
         private TcpListener tcpListener = null;
         private bool stopped;
+        internal bool IsStopped => stopped;
         private void TcpServerCallback(IAsyncResult ar)
         {
             try
@@ -100,6 +101,7 @@ namespace MDDNetComm
                 var netstream = client.GetStream();
                 ClientTracker st = new ClientTracker(Guid.Empty, (IPEndPoint)client.Client.RemoteEndPoint, null);
                 st.Client = client;
+                st.Connected = true;
                 st.ReceivePacketBuffer = new byte[client.ReceiveBufferSize];
                 st.Parent = this;
                 netstream.BeginRead(st.ReceivePacketBuffer, 0, client.ReceiveBufferSize, st.ReadCallback, netstream);
