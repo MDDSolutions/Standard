@@ -10,7 +10,7 @@
   <ItemGroup>
     <!-- Required for [JsonPolymorphic] / [JsonDerivedType] on netstandard2.0 -->
     <!-- Needed for [JsonPolymorphic]/[JsonDerivedType] on netstandard2.0; net8.0 gets it from the runtime -->
-    <PackageReference Include="System.Text.Json" Version="9.0.5" Condition="'$(TargetFramework)' == 'netstandard2.0'" />
+    <PackageReference Include="System.Text.Json" Version="9.0.19" Condition="'$(TargetFramework)' == 'netstandard2.0'" />
   </ItemGroup>
 
 </Project>
