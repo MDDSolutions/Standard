@@ -1,0 +1,31 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <GenerateAssemblyFileVersionAttribute>false</GenerateAssemblyFileVersionAttribute>
+    <GenerateAssemblyInformationalVersionAttribute>false</GenerateAssemblyInformationalVersionAttribute>
+    <AutoBuildProductVersionBase Condition="'$(AutoBuildProductVersionBase)' == '' and '$(Version)' != ''">$(Version)</AutoBuildProductVersionBase>
+    <AutoBuildProductVersionBase Condition="'$(AutoBuildProductVersionBase)' == ''">1.0.0</AutoBuildProductVersionBase>
+    <AutoBuildFileVersion>1.$([System.DateTime]::Now.ToString('yy')).$([System.DateTime]::Now.ToString('MMdd')).$([System.DateTime]::Now.ToString('HHmm'))</AutoBuildFileVersion>
+    <AutoBuildInformationalVersion>$(AutoBuildProductVersionBase)+$([System.DateTime]::Now.ToString('yyyyMMdd.HHmmss'))</AutoBuildInformationalVersion>
+    <AutoBuildTimestamp>$([System.DateTimeOffset]::Now.ToString('yyyy-MM-ddTHH:mm:sszzz'))</AutoBuildTimestamp>
+  </PropertyGroup>
+
+  <Target Name="GenerateAutoBuildVersionSource"
+          BeforeTargets="CoreCompile"
+          Condition="'$(DesignTimeBuild)' != 'true'">
+    <PropertyGroup>
+      <AutoBuildVersionSource>$(IntermediateOutputPath)AutoBuildVersion.g.cs</AutoBuildVersionSource>
+    </PropertyGroup>
+    <ItemGroup>
+      <AutoBuildVersionLine Include="using System.Reflection%3B" />
+      <AutoBuildVersionLine Include="[assembly: AssemblyFileVersion(&quot;$(AutoBuildFileVersion)&quot;)]" />
+      <AutoBuildVersionLine Include="[assembly: AssemblyInformationalVersion(&quot;$(AutoBuildInformationalVersion)&quot;)]" />
+      <AutoBuildVersionLine Include="[assembly: AssemblyMetadata(&quot;BuildTimestamp&quot;, &quot;$(AutoBuildTimestamp)&quot;)]" />
+      <Compile Include="$(AutoBuildVersionSource)" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(AutoBuildVersionSource)"
+                      Lines="@(AutoBuildVersionLine)"
+                      Overwrite="true"
+                      WriteOnlyWhenDifferent="true" />
+  </Target>
+</Project>

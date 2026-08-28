@@ -1001,6 +1001,22 @@ namespace MDDFoundation
 
         public static DateTime BuildTime(Assembly assembly)
         {
+            var metadata = assembly.GetCustomAttributes<AssemblyMetadataAttribute>().ToList();
+            var timestamp = metadata
+                .FirstOrDefault(attribute => attribute.Key == "BuildTimestamp")?.Value;
+            if (DateTimeOffset.TryParseExact(timestamp, "yyyy-MM-ddTHH:mm:sszzz",
+                CultureInfo.InvariantCulture, DateTimeStyles.None,
+                out DateTimeOffset buildTimestamp))
+                return DateTime.SpecifyKind(buildTimestamp.DateTime, DateTimeKind.Unspecified);
+
+            var utcTimestamp = metadata
+                .FirstOrDefault(attribute => attribute.Key == "BuildTimestampUtc")?.Value;
+            if (DateTime.TryParseExact(utcTimestamp, "yyyy-MM-ddTHH:mm:ssZ",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out DateTime buildTimeUtc))
+                return buildTimeUtc.ToLocalTime();
+
             Version? version = assembly.GetName().Version;
             if (version == null)
                 throw new InvalidOperationException("Assembly version is null.");

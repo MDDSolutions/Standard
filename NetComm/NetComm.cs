@@ -95,11 +95,7 @@ namespace MDDNetComm
         //}
         public static DateTime BuildTime()
         {
-            Version version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
-            DateTime buildtime = new DateTime(2000, 1, 1).AddDays(version.Build).AddSeconds(version.Revision * 2);
-            if (buildtime.IsDaylightSavingTime())
-                buildtime = buildtime.AddHours(1);
-            return buildtime;
+            return Foundation.BuildTime(System.Reflection.Assembly.GetExecutingAssembly());
         }
     }
     public enum ChangeType

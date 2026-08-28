@@ -9,4 +9,6 @@
     <ProjectReference Include="..\MDDFoundation\MDDFoundation.csproj" />
   </ItemGroup>
 
+  <Import Project="..\Build\AutoBuildVersion.targets" />
+
 </Project>
