@@ -39,6 +39,13 @@ namespace MDDFoundation
 
         private ConcurrentDictionary<string, RemoteFileList> filelists = new ConcurrentDictionary<string, RemoteFileList>();
         public int DebugLevel { get; set; } = 1;
+        // FtpWebRequest pools control connections per host/port/credentials when KeepAlive is true (the .NET default).
+        // If the server tears one down mid-transfer it still goes back in the pool, and the next command reads the
+        // previous command's reply - we have seen a 257 "/" is current directory answering a STOR and a 125 Data
+        // connection already open answering a stream close.  A desynchronized RNFR/RNTO can consume a stale success
+        // reply and return without having renamed anything.  Default to a fresh control connection per request; set
+        // this true to restore pooling if the server penalizes the extra logins.
+        public bool KeepAlive { get; set; } = false;
         public static string NormalizeFolder(string folder)
         {
             return folder?.TrimStart('/').TrimEnd('/');
@@ -54,6 +61,7 @@ namespace MDDFoundation
 
             var request = (FtpWebRequest)WebRequest.Create(uri);
             request.Method = method; //WebRequestMethods.Ftp.ListDirectoryDetails;
+            request.KeepAlive = KeepAlive;
             request.Timeout = 100000;
             request.ReadWriteTimeout = 300000;
 
@@ -94,8 +102,10 @@ namespace MDDFoundation
             }
             catch (WebException ex)
             {
+                // ex.Response is null when the request never got an FTP reply at all (connect/abort/timeout) - that is
+                // not "the file is missing", so let it propagate rather than dereferencing null
                 FtpWebResponse response = (FtpWebResponse)ex.Response;
-                if (response.StatusCode != FtpStatusCode.ActionNotTakenFileUnavailable)
+                if (response == null || response.StatusCode != FtpStatusCode.ActionNotTakenFileUnavailable)
                 {
                     throw;
                 }
@@ -247,6 +257,10 @@ namespace MDDFoundation
             using (RegisterAbort(token, request))
             using (var response = (FtpWebResponse)await request.GetResponseAsync().ConfigureAwait(false))
             {
+                // most failures come back as a WebException, but a reply read off a desynchronized control connection
+                // can arrive here as a non-error status for a rename that never happened - do not let that pass
+                if ((int)response.StatusCode >= 300)
+                    throw new WebException($"FTPSession.RenameAsync: renaming {from} to {to} in {folder} returned {(int)response.StatusCode} {response.StatusCode}: {response.StatusDescription}");
             }
         }
         public void Rename(string from, string to, string folder = null)
@@ -305,10 +319,41 @@ namespace MDDFoundation
         }
 
 
+        public TimeSpan TempFileCleanupTimeout { get; set; } = TimeSpan.FromSeconds(30);
+        private async Task TryDeleteTempFileAsync(string tmpfile, string destinationfolder)
+        {
+            if (string.IsNullOrEmpty(tmpfile)) return;
+            try
+            {
+                // deliberately not the caller's token: it is usually already canceled by the time we get here, and
+                // RegisterAbort would kill the DELE before it reached the server - which is why the cancellation path
+                // was leaving temp files behind even though it looked like it deleted them.  Its own short timeout
+                // instead, so best-effort cleanup can never hold a channel that a stale-task cancel is trying to free.
+                using (var cleanup = new CancellationTokenSource(TempFileCleanupTimeout))
+                    await DeleteAsync(tmpfile, destinationfolder, cleanup.Token).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                StatusUpdate($"FTPSession: could not delete temp file {tmpfile} in {destinationfolder} after a failed transfer (it may already have been renamed) - {ex.Message}", 10);
+            }
+        }
+        private void TryDeleteTempFile(string tmpfile, string destinationfolder)
+        {
+            if (string.IsNullOrEmpty(tmpfile)) return;
+            try
+            {
+                Delete(tmpfile, destinationfolder);
+            }
+            catch (Exception ex)
+            {
+                StatusUpdate($"FTPSession: could not delete temp file {tmpfile} in {destinationfolder} after a failed transfer (it may already have been renamed) - {ex.Message}", 10);
+            }
+        }
         public async Task<FileCopyProgress> UploadFileFragmentAsync(FileInfo file, CancellationToken token, string destinationfolder = null, bool MoveFile = false, Action<FileCopyProgress> progresscallback = null, TimeSpan progressreportinterval = default, int breakupmb = 0, int breakupindex = 0, bool processhash = true, double maxmbpersec = 0)
         {
             // this method will overwrite the file if it exists (default functionality for FTP) so check before running if it is important to you
             FileCopyProgress copyprogress = null;
+            string tmpfile = null;   // declared out here so the catch below can clean it up
             try
             {
                 if (!file.Exists) throw new IOException($"FTPSession.UploadFileFragmentAsync: Source file {file.FullName} does not exist");
@@ -356,7 +401,7 @@ namespace MDDFoundation
 
                 var breakupfilename = new BreakupFileName(breakupindex, breakupfiles, file.Name); // BreakupFiles.BreakupFileName(breakupindex, breakupfiles, file.Name);
 
-                var tmpfile = Guid.NewGuid().ToString().Replace("-", "") + ".tmp";
+                tmpfile = Guid.NewGuid().ToString().Replace("-", "") + ".tmp";
                 var request = GetRequest(WebRequestMethods.Ftp.UploadFile, tmpfile, destinationfolder);
 
                 int currentblockcount = 0;
@@ -415,13 +460,7 @@ namespace MDDFoundation
 
                 if (token.IsCancellationRequested)
                 {
-                    try
-                    {
-                        await DeleteAsync(tmpfile, destinationfolder, token).ConfigureAwait(false);
-                    }
-                    catch (Exception)
-                    {
-                    }
+                    await TryDeleteTempFileAsync(tmpfile, destinationfolder).ConfigureAwait(false);
                     return null;
                 }
                 else
@@ -429,43 +468,50 @@ namespace MDDFoundation
                     //if (targetdelete && breakupindex == 0) // currentbreakupfile == breakupfiles)
                     //    await DeleteAsync(file.Name, destinationfolder).ConfigureAwait(false);
 
-                    if (breakupindex == 0)
-                        await RenameAsync(tmpfile, file.Name, destinationfolder, token).ConfigureAwait(false);
-                    else
-                        await RenameAsync(tmpfile, breakupfilename.ToString(), destinationfolder, token).ConfigureAwait(false);
+                    // for a fragment the rename target is the fragment name, not the base file name - checking
+                    // file.Name here meant the verification below could never be true for a breakup transfer
+                    var finalname = breakupindex == 0 ? file.Name : breakupfilename.ToString();
 
-                    if (await FileExistsAsync(file.Name, destinationfolder, token).ConfigureAwait(false))
+                    await RenameAsync(tmpfile, finalname, destinationfolder, token).ConfigureAwait(false);
+
+                    // pushing the bytes into the temp file is not the transfer succeeding - the rename is what makes
+                    // it real, and it can appear to succeed without taking effect.  Verify unconditionally: callers
+                    // that leave MoveFile false still rely on IsCompleted to decide the file landed, and letting this
+                    // throw is what puts the task back on the queue instead of reporting a phantom success.
+                    if (!await FileExistsAsync(finalname, destinationfolder, token).ConfigureAwait(false))
+                        throw new Exception($"FTPSession.UploadFileFragmentAsync: Target file {finalname} does not exist in {destinationfolder} after apparently successful transfer of {tmpfile}");
+
+                    var list = filelists.GetOrAdd(destinationfolder, new RemoteFileList());
+                    if (!list.List.Any(x => x.FileName.Equals(finalname, StringComparison.OrdinalIgnoreCase)))
+                        list.List.Add(new FTPFile { FileName = finalname, IsDirectory = false });
+
+                    if (MoveFile && breakupindex == 0) // currentbreakupfile == breakupfiles)
                     {
-                        var list = filelists.GetOrAdd(destinationfolder, new RemoteFileList());
-                        if (!list.List.Any(x => x.FileName.Equals(file.Name, StringComparison.OrdinalIgnoreCase)))
-                            list.List.Add(new FTPFile { FileName = file.Name, IsDirectory = false });
-                        if (MoveFile && breakupindex == 0) // currentbreakupfile == breakupfiles)
-                        {
-                            file.Delete();
-                        }
-                    }
-                    else if (MoveFile && breakupindex == 0) // currentbreakupfile == breakupfiles)
-                    {
-                        throw new Exception($"FTPSession.UploadFileAsync: Target file {file.Name} does not exist after apparently successful transfer - not deleting source file");
+                        file.Delete();
                     }
 
-
-
-                    if (progresscallback != null)
-                    {
-                        if (copyprogress.BytesCopied != len) throw new Exception("BytesCopied is not the length of the file");
-                        copyprogress.IsCompleted = true;
-                        progresscallback(copyprogress);
-                    }
+                    if (copyprogress.BytesCopied != len) throw new Exception("BytesCopied is not the length of the file");
+                    copyprogress.IsCompleted = true;
+                    if (progresscallback != null) progresscallback(copyprogress);
                 }
                 return copyprogress;
 
             }
             catch (Exception ex)
             {
+                // do this before the branching below - one branch rethrows, and every path out of here leaves the
+                // temp file behind otherwise.  Orphaned .tmp files on the destination were never being cleaned up.
+                await TryDeleteTempFileAsync(tmpfile, destinationfolder).ConfigureAwait(false);
+
                 if (token.IsCancellationRequested)
                 {
                     StatusUpdate($"FTPSession.UploadFileFragmentAsync canceled with status: {copyprogress}", 10);
+                }
+                else if (copyprogress == null)
+                {
+                    // thrown before there was anything to report on - do not mask it with a null reference
+                    StatusUpdate($"ERROR in FTPSession.UploadFileFragmentAsync for {file?.FullName}: {ex}", 16);
+                    throw;
                 }
                 else if (ex.Message.Contains("(425) Can't open data connection"))
                 {
@@ -501,12 +547,13 @@ namespace MDDFoundation
                     sb.Append(ex.ToString());
                     StatusUpdate(sb.ToString(), 16);
                 }
-                copyprogress.IsCompleted = false;
+                if (copyprogress != null) copyprogress.IsCompleted = false;
                 return copyprogress;
             }
         }
         public async Task<FileCopyProgress> UploadFileAsync(FileInfo file, CancellationToken token, bool overwrite, string destinationfolder = null, bool MoveFile = false, Action<FileCopyProgress> progresscallback = null, TimeSpan progressreportinterval = default, int breakupmb = 0, bool processhash = true)
         {
+            string tmpfile = null;   // declared out here so the catch below can clean it up
             try
             {
                 if (!file.Exists) throw new IOException($"FTPSession.UploadFileAsync: Source file {file.FullName} does not exist");
@@ -539,12 +586,10 @@ namespace MDDFoundation
                         targetdelete = true;
                 }
 
-                FileCopyProgress copyprogress = null;
-                if (progresscallback != null)
-                {
-                    if (progressreportinterval == default) progressreportinterval = TimeSpan.FromSeconds(1);
-                    copyprogress = new FileCopyProgress { FileSizeBytes = len, FileName = file.Name, Stopwatch = Stopwatch.StartNew(), OperationDuring = "Transferring", OperationComplete = "Transfer" };
-                }
+                // always build this - callers use the returned progress (and its IsCompleted) to decide the transfer
+                // landed, so it must not be null just because nobody asked for progress notifications
+                if (progressreportinterval == default) progressreportinterval = TimeSpan.FromSeconds(1);
+                var copyprogress = new FileCopyProgress { FileSizeBytes = len, FileName = file.Name, Stopwatch = Stopwatch.StartNew(), OperationDuring = "Transferring", OperationComplete = "Transfer" };
 
 
                 for (int currentbreakupfile = 1; currentbreakupfile <= breakupfiles; currentbreakupfile++)
@@ -553,7 +598,7 @@ namespace MDDFoundation
                     if (breakupfiles > 1) list = (await ListAsync(TimeSpan.FromTicks(-1), destinationfolder).ConfigureAwait(false)).ToList();
                     if (breakupfiles <= 1 || !list.Exists(x => x.FileName.Equals(breakupfilename, StringComparison.OrdinalIgnoreCase)))
                     {
-                        var tmpfile = Guid.NewGuid().ToString().Replace("-", "") + ".tmp";
+                        tmpfile = Guid.NewGuid().ToString().Replace("-", "") + ".tmp";
                         var request = GetRequest(WebRequestMethods.Ftp.UploadFile, tmpfile, destinationfolder);
 
                         int currentblockcount = 0;
@@ -589,7 +634,7 @@ namespace MDDFoundation
                                 if (writer != null) await writer.ConfigureAwait(false);
                                 writer = dest.WriteAsync(swap ? buffer : buffer2, 0, read);
                                 swap = !swap;
-                                if (progresscallback != null) copyprogress.BytesCopied += read;
+                                copyprogress.BytesCopied += read;
                                 if (currentblockcount == breakupbytes / bufferSize) break;
                             }
                             if (writer != null) await writer.ConfigureAwait(false);
@@ -597,13 +642,7 @@ namespace MDDFoundation
 
                         if (token.IsCancellationRequested)
                         {
-                            try
-                            {
-                                await DeleteAsync(tmpfile, destinationfolder).ConfigureAwait(false);
-                            }
-                            catch (Exception)
-                            {
-                            }
+                            await TryDeleteTempFileAsync(tmpfile, destinationfolder).ConfigureAwait(false);
                             return null;
                         }
                         else
@@ -611,26 +650,29 @@ namespace MDDFoundation
                             if (targetdelete && currentbreakupfile == breakupfiles)
                                 await DeleteAsync(file.Name, destinationfolder).ConfigureAwait(false);
 
-                            if (breakupfiles == 1)
-                                await RenameAsync(tmpfile, file.Name, destinationfolder).ConfigureAwait(false);
-                            else
-                                await RenameAsync(tmpfile, breakupfilename, destinationfolder).ConfigureAwait(false);
+                            // for a breakup upload the name it lands under is the fragment name, not the base file
+                            // name - the MoveFile check below used to look for file.Name, which never appears on the
+                            // destination in breakup mode
+                            var finalname = breakupfiles == 1 ? file.Name : breakupfilename;
 
-                            if (MoveFile && currentbreakupfile == breakupfiles)
-                            {
-                                list = (await ListAsync(TimeSpan.FromTicks(-1), destinationfolder).ConfigureAwait(false)).ToList();
-                                if (list.Exists(x => x.FileName.Equals(file.Name, StringComparison.OrdinalIgnoreCase)))
-                                    file.Delete();
-                                else
-                                    throw new Exception($"FTPSession.UploadFileAsync: Target file {file.Name} does not exist after apparently successful transfer - not deleting source file");
-                            }
+                            await RenameAsync(tmpfile, finalname, destinationfolder, token).ConfigureAwait(false);
 
-                            if (progresscallback != null)
+                            // pushing the bytes into the temp file is not the transfer succeeding - the rename is what
+                            // makes it real, and it can appear to succeed without taking effect.  Verify every part
+                            // unconditionally rather than only when the caller asked for MoveFile.
+                            if (!await FileExistsAsync(finalname, destinationfolder, token).ConfigureAwait(false))
+                                throw new Exception($"FTPSession.UploadFileAsync: Target file {finalname} does not exist in {destinationfolder} after apparently successful transfer of {tmpfile}");
+
+                            if (currentbreakupfile == breakupfiles)
                             {
-                                if (copyprogress.BytesCopied != len) throw new Exception("BytesCopied is not the length of the file");
+                                // BytesCopied only counts parts transferred on this run - in breakup mode earlier
+                                // parts may have been skipped because they were already on the destination, so this
+                                // only holds for a single-part upload.  Breakup mode is covered by the check above.
+                                if (breakupfiles == 1 && copyprogress.BytesCopied != len) throw new Exception("BytesCopied is not the length of the file");
                                 copyprogress.IsCompleted = true;
-                                progresscallback(copyprogress);
+                                if (MoveFile) file.Delete();
                             }
+                            if (progresscallback != null) progresscallback(copyprogress);
                         }
                     }
                 }
@@ -638,6 +680,8 @@ namespace MDDFoundation
             }
             catch (Exception)
             {
+                // otherwise a failed upload leaves its temp file on the destination forever
+                await TryDeleteTempFileAsync(tmpfile, destinationfolder).ConfigureAwait(false);
                 throw;
             }
         }
@@ -646,6 +690,7 @@ namespace MDDFoundation
             FileCopyProgress copyprogress;
             int currentblockcount = 0;
             ManualResetEventSlim limiter = null;
+            string tmpfiletocleanup = null;   // only set when we wrote to a temp name, so the catch never deletes a real target
             //int limitermsgs = 0;
             try
             {
@@ -699,7 +744,7 @@ namespace MDDFoundation
                     {
                         string tmpfile;
                         if (usetmpfile)
-                            tmpfile = Guid.NewGuid().ToString().Replace("-", "") + ".tmp";
+                            tmpfile = tmpfiletocleanup = Guid.NewGuid().ToString().Replace("-", "") + ".tmp";
                         else if (breakupfiles > 1)
                             tmpfile = breakupfilename;
                         else
@@ -772,29 +817,34 @@ namespace MDDFoundation
                         if (usetmpfile && targetdelete && currentbreakupfile == breakupfiles)
                             Delete(file.Name, destinationfolder);
 
+                        // for a breakup upload the name it lands under is the fragment name, not the base file name -
+                        // the MoveFile check below used to look for file.Name, which never appears on the destination
+                        // in breakup mode
+                        var finalname = breakupfiles == 1 ? file.Name : breakupfilename;
+
                         if (usetmpfile)
                         {
-                            if (breakupfiles == 1)
-                                Rename(tmpfile, file.Name, destinationfolder);
-                            else
-                                Rename(tmpfile, breakupfilename, destinationfolder);
+                            Rename(tmpfile, finalname, destinationfolder);
                             StatusUpdate($"UploadFile: Rename complete for {file.Name} (elapsed: {copyprogress.Stopwatch.ElapsedMilliseconds})", 5);
                         }
 
-                        if (MoveFile && currentbreakupfile == breakupfiles)
+                        // pushing the bytes into the temp file is not the transfer succeeding - the rename is what
+                        // makes it real, and it can appear to succeed without taking effect.  Verify every part
+                        // unconditionally rather than only when the caller asked for MoveFile.
+                        if (!FileExists(finalname, destinationfolder))
+                            throw new Exception($"FTPSession.UploadFile: Target file {finalname} does not exist in {destinationfolder} after apparently successful transfer{(usetmpfile ? $" of {tmpfile}" : string.Empty)}");
+                        tmpfiletocleanup = null;
+
+                        if (currentbreakupfile == breakupfiles)
                         {
-                            list = List(TimeSpan.FromTicks(-1), destinationfolder).ToList();
-                            if (list.Exists(x => x.FileName.Equals(file.Name, StringComparison.OrdinalIgnoreCase)))
-                                file.Delete();
-                            else
-                                throw new Exception($"FTPSession.UploadFileAsync: Target file {file.Name} does not exist after apparently successful transfer - not deleting source file");
-                        }
-                        if (progresscallback != null)
-                        {
-                            if (copyprogress.BytesCopied != len) throw new Exception("BytesCopied is not the length of the file");
+                            // BytesCopied only counts parts transferred on this run - in breakup mode earlier parts
+                            // may have been skipped because they were already on the destination, so this only holds
+                            // for a single-part upload.  Breakup mode is covered by the per-part check above.
+                            if (breakupfiles == 1 && copyprogress.BytesCopied != len) throw new Exception("BytesCopied is not the length of the file");
                             copyprogress.IsCompleted = true;
-                            progresscallback(copyprogress);
+                            if (MoveFile) file.Delete();
                         }
+                        if (progresscallback != null) progresscallback(copyprogress);
                         StatusUpdate($"UploadFile: {copyprogress}", 5);
                         StatusUpdate($"/UploadFile: {file.Name} (elapsed: {copyprogress.Stopwatch.ElapsedMilliseconds})", 5);
                     }
@@ -805,6 +855,8 @@ namespace MDDFoundation
             catch (Exception ex)
             {
                 StatusUpdate($"FTPSession.UploadFile: Error Occurred for {file.Name}: {ex.Message}", 16);
+                // otherwise a failed upload leaves its temp file on the destination forever
+                TryDeleteTempFile(tmpfiletocleanup, destinationfolder);
                 throw;
             }
         }
