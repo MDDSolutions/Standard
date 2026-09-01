@@ -411,10 +411,10 @@ namespace MDDDataAccess
                 return TrackedState.Invalid;
             }
         }
-        public IReadOnlyDictionary<string, (object OldValue, object NewValue)> DirtyProperties => GetDirtyProperties();
-        private Dictionary<string, (object, object)> GetDirtyProperties()
+        public IReadOnlyDictionary<string, DirtyPropertyValues> DirtyProperties => GetDirtyProperties();
+        private Dictionary<string, DirtyPropertyValues> GetDirtyProperties()
         {
-            var result = new Dictionary<string, (object, object)>();
+            var result = new Dictionary<string, DirtyPropertyValues>();
 
             if (_entityRef.TryGetTarget(out var entity))
             {
@@ -426,7 +426,7 @@ namespace MDDDataAccess
                         {
                             var original = _originalValues[propName];
                             var current = _allpropertydelegates[propName].Getter.Invoke(entity);
-                            result[propName] = (original, current);
+                            result[propName] = new DirtyPropertyValues(original, current);
                         }
                     }
                 }
@@ -437,7 +437,7 @@ namespace MDDDataAccess
                         var current = _allpropertydelegates[kv.Key].Getter.Invoke(entity);
                         if (!Foundation.ValueEquals(current, kv.Value))
                         {
-                            result[kv.Key] = (kv.Value, current);
+                            result[kv.Key] = new DirtyPropertyValues(kv.Value, current);
                         }
                     }
                 }
