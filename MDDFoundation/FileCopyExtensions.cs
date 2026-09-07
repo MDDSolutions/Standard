@@ -51,6 +51,25 @@ namespace MDDFoundation
         RemoteToRemote = 5,
     }
 
+    public sealed class FileCopyStallException : IOException
+    {
+        public FileCopyStallException(
+            string sourcePath,
+            TimeSpan readTimeout,
+            Exception? innerException = null)
+            : base(
+                $"A read from '{sourcePath}' did not complete within " +
+                $"{readTimeout.TotalSeconds:N0} seconds.",
+                innerException)
+        {
+            SourcePath = sourcePath;
+            ReadTimeout = readTimeout;
+        }
+
+        public string SourcePath { get; }
+        public TimeSpan ReadTimeout { get; }
+    }
+
     public static class FileCopyExtensions
     {
         // --------------------------------------------------------------------
@@ -63,8 +82,24 @@ namespace MDDFoundation
         private const long MaxChunkedCopyEstimatedMemoryBytes32Bit = 384L * 1024 * 1024;
         private const long MaxChunkBufferPoolBytes64Bit = 256L * 1024 * 1024;
         private const long MaxChunkBufferPoolBytes32Bit = 96L * 1024 * 1024;
+        private const uint ThreadTerminateAccess = 0x0001;
         private static readonly ConcurrentBag<byte[]> ChunkBufferPool = new ConcurrentBag<byte[]>();
         private static long ChunkBufferPoolBytes;
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr OpenThread(
+            uint desiredAccess,
+            bool inheritHandle,
+            uint threadId);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CancelSynchronousIo(IntPtr threadHandle);
+
+        [DllImport("kernel32.dll")]
+        private static extern uint GetCurrentThreadId();
+
+        [DllImport("kernel32.dll")]
+        private static extern bool CloseHandle(IntPtr handle);
 
         public static void ClearChunkBufferPool()
         {
@@ -273,7 +308,10 @@ namespace MDDFoundation
             var arch = RuntimeInformation.ProcessArchitecture;
             var hashMode = copyprogress.HashMode;
             var computeHash = hashMode != FileCopyHashMode.NoHash;
-            copyprogress.DiagnosticInfo = $"{CopyToAsyncSequentialReadChunkedVersion}; runtime={runtime}; arch={arch}; profile={resolvedProfile}; io=sync; pipeline=read+hash+write; chunk={copyprogress.ChunkSizeBytes / 1024 / 1024}MiB; parallel={copyprogress.ParallelChunks}; buffer={copyprogress.BufferSize / 1024}KiB; queuedChunks={copyprogress.PipelineBufferCount}; streamBuffer={FileRelayStreamBufferSize / 1024}KiB; stateFlush={copyprogress.ChunkStateFlushInterval.TotalSeconds:N0}s; fullStateFlush={copyprogress.FullFlushChunkState}; verify={copyprogress.VerifyChunkWrites}; hashMode={hashMode}";
+            var readTimeoutText = copyprogress.SynchronousReadTimeout > TimeSpan.Zero
+                ? $"{copyprogress.SynchronousReadTimeout.TotalSeconds:N0}s"
+                : "off";
+            copyprogress.DiagnosticInfo = $"{CopyToAsyncSequentialReadChunkedVersion}; runtime={runtime}; arch={arch}; profile={resolvedProfile}; io=sync; readTimeout={readTimeoutText}; pipeline=read+hash+write; chunk={copyprogress.ChunkSizeBytes / 1024 / 1024}MiB; parallel={copyprogress.ParallelChunks}; buffer={copyprogress.BufferSize / 1024}KiB; queuedChunks={copyprogress.PipelineBufferCount}; streamBuffer={FileRelayStreamBufferSize / 1024}KiB; stateFlush={copyprogress.ChunkStateFlushInterval.TotalSeconds:N0}s; fullStateFlush={copyprogress.FullFlushChunkState}; verify={copyprogress.VerifyChunkWrites}; hashMode={hashMode}";
             var dup = copyprogress.Destinations.GroupBy(d => d.FullName, StringComparer.OrdinalIgnoreCase).FirstOrDefault(g => g.Count() > 1);
             if (dup != null) throw new ArgumentException($"Duplicate destination path: {dup.Key}", nameof(copyprogress.Destinations));
 
@@ -303,6 +341,10 @@ namespace MDDFoundation
             var diagnostics = new ChunkedCopyDiagnostics(targets.Length);
             var hashQueue = new BlockingCollection<HashWork>(copyprogress.PipelineBufferCount);
             var workQueue = new BlockingCollection<SequentialChunkWork>(copyprogress.PipelineBufferCount);
+            long sourceReadStartedTimestamp = 0;
+            int sourceReadInProgress = 0;
+            int sourceReadStallCancellationRequested = 0;
+            uint sourceReaderThreadId = 0;
             byte[] finalWholeHash = Array.Empty<byte>();
             byte[]? sha1ResumeState = null;
             int sha1ResumeChunkCount = 0;
@@ -406,6 +448,33 @@ namespace MDDFoundation
                 }
 
                 using var copyCts = CancellationTokenSource.CreateLinkedTokenSource(copyprogress.Token);
+                using var sourceReadCancellationRegistration =
+                    copyCts.Token.Register(() =>
+                    {
+                        if (!RuntimeInformation.IsOSPlatform(
+                                OSPlatform.Windows) ||
+                            Volatile.Read(ref sourceReadInProgress) == 0 ||
+                            sourceReaderThreadId == 0)
+                        {
+                            return;
+                        }
+
+                        IntPtr threadHandle = OpenThread(
+                            ThreadTerminateAccess,
+                            false,
+                            sourceReaderThreadId);
+                        if (threadHandle == IntPtr.Zero)
+                            return;
+
+                        try
+                        {
+                            CancelSynchronousIo(threadHandle);
+                        }
+                        finally
+                        {
+                            CloseHandle(threadHandle);
+                        }
+                    });
 
                 // Three-stage pipeline: reader (sync source I/O) -> hasher (SHA1 + per-chunk
                 // XxHash3) -> workers (sync destination writes). Each stage runs on its own
@@ -416,6 +485,11 @@ namespace MDDFoundation
                 {
                     try
                     {
+                        if (RuntimeInformation.IsOSPlatform(
+                                OSPlatform.Windows))
+                        {
+                            sourceReaderThreadId = GetCurrentThreadId();
+                        }
                         using var source = new FileStream(
                             copyprogress.SourceFile.FullName,
                             FileMode.Open,
@@ -449,7 +523,49 @@ namespace MDDFoundation
                             {
                                 var readSize = (int)Math.Min(copyprogress.BufferSize, length - totalRead);
                                 var readTicks = Stopwatch.GetTimestamp();
-                                var n = source.Read(chunkBuffer, totalRead, readSize);
+                                Volatile.Write(
+                                    ref sourceReadStartedTimestamp,
+                                    readTicks);
+                                Volatile.Write(ref sourceReadInProgress, 1);
+                                int n;
+                                try
+                                {
+                                    n = source.Read(
+                                        chunkBuffer,
+                                        totalRead,
+                                        readSize);
+                                }
+                                catch (Exception ex)
+                                    when (Volatile.Read(
+                                        ref sourceReadStallCancellationRequested) != 0)
+                                {
+                                    throw new FileCopyStallException(
+                                        copyprogress.SourceFile.FullName,
+                                        copyprogress.SynchronousReadTimeout,
+                                        ex);
+                                }
+                                catch (Exception ex)
+                                    when (copyCts.IsCancellationRequested)
+                                {
+                                    throw new OperationCanceledException(
+                                        "The source read was cancelled.",
+                                        ex,
+                                        copyprogress.Token);
+                                }
+                                finally
+                                {
+                                    Volatile.Write(
+                                        ref sourceReadInProgress,
+                                        0);
+                                }
+
+                                if (Volatile.Read(
+                                    ref sourceReadStallCancellationRequested) != 0)
+                                {
+                                    throw new FileCopyStallException(
+                                        copyprogress.SourceFile.FullName,
+                                        copyprogress.SynchronousReadTimeout);
+                                }
                                 diagnostics.AddRead(Stopwatch.GetTimestamp() - readTicks);
                                 if (n == 0) throw new EndOfStreamException("Unexpected end of file during sequential chunked copy.");
                                 totalRead += n;
@@ -496,6 +612,101 @@ namespace MDDFoundation
                     CancellationToken.None,
                     TaskContinuationOptions.ExecuteSynchronously,
                     TaskScheduler.Default);
+
+                var readWatchdogTask = Task.Run(async () =>
+                {
+                    if (copyprogress.SynchronousReadTimeout <= TimeSpan.Zero ||
+                        !RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                    {
+                        return;
+                    }
+
+                    var pollInterval = TimeSpan.FromMilliseconds(
+                        Math.Max(
+                            250,
+                            Math.Min(
+                                1000,
+                                copyprogress.SynchronousReadTimeout
+                                    .TotalMilliseconds / 4)));
+                    try
+                    {
+                        while (!readerTask.IsCompleted &&
+                               !copyCts.IsCancellationRequested)
+                        {
+                            await Task.Delay(
+                                pollInterval,
+                                copyCts.Token).ConfigureAwait(false);
+
+                            if (Volatile.Read(
+                                    ref sourceReadInProgress) == 0)
+                            {
+                                continue;
+                            }
+
+                            long started = Volatile.Read(
+                                ref sourceReadStartedTimestamp);
+                            double elapsedSeconds =
+                                (Stopwatch.GetTimestamp() - started) /
+                                (double)Stopwatch.Frequency;
+                            if (elapsedSeconds <
+                                copyprogress.SynchronousReadTimeout
+                                    .TotalSeconds)
+                            {
+                                continue;
+                            }
+
+                            IntPtr threadHandle = OpenThread(
+                                ThreadTerminateAccess,
+                                false,
+                                sourceReaderThreadId);
+                            if (threadHandle == IntPtr.Zero)
+                            {
+                                throw new Win32Exception(
+                                    Marshal.GetLastWin32Error(),
+                                    "Unable to open the stalled source " +
+                                    "reader thread for I/O cancellation.");
+                            }
+
+                            try
+                            {
+                                Interlocked.Exchange(
+                                    ref sourceReadStallCancellationRequested,
+                                    1);
+                                if (!CancelSynchronousIo(threadHandle))
+                                {
+                                    int error = Marshal.GetLastWin32Error();
+                                    Interlocked.Exchange(
+                                        ref sourceReadStallCancellationRequested,
+                                        0);
+                                    const int ErrorNotFound = 1168;
+                                    if (error == ErrorNotFound)
+                                        continue;
+
+                                    throw new Win32Exception(
+                                        error,
+                                        "Unable to cancel the stalled " +
+                                        "synchronous source read.");
+                                }
+
+                                copyCts.Cancel();
+                                return;
+                            }
+                            finally
+                            {
+                                CloseHandle(threadHandle);
+                            }
+                        }
+                    }
+                    catch (OperationCanceledException)
+                        when (copyCts.IsCancellationRequested)
+                    {
+                    }
+                    catch
+                    {
+                        copyCts.Cancel();
+                        throw;
+                    }
+                }, CancellationToken.None);
 
                 var hasherTask = Task.Run(() =>
                 {
@@ -657,7 +868,14 @@ namespace MDDFoundation
                     }
                 }, copyCts.Token)).ToArray();
 
-                await Task.WhenAll(workers.Concat(new[] { readerTask, hasherTask })).ConfigureAwait(false);
+                await Task.WhenAll(
+                    workers.Concat(
+                        new[]
+                        {
+                            readerTask,
+                            hasherTask,
+                            readWatchdogTask
+                        })).ConfigureAwait(false);
 
                 if (computeHash &&
                     finalWholeHash.Length == 0 &&
@@ -1647,6 +1865,14 @@ namespace MDDFoundation
         public bool PreallocateDestinationFiles { get; set; } = false;
         public bool FullFlushOnCompletion { get; set; } = true;
         public bool ReleaseChunkBuffersOnCompletion { get; set; } = false;
+
+        /// <summary>
+        /// Maximum time one synchronous source read may remain outstanding.
+        /// A positive value enables Windows synchronous-I/O cancellation and
+        /// surfaces a <see cref="FileCopyStallException"/> so callers can try
+        /// another source. Zero disables the watchdog.
+        /// </summary>
+        public TimeSpan SynchronousReadTimeout { get; set; } = TimeSpan.Zero;
 
         public DateTime StartTime { get; private set; }
         private Stopwatch? stopwatch = null;

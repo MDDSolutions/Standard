@@ -28,6 +28,7 @@ namespace MDDFoundation
             public int MaxRotatedFiles { get; set; }
             public TimeSpan? MaxRotatedFileAge { get; set; }
             public bool PruneOnRotate { get; set; } = true;
+            public bool RotateOnInitialize { get; set; }
 
             public FoundationLogOptions Clone()
             {
@@ -36,7 +37,8 @@ namespace MDDFoundation
                     MaxFileSizeBytes = MaxFileSizeBytes,
                     MaxRotatedFiles = MaxRotatedFiles,
                     MaxRotatedFileAge = MaxRotatedFileAge,
-                    PruneOnRotate = PruneOnRotate
+                    PruneOnRotate = PruneOnRotate,
+                    RotateOnInitialize = RotateOnInitialize
                 };
             }
         }
@@ -71,7 +73,10 @@ namespace MDDFoundation
                             Directory.CreateDirectory(Path.GetDirectoryName(FullFileName) ?? ".");
                             if (File.Exists(FullFileName))
                             {
-                                File.Delete(FullFileName);
+                                if (Options.RotateOnInitialize)
+                                    RotateLocked(new FileInfo(FullFileName));
+                                else
+                                    File.Delete(FullFileName);
                             }
                         }
                         catch (Exception ex)
@@ -410,6 +415,7 @@ namespace MDDFoundation
             target.MaxRotatedFiles = source.MaxRotatedFiles;
             target.MaxRotatedFileAge = source.MaxRotatedFileAge;
             target.PruneOnRotate = source.PruneOnRotate;
+            target.RotateOnInitialize = source.RotateOnInitialize;
         }
 
         private static string FormatEntry(string message, FoundationLogLevel level, string source)
