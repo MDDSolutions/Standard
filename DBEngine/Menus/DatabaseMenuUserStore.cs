@@ -38,6 +38,12 @@ namespace MDDDataAccess.Menus
                     if (!row.IsNull("LastUsed")) state.LastUsed[itemId] = (DateTime)row["LastUsed"];
                 }
             }
+            using (var table = await engine.SqlRunQueryWithResultsDataTableAsync("MenuSystem.UserSetting_Select", true, token, -1, "MenuSystem",
+                Number("@UserId", id), Text("@ApplicationKey", 100, applicationKey)).ConfigureAwait(false))
+            {
+                foreach (DataRow row in table.Rows)
+                    if (!row.IsNull("Value")) state.Settings[(string)row["Name"]] = (string)row["Value"];
+            }
             userId = id;
             return state;
         }
@@ -55,6 +61,13 @@ namespace MDDDataAccess.Menus
             return engine.SqlGetScalarAsync<DateTime>("MenuSystem.UsageLog_Record", true, token, -1, "MenuSystem",
                 Number("@UserId", userId), Text("@ApplicationKey", 100, applicationKey), Number("@MenuItemId", menuItemId), Number("@LaunchMode", (int)mode),
                 new SqlParameter("@SessionId", SqlDbType.UniqueIdentifier) { Value = sessionId }, Text("@MachineName", 128, Environment.MachineName));
+        }
+        public Task SetSettingAsync(string applicationKey, string name, string value, CancellationToken token)
+        {
+            EnsureLoaded();
+            return engine.SqlRunProcedureAsync("MenuSystem.UserSetting_Set", token, -1, "MenuSystem",
+                Number("@UserId", userId), Text("@ApplicationKey", 100, applicationKey), Text("@Name", 64, name),
+                new SqlParameter("@Value", SqlDbType.NVarChar, 400) { Value = (object)value ?? DBNull.Value });
         }
         private void EnsureLoaded() { if (userId <= 0) throw new InvalidOperationException("Load the menu user before changing favourites or recording usage."); }
         private static SqlParameter Text(string name, int size, string value) => new SqlParameter(name, SqlDbType.NVarChar, size) { Value = value };

@@ -21,7 +21,7 @@ namespace MDDDataAccess.Menus
             var items = new List<MenuItem>();
             using (var table = await engine.SqlRunQueryWithResultsDataTableAsync(@"SELECT Id, ParentId, Kind, Title, Description, IconKey, Keywords, SortOrder,
 TargetKind, TargetTypeName, AssemblyName, ExecutablePath, Arguments, DefaultLaunchMode, AllowNewInstance, ProcedureName
-FROM MenuSystem.MenuItem WHERE ApplicationKey = @ApplicationKey ORDER BY SortOrder, Title, Id;",
+FROM MenuSystem.MenuItem WHERE ApplicationKey = @ApplicationKey AND Retired = 0 ORDER BY SortOrder, Title, Id;",
                 false, cancellationToken, -1, "MenuSystem",
                 new SqlParameter("@ApplicationKey", SqlDbType.NVarChar, 100) { Value = applicationKey }).ConfigureAwait(false))
             {
@@ -37,8 +37,12 @@ FROM MenuSystem.MenuItem WHERE ApplicationKey = @ApplicationKey ORDER BY SortOrd
                     });
             }
             using (var table = await engine.SqlRunQueryWithResultsDataTableAsync(
-                @"SELECT MenuItemId, CategoryId, SortOrder FROM MenuSystem.MenuItemCategory
-WHERE ApplicationKey = @ApplicationKey ORDER BY CategoryId, SortOrder, MenuItemId;",
+                @"SELECT placed.MenuItemId, placed.CategoryId, placed.SortOrder
+FROM MenuSystem.MenuItemCategory placed
+JOIN MenuSystem.MenuItem item ON item.ApplicationKey = placed.ApplicationKey AND item.Id = placed.MenuItemId
+JOIN MenuSystem.MenuItem category ON category.ApplicationKey = placed.ApplicationKey AND category.Id = placed.CategoryId
+WHERE placed.ApplicationKey = @ApplicationKey AND item.Retired = 0 AND category.Retired = 0
+ORDER BY placed.CategoryId, placed.SortOrder, placed.MenuItemId;",
                 false, cancellationToken, -1, "MenuSystem",
                 new SqlParameter("@ApplicationKey", SqlDbType.NVarChar, 100) { Value = applicationKey }).ConfigureAwait(false))
             {
