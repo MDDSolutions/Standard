@@ -31,7 +31,7 @@ namespace MDDNetComm
     public sealed class ApplicationDiscoveryOptions
     {
         public IPAddress MulticastAddress { get; set; } = IPAddress.Parse("239.255.42.99");
-        public int MulticastPort { get; set; } = 51500;
+        public int MulticastPort { get; set; } = 48000;
         public TimeSpan AnnouncementInterval { get; set; } = TimeSpan.FromSeconds(5);
         public TimeSpan ExpirationInterval { get; set; } = TimeSpan.FromSeconds(20);
     }
