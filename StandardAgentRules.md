@@ -21,49 +21,118 @@ Git usage must be read-only, such as inspecting status, diffs, or history (`git 
 
 Do not ask for approval to make an exception to this rule, since no such approval will be given and there are no exceptions.
 
-## Absolute SQL Server Execution Prohibition
+## Read-Only SQL Server Access
 
-Under no circumstances may you connect to or execute SQL against any SQL Server. This prohibition applies even to read-only access and regardless of whether credentials or tooling are available.
+Agents may connect to an explicitly authorized SQL Server database for read-only investigation when doing so materially helps the current task. Permitted uses include inspecting schema metadata, examining object definitions, validating assumptions about stored data, and diagnosing application behavior.
 
-Do not:
+Read-only access is permission to observe, not permission to administer or modify.
 
-- Run `SELECT`, metadata, validation, diagnostic, or any other SQL statements.
-- Execute stored procedures, migrations, deployment scripts, or database tests.
-- Use `sqlcmd`, SSMS, PowerShell database commands, application code, scripts, APIs, or any other mechanism that directly or indirectly sends commands to a SQL Server.
-- Do not ask for approval to make an exception to this rule since no such approval will be given and there are no exceptions
-- cite this rule as needed to inform the user that SQL execution could or would have improved something if that is your opinion
-- feel free to suggest SQL code to execute in code windows in the chat
+### Required Access Controls
 
-Do not validate changes against a live SQL Server. If a task cannot be completed without SQL Server access, stop and explain the limitation so the user can perform any required database operation themselves.
+Agents may connect to SQL Server only by using the SQL-authenticated login `AIAgentReadOnly`. No other SQL Server or Windows identity is authorized for agent use, even if it appears to have read-only access.
 
-## How Database Work Is Done
+Do not use Windows or integrated authentication, the agent process identity, the user's identity, application credentials, deployment credentials, cached credentials, or any other SQL login. Do not ask for or attempt to discover an alternative credential.
 
-The prohibition above is absolute and never varies. How you *learn* what you need to know about a
-database does vary, because it depends on what the repository makes available. These are two
-different things and should not be conflated.
+If the password for `AIAgentReadOnly` is unavailable, the login does not exist, authentication fails, access to the required database is denied, or the account otherwise does not work, stop and inform the user. Do not retry through another identity or authentication method.
 
-**When a SQL Database Project is present in the tree, use it.** Read its table, view, stored
-procedure and function files to establish column names, parameter lists, types and signatures. Treat
-it as a baseline rather than as live truth: the user applies schema changes directly and syncs the
-project when convenient, so it can lag the live database. Track the effective live schema as the
-project *plus* any scripts supplied and statements made since, in order. If conversation context is
-lost, or conflicting information makes the effective schema genuinely uncertain, ask for the specific
-state rather than assuming the project is current.
+The `AIAgentReadOnly` identity must have only the minimum necessary permissions, normally:
 
-**When no SQL Database Project is present, do not guess.** Inferring a schema from application code
-alone produces confident, wrong answers. Instead do one of two things, and say which you would
-prefer and why:
+- `CONNECT`
+- `SELECT` on the required schemas, tables, or views
+- `VIEW DEFINITION` within the required database when object definitions are needed
 
-- Ask the user to add a SQL Database Project for that database, so future sessions have a reference.
-- Give the user the specific queries to run — in a code block, ready to copy — and work from what
-  they report back.
+The identity must not have write, ownership, administrative, deployment, or unrestricted execution permissions. If query results or permission metadata indicate that `AIAgentReadOnly` has such access, stop without performing further database work and inform the user.
 
-**When a schema change is needed**, present a complete, reviewable script in the chat for the user to
-run. Do not modify database project files as a substitute for proposing the change. When the user
-moves on to another task after receiving a script, assume they reviewed and ran it in full unless
-they say they did not run it, ran only part of it, or need it rewritten; do not require a separate
-deployment confirmation. Carry those changes forward as the effective schema for the rest of the
-session.
+After connecting, verify with a read-only query that `ORIGINAL_LOGIN()` is exactly `AIAgentReadOnly` before performing investigative queries. If it is not, stop and inform the user.
+
+Connection-string options such as `ApplicationIntent=ReadOnly` do not by themselves establish that an identity is read-only.
+
+### Connection and Credential Configuration
+
+The authorized connection is:
+
+- Server: `MDD-SQL2022`
+- Database: `Other`
+- SQL-authenticated login: `AIAgentReadOnly`
+
+The connection settings are stored as persistent Windows user environment variables:
+
+- `SQLCMDSERVER` contains the server name.
+- `SQLCMDDBNAME` contains the database name.
+- `SQLCMDUSER` contains the login name.
+- `SQLCMDPASSWORD` contains the password.
+
+These variables are inherited when Codex or Claude Code starts. Agents may read them only for the authorized SQL connection. Never display, echo, log, return, or write the password to a command line, chat, source file, script, configuration file, or diagnostic output. Never pass the password with the `sqlcmd -P` option. Do not create, change, delete, or persist any of these environment variables; the user manages them.
+
+If `SQLCMDPASSWORD` is absent or empty, stop and inform the user. Do not search for the password elsewhere and do not request or try another credential. The non-secret variables may be checked against the fixed values above, but the fixed values above remain authoritative and no value may be substituted to reach another server, database, or login.
+
+For `sqlcmd`, use SQL authentication with the fixed server, database, and login, allowing `sqlcmd` to obtain the password from `SQLCMDPASSWORD`. Do not specify `-E` or another authentication method. A permitted connection has this form:
+
+```powershell
+sqlcmd -S 'MDD-SQL2022' -d 'Other' -U 'AIAgentReadOnly' -Q "SELECT ORIGINAL_LOGIN() AS LoginName, SUSER_SNAME() AS SessionLogin, DB_NAME() AS DatabaseName;"
+```
+
+Every new connection must first verify that `ORIGINAL_LOGIN()` is `AIAgentReadOnly` and that `DB_NAME()` is `Other`. This verification may be the first `SELECT` in the same batch as the investigative query.
+
+Within Codex on this machine, the normal restricted execution sandbox cannot complete the SQL client's TLS connection. Run the same `AIAgentReadOnly` SQL-authenticated command through Codex's approved outside-sandbox execution path. This is only an execution-environment requirement; it does not authorize a different login, authentication method, server, database, or broader filesystem or machine access. Claude Code may use its normal execution path if the authorized connection succeeds there.
+
+### Permitted Queries
+
+Agents may issue direct, read-only `SELECT` queries, including queries beginning with a common table expression (`WITH`) and ending in a `SELECT`.
+
+Permitted targets are limited to the database relevant to the current task:
+
+- User tables and views for necessary diagnostic data
+- `sys` catalog views and other read-only metadata
+- Object definitions exposed through catalog views or metadata functions
+- Aggregate and existence queries used to validate assumptions
+
+Prefer metadata and narrowly targeted queries before retrieving application data. Select only the columns and rows needed for the investigation. Use restrictive predicates and a reasonable `TOP` limit when inspecting row-level data.
+
+### Prohibited SQL Operations
+
+Agents must never execute any operation that can create, alter, delete, insert, update, merge, deploy, restore, import, export, or otherwise mutate database or server state.
+
+In particular, do not execute:
+
+- `INSERT`, `UPDATE`, `DELETE`, `MERGE`, or `TRUNCATE`
+- `CREATE`, `ALTER`, `DROP`, `RENAME`, or other DDL
+- `SELECT INTO`, including creation of temporary tables
+- `EXEC`, `EXECUTE`, dynamic SQL, stored procedures, or extended procedures
+- Migrations, deployment scripts, seed operations, or database update commands
+- `DBCC`, `BACKUP`, `RESTORE`, `BULK INSERT`, or administrative commands
+- Transaction-control statements
+- Queries containing write-oriented or aggressive locking hints such as `UPDLOCK`, `XLOCK`, `TABLOCKX`, or `HOLDLOCK`
+- Linked-server, external-data, or ad hoc remote-access mechanisms such as `OPENQUERY`, `OPENROWSET`, or `OPENDATASOURCE`
+- User-defined or CLR functions when their read-only and side-effect-free behavior has not been established
+- Any command intended to test whether the account can write
+- Any operation against a database or server outside the task’s explicitly authorized scope
+
+Do not ask for permission to make an exception. If mutation is needed, provide the proposed SQL as text for the user to review and run manually.
+
+### Data Safety and Query Impact
+
+Read access can still expose confidential information or affect production performance.
+
+Agents must:
+
+- Retrieve the minimum data necessary.
+- Avoid secrets, credentials, tokens, encryption material, and personal or regulated data unless that exact data is explicitly required and authorized.
+- Avoid copying sensitive row data into chat when a count, schema description, redacted sample, or summary is sufficient.
+- Avoid unbounded queries and broad `SELECT *` queries against potentially large tables.
+- Avoid queries likely to produce substantial load, blocking, or very large results.
+- Use a reasonable command timeout and stop if a query appears expensive or disruptive.
+- Treat query results as sensitive and disclose only what is needed to complete the task.
+
+Read-only access does not authorize browsing unrelated business data.
+
+### Schema and Database Changes
+
+Agents may inspect the live schema through read-only catalog queries and may also inspect SQL Database Project files when present. The live database is the best source for its current schema, while project files remain useful for understanding intended and version-controlled definitions.
+
+When a schema or data change is needed, prepare a complete, reviewable script in the chat or as a project file, as appropriate. Do not execute it. The user remains solely responsible for reviewing and running every database mutation.
+
+If the required investigation cannot be completed safely through the permitted read-only access, stop and explain what information or user-run query is needed.
 
 ## Git Checkpoint Guidance
 
