@@ -11,6 +11,17 @@ If a repository's `AGENTS.md` or `CLAUDE.md` sent you here and you could not rea
 and tell the user before changing anything.** These rules are non-negotiable, and work produced
 without them may have to be discarded.
 
+When a session is working from a repository copy rather than from the original, compare the two
+before relying on the copy. One hash comparison is enough:
+
+```bash
+md5sum "C:/Dev/StandardAgentRules.md" "C:/Dev/<Repo>/StandardAgentRules.md"
+```
+
+If they differ, the original at `C:\Dev\StandardAgentRules.md` is authoritative — follow it, and say
+which text you are working from. A copy is expected to lag while a policy change is being written
+and has not been propagated yet, so a difference is information, not a fault.
+
 ---
 
 ## Absolute Git Mutation Prohibition
@@ -32,6 +43,8 @@ Read-only access is permission to observe, not permission to administer or modif
 Agents may connect to SQL Server only by using the SQL-authenticated login `AIAgentReadOnly`. No other SQL Server or Windows identity is authorized for agent use, even if it appears to have read-only access.
 
 Do not use Windows or integrated authentication, the agent process identity, the user's identity, application credentials, deployment credentials, cached credentials, or any other SQL login. Do not ask for or attempt to discover an alternative credential.
+
+The single exception is a committed test project run under Running Tests, which connects as the user by design and has been reviewed as a whole. Nothing else may reach SQL Server under another identity.
 
 If the password for `AIAgentReadOnly` is unavailable, the login does not exist, authentication fails, access to the required database is denied, or the account otherwise does not work, stop and inform the user. Do not retry through another identity or authentication method.
 
@@ -74,7 +87,20 @@ sqlcmd -S 'MDD-SQL2022' -d 'Other' -U 'AIAgentReadOnly' -Q "SELECT ORIGINAL_LOGI
 
 Every new connection must first verify that `ORIGINAL_LOGIN()` is `AIAgentReadOnly` and that `DB_NAME()` is `Other`. This verification may be the first `SELECT` in the same batch as the investigative query.
 
+Use `-Q` with inline SQL only. Do not use `-i`, and do not use the `sqlcmd` commands that change or escape the connection: `:CONNECT`, `:r`, `:!!`, `:setvar`. `:CONNECT` in particular can reconnect as a different login or to a different server, which would defeat the login rule above. `-b` (exit on error), `-l` (login timeout) and `-t` (query timeout) are permitted and encouraged. `-X` cannot be used here: it disables the `SQLCMDPASSWORD` environment variable along with the features it blocks, and the connection then fails.
+
 Within Codex on this machine, the normal restricted execution sandbox cannot complete the SQL client's TLS connection. Run the same `AIAgentReadOnly` SQL-authenticated command through Codex's approved outside-sandbox execution path. This is only an execution-environment requirement; it does not authorize a different login, authentication method, server, database, or broader filesystem or machine access. Claude Code may use its normal execution path if the authorized connection succeeds there.
+
+Within Claude Code, `.claude/settings.json` is a second enforcement layer and must agree with this document. Its `permissions.deny` list blocks `sqlcmd` outright unless a matching `allow` entry exists, and auto mode's safety classifier refuses SQL-authentication commands unless one exists. The allow entry is pinned to the authorized connection, so nothing else is permitted by it:
+
+```json
+"allow": [
+  "Bash(sqlcmd -S 'MDD-SQL2022' -d 'Other' -U 'AIAgentReadOnly':*)",
+  "PowerShell(sqlcmd -S 'MDD-SQL2022' -d 'Other' -U 'AIAgentReadOnly':*)"
+]
+```
+
+A refusal therefore does not always mean the policy forbids something — it may mean a settings file is stale or malformed. A settings file that does not parse is silently ignored in full, which disables every rule in it; see the Settings File Integrity rule in `CLAUDE.md`.
 
 ### Permitted Queries
 
@@ -89,6 +115,12 @@ Permitted targets are limited to the database relevant to the current task:
 
 Prefer metadata and narrowly targeted queries before retrieving application data. Select only the columns and rows needed for the investigation. Use restrictive predicates and a reasonable `TOP` limit when inspecting row-level data.
 
+Access extends to the database named in Connection and Credential Configuration and to nothing else. The login you are given defines your scope. If a task targets a different database, ask the user for access to that database rather than attempting to reach it.
+
+`SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED` and `SET LOCK_TIMEOUT` may be issued before a query to limit the impact of investigation on a live server. They are permitted despite the ban on transaction-control statements below, which concerns `BEGIN TRANSACTION`, `COMMIT`, `ROLLBACK` and `SAVE TRANSACTION`.
+
+Show the SQL you executed in the chat. Every query run against the database should be reviewable after the fact without the user having to ask what was run.
+
 ### Prohibited SQL Operations
 
 Agents must never execute any operation that can create, alter, delete, insert, update, merge, deploy, restore, import, export, or otherwise mutate database or server state.
@@ -101,7 +133,7 @@ In particular, do not execute:
 - `EXEC`, `EXECUTE`, dynamic SQL, stored procedures, or extended procedures
 - Migrations, deployment scripts, seed operations, or database update commands
 - `DBCC`, `BACKUP`, `RESTORE`, `BULK INSERT`, or administrative commands
-- Transaction-control statements
+- Transaction-control statements: `BEGIN TRANSACTION`, `COMMIT`, `ROLLBACK`, `SAVE TRANSACTION`
 - Queries containing write-oriented or aggressive locking hints such as `UPDLOCK`, `XLOCK`, `TABLOCKX`, or `HOLDLOCK`
 - Linked-server, external-data, or ad hoc remote-access mechanisms such as `OPENQUERY`, `OPENROWSET`, or `OPENDATASOURCE`
 - User-defined or CLR functions when their read-only and side-effect-free behavior has not been established
@@ -157,6 +189,28 @@ The user reviews and builds code in Visual Studio and is the primary source of f
 - If a build would require user approval or elevated access, skip it unless build verification was explicitly requested or is essential to the task. Do not create a routine approval round-trip merely to build.
 - Clearly state in the handoff when code was not built, so the user can validate it in Visual Studio.
 - If the user's build reports errors, use the supplied diagnostics to correct the code in the same conversation.
+
+### Do Not Run Application Code
+
+Building is permitted as described above. Running is not. Do not launch an application, run its tests, execute a utility or script from the tree, or otherwise start project code — whether or not it touches SQL Server, and whether or not it looks read-only. The division of work is that the agent writes code and the user reviews and runs it.
+
+This includes indirect runs: `dotnet run`, `dotnet test`, test harnesses, sample or diagnostic projects, and anything else that starts a project executable to observe its behaviour. Application code also carries its own connection strings and runs under the user's identity, so running it is a way to reach SQL Server outside the authorized login without ever naming it.
+
+When a task appears to require running code, say what you would run and what you expect to learn from it, and let the user run it and report back.
+
+### Running Tests
+
+Tests are the exception. An agent may run a test project when that project is **committed and has no uncommitted changes**, because the user has then reviewed and approved exactly what will execute. Verify it first, and say that you did:
+
+```bash
+git -C "C:/Dev/<Repo>" status --porcelain --untracked-files=all -- "<TestProjectPath>"
+```
+
+Empty output means the project is clean and may be run. Any output at all — modified, added or untracked files anywhere in the project — means it may not, including when the only change is a test you just wrote. Write tests freely; hand them to the user for review and check-in, and run them once they are committed.
+
+Running a test project executes it against the production code currently in the working tree, **including uncommitted changes**, so an approved test is not the same as approved behaviour. Do not run a committed test when uncommitted changes alter what it will touch: the database or connection it uses, the files or directories it writes to, or whether a read path becomes a write path. Say what will run, what it connects to and what it may modify, and let the user decide.
+
+Test projects connect under the user's identity rather than `AIAgentReadOnly`, and may write. That is acceptable only because the committed test is what the user approved; it does not authorize connecting under another identity in any other context.
 
 ## Cross-Project Changes
 
