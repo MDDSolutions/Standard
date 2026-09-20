@@ -40,6 +40,20 @@ namespace MDDFoundation
         {
             appBaseDirectory = NormalizeDirectory(appBaseDirectory);
             var baseDir = new DirectoryInfo(appBaseDirectory);
+
+            // Current Launcher installs run from {root}\current. Keep mutable files at the install
+            // root: the entire current directory is replaced whenever an update is applied.
+            var currentRootDir = baseDir.Parent;
+            if (currentRootDir != null
+                && string.Equals(baseDir.Name, "current", StringComparison.OrdinalIgnoreCase)
+                && !IsPathRootDirectory(currentRootDir.FullName))
+            {
+                return new FoundationAppPathInfo(appBaseDirectory,
+                    NormalizeDirectory(currentRootDir.FullName), FoundationAppLayout.LauncherVersionDirectory);
+            }
+
+            // Pre-current Launcher installs ran from {root}\versions\{version}. Continue recognizing
+            // that layout so an installation can migrate without moving its configuration or logs.
             var versionsDir = baseDir.Parent;
             var appRootDir = versionsDir?.Parent;
 

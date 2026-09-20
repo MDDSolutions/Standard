@@ -23,5 +23,39 @@ namespace MenuSystemUnitTests
             xi = Convert.ToInt32(x);
             Assert.AreEqual(xi, 7);
         }
+
+        [TestMethod]
+        public void FoundationAppPathsRecognizesCurrentLauncherLayout()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "AppManagerPathTest");
+            var paths = FoundationAppPaths.Resolve(Path.Combine(root, "current"));
+
+            Assert.IsTrue(paths.IsLauncherManaged);
+            Assert.AreEqual(Path.GetFullPath(root), paths.AppRootDirectory);
+            Assert.AreEqual(Path.Combine(Path.GetFullPath(root), "config"), paths.ConfigDirectory);
+            Assert.AreEqual(Path.Combine(Path.GetFullPath(root), "logs"), paths.LogDirectory);
+        }
+
+        [TestMethod]
+        public void FoundationAppPathsStillRecognizesVersionedLauncherLayout()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "AppManagerPathTest");
+            var paths = FoundationAppPaths.Resolve(Path.Combine(root, "versions", "2026.09.18.12.00"));
+
+            Assert.IsTrue(paths.IsLauncherManaged);
+            Assert.AreEqual(Path.GetFullPath(root), paths.AppRootDirectory);
+        }
+
+        [TestMethod]
+        public void FoundationAppPathsLeavesNormalLayoutAlone()
+        {
+            var appDirectory = Path.Combine(Path.GetTempPath(), "OrdinaryApplication");
+            var paths = FoundationAppPaths.Resolve(appDirectory);
+
+            Assert.IsFalse(paths.IsLauncherManaged);
+            Assert.AreEqual(Path.GetFullPath(appDirectory), paths.AppRootDirectory);
+            Assert.AreEqual(Path.GetFullPath(appDirectory), paths.ConfigDirectory);
+            Assert.AreEqual(Path.GetFullPath(appDirectory), paths.LogDirectory);
+        }
     }
 }
