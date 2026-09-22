@@ -5,8 +5,7 @@
     <LangVersion>latestMajor</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <AssemblyVersion>1.0.*</AssemblyVersion>
-    <Deterministic>false</Deterministic>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -15,5 +14,7 @@
     <ProjectReference Include="..\..\MDDFoundation\MDDFoundation.csproj" />
     <ProjectReference Include="..\FileRelay.Storage.SqlServer\FileRelay.Storage.SqlServer.csproj" />
   </ItemGroup>
+
+  <Import Project="..\..\Build\AutoBuildVersion.targets" />
 
 </Project>
