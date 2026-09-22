@@ -3,7 +3,6 @@
   <PropertyGroup>
 	<TargetFrameworks>netstandard2.0;net8.0</TargetFrameworks>
     <RootNamespace>MDDDataAccess</RootNamespace>
-	<Deterministic>false</Deterministic>
 	  
 	<LangVersion>latestMajor</LangVersion>
 	<Nullable>annotations</Nullable>

@@ -1,5 +1,8 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Keep AssemblyVersion stable in each project. This target records the actual build time in
+       explicit metadata instead of an AssemblyVersion wildcard, so Edit & Continue and Hot Reload
+       remain available. A real timestamp necessarily makes each completed build a distinct output. -->
   <PropertyGroup>
     <GenerateAssemblyFileVersionAttribute>false</GenerateAssemblyFileVersionAttribute>
     <GenerateAssemblyInformationalVersionAttribute>false</GenerateAssemblyInformationalVersionAttribute>
