@@ -82,7 +82,7 @@ namespace MDDDataAccess
         {
             connectionstring.InitialCatalog = dbname;
         }
-        public bool DBConnected { get; set; } = false;
+        // DBConnected is defined in DBEngine-Health.cs, where changes to it raise DBConnectionStateChanged.
         public bool DBConnectionError { get; set; } = false;
         public Exception DBException { get; set; } = null;
         public TimeSpan LastSQlCommandElapsed { get; set; } = TimeSpan.MaxValue;
@@ -91,28 +91,60 @@ namespace MDDDataAccess
         {
             connectionstring = new SqlConnectionStringBuilder(inConnStr);
         }
+
+        // 2026-09-24: getconnection used to set ApplicationName and ConnectTimeout on the shared
+        // connectionstring builder on every call. Concurrent callers then raced each other - one
+        // thread's timeout or application name could end up on another's connection, and building the
+        // string while another thread changed it could throw. Each call now derives its own string.
+        private readonly ConcurrentDictionary<string, string> derivedConnectionStrings =
+            new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
+        private SqlConnection createconnection(int ConnectionTimeout, string? ApplicationName)
+        {
+            var basestring = connectionstring.ConnectionString;
+            if (string.IsNullOrWhiteSpace(basestring)) return null;
+
+            var appname = ApplicationName ?? DefaultApplicationName;
+            var timeout = ConnectionTimeout == -1 ? DefaultConnectionTimeout : ConnectionTimeout;
+            var key = $"{basestring}\u0001{timeout}\u0001{appname}";
+            var derived = derivedConnectionStrings.GetOrAdd(key, k =>
+            {
+                var csb = new SqlConnectionStringBuilder(basestring);
+                if (appname != null) csb.ApplicationName = appname;
+                csb.ConnectTimeout = timeout;
+                return csb.ConnectionString;
+            });
+            return new SqlConnection(derived);
+        }
         private async Task<SqlConnection> getconnectionasync(CancellationToken CancellationToken, int ConnectionTimeout = -1, string? ApplicationName = null)
         {
             try
             {
-                if (!string.IsNullOrWhiteSpace(connectionstring.ConnectionString))
+                var cn = createconnection(ConnectionTimeout, ApplicationName);
+                if (cn != null)
                 {
-                    if (ApplicationName == null)
-                        connectionstring.ApplicationName = DefaultApplicationName;
-                    else
-                        connectionstring.ApplicationName = ApplicationName;
-                    if (ConnectionTimeout == -1)
-                        connectionstring.ConnectTimeout = DefaultConnectionTimeout;
-                    else
-                        connectionstring.ConnectTimeout = ConnectionTimeout;
-                    var cn = new SqlConnection(connectionstring.ConnectionString);
-                    await cn.OpenAsync(CancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        await cn.OpenAsync(CancellationToken).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        cn.Dispose();
+                        throw;
+                    }
                     if (!string.IsNullOrWhiteSpace(ContextInfo))
                     {
-                        using (SqlCommand cmd = new SqlCommand("DECLARE @context_bin VARBINARY(128);SET @context_bin = CONVERT(VARBINARY(128), @context_str);SET CONTEXT_INFO @context_bin;", cn))
+                        try
                         {
-                            cmd.Parameters.AddWithValue("@context_str", ContextInfo);
-                            await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+                            using (SqlCommand cmd = new SqlCommand("DECLARE @context_bin VARBINARY(128);SET @context_bin = CONVERT(VARBINARY(128), @context_str);SET CONTEXT_INFO @context_bin;", cn))
+                            {
+                                cmd.Parameters.AddWithValue("@context_str", ContextInfo);
+                                await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+                            }
+                        }
+                        catch
+                        {
+                            cn.Dispose();
+                            throw;
                         }
                     }
                     DBConnected = true;
@@ -127,11 +159,9 @@ namespace MDDDataAccess
             }
             catch (Exception ex)
             {
-                DBConnected = false;
-                DBConnectionError = true;
-                DBException = ex;
+                RecordOpenFailure(ex);
                 if (ex.Message.StartsWith("A network-related or instance-specific error occurred while establishing a connection to SQL Server"))
-                    throw new Exception($"Unable to connect to {connectionstring.DataSource}");
+                    throw new Exception($"Unable to connect to {connectionstring.DataSource}", ex);
                 else
                     throw;
             }
@@ -145,25 +175,25 @@ namespace MDDDataAccess
         {
             try
             {
-                if (!string.IsNullOrWhiteSpace(connectionstring.ConnectionString))
+                var cn = createconnection(ConnectionTimeout, ApplicationName);
+                if (cn != null)
                 {
-                    if (ApplicationName == null)
-                        connectionstring.ApplicationName = DefaultApplicationName;
-                    else
-                        connectionstring.ApplicationName = ApplicationName;
-                    if (ConnectionTimeout == -1)
-                        connectionstring.ConnectTimeout = DefaultConnectionTimeout;
-                    else
-                        connectionstring.ConnectTimeout = ConnectionTimeout;
-                    var cn = new SqlConnection(connectionstring.ConnectionString);
-                    cn.Open();
-                    if (!string.IsNullOrWhiteSpace(ContextInfo))
+                    try
                     {
-                        using (SqlCommand cmd = new SqlCommand("DECLARE @context_bin VARBINARY(128);SET @context_bin = CONVERT(VARBINARY(128), @context_str);SET CONTEXT_INFO @context_bin;", cn))
+                        cn.Open();
+                        if (!string.IsNullOrWhiteSpace(ContextInfo))
                         {
-                            cmd.Parameters.AddWithValue("@context_str", ContextInfo);
-                            cmd.ExecuteNonQuery();
+                            using (SqlCommand cmd = new SqlCommand("DECLARE @context_bin VARBINARY(128);SET @context_bin = CONVERT(VARBINARY(128), @context_str);SET CONTEXT_INFO @context_bin;", cn))
+                            {
+                                cmd.Parameters.AddWithValue("@context_str", ContextInfo);
+                                cmd.ExecuteNonQuery();
+                            }
                         }
+                    }
+                    catch
+                    {
+                        cn.Dispose();
+                        throw;
                     }
                     DBConnected = true;
                     return cn;
@@ -177,11 +207,9 @@ namespace MDDDataAccess
             }
             catch (Exception ex)
             {
-                DBConnected = false;
-                DBConnectionError = true;
-                DBException = ex;
+                RecordOpenFailure(ex);
                 if (ex.Message.StartsWith("A network-related or instance-specific error occurred while establishing a connection to SQL Server"))
-                    throw new Exception($"Unable to connect to {connectionstring.DataSource}");
+                    throw new Exception($"Unable to connect to {connectionstring.DataSource}", ex);
                 else
                     throw;
             }

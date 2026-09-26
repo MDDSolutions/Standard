@@ -106,6 +106,7 @@ namespace MDDDataAccess
             catch (Exception ex)
             {
                 if (LogErrors) LogError(cmd, start, ex);
+                RecordCommandFailure(ex);
                 throw;
             }
         }
@@ -122,6 +123,7 @@ namespace MDDDataAccess
             catch (Exception ex)
             {
                 if (LogErrors) LogError(cmd, start, ex);
+                RecordCommandFailure(ex);
                 throw;
             }
         }
@@ -136,12 +138,14 @@ namespace MDDDataAccess
             catch (Exception ex)
             {
                 if (LogErrors) LogError(cmd, start, ex);
+                RecordCommandFailure(ex);
                 throw;
             }
         }
         private void PostExecution(SqlCommand cmd, int start)
         {
             var elapsed = Environment.TickCount - start;
+            LastSuccessfulCommand = DateTime.Now;
             if (KeepStats) CommandStat.RecordStat(cmd.CommandText, elapsed);
             if (DebugLevel >= 50)
             {
@@ -166,6 +170,7 @@ namespace MDDDataAccess
             catch (Exception ex)
             {
                 if (LogErrors) LogError(cmd, start, ex);
+                RecordCommandFailure(ex);
                 throw;
             }
         }
@@ -192,6 +197,7 @@ namespace MDDDataAccess
             catch (Exception ex)
             {
                 if (LogErrors) LogError(cmd, start, ex);
+                RecordCommandFailure(ex);
                 throw;
             }
         }
@@ -207,6 +213,7 @@ namespace MDDDataAccess
             catch (Exception ex)
             {
                 if (LogErrors) LogError(cmd, start, ex);
+                RecordCommandFailure(ex);
                 throw;
             }
         }
