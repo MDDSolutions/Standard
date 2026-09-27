@@ -62,30 +62,41 @@ Connection-string options such as `ApplicationIntent=ReadOnly` do not by themsel
 
 ### Connection and Credential Configuration
 
-The authorized connection is:
+The authorized SQL Server and databases are:
 
 - Server: `MDD-SQL2022`
-- Database: `Other`
+- Databases: `Other` and `Ledger`
 - SQL-authenticated login: `AIAgentReadOnly`
+
+The database relevant to the current task must be explicit in the task scope. A task may connect only
+to the authorized database it is investigating; authorization for one database does not authorize
+cross-database queries or browsing the other database.
 
 The connection settings are stored as persistent Windows user environment variables:
 
 - `SQLCMDSERVER` contains the server name.
-- `SQLCMDDBNAME` contains the database name.
+- `SQLCMDDBNAME` may contain the user's default database name. It is a convenience only and does not
+  authorize a database; every agent-issued `sqlcmd` command must pass an explicit `-d 'Other'` or
+  `-d 'Ledger'` matching the current task scope.
 - `SQLCMDUSER` contains the login name.
 - `SQLCMDPASSWORD` contains the password.
 
 These variables are inherited when Codex or Claude Code starts. Agents may read them only for the authorized SQL connection. Never display, echo, log, return, or write the password to a command line, chat, source file, script, configuration file, or diagnostic output. Never pass the password with the `sqlcmd -P` option. Do not create, change, delete, or persist any of these environment variables; the user manages them.
 
-If `SQLCMDPASSWORD` is absent or empty, stop and inform the user. Do not search for the password elsewhere and do not request or try another credential. The non-secret variables may be checked against the fixed values above, but the fixed values above remain authoritative and no value may be substituted to reach another server, database, or login.
+If `SQLCMDPASSWORD` is absent or empty, stop and inform the user. Do not search for the password elsewhere and do not request or try another credential. The non-secret server and login variables may be checked against the fixed values above. The explicit task scope and authorized database list above remain authoritative; no environment-variable value may be substituted to reach another server, database, or login.
 
-For `sqlcmd`, use SQL authentication with the fixed server, database, and login, allowing `sqlcmd` to obtain the password from `SQLCMDPASSWORD`. Do not specify `-E` or another authentication method. A permitted connection has this form:
+For `sqlcmd`, use SQL authentication with the fixed server and login and the explicitly scoped
+authorized database, allowing `sqlcmd` to obtain the password from `SQLCMDPASSWORD`. Do not specify
+`-E` or another authentication method. Permitted connections have these forms:
 
 ```powershell
 sqlcmd -S 'MDD-SQL2022' -d 'Other' -U 'AIAgentReadOnly' -Q "SELECT ORIGINAL_LOGIN() AS LoginName, SUSER_SNAME() AS SessionLogin, DB_NAME() AS DatabaseName;"
+sqlcmd -S 'MDD-SQL2022' -d 'Ledger' -U 'AIAgentReadOnly' -Q "SELECT ORIGINAL_LOGIN() AS LoginName, SUSER_SNAME() AS SessionLogin, DB_NAME() AS DatabaseName;"
 ```
 
-Every new connection must first verify that `ORIGINAL_LOGIN()` is `AIAgentReadOnly` and that `DB_NAME()` is `Other`. This verification may be the first `SELECT` in the same batch as the investigative query.
+Every new connection must first verify that `ORIGINAL_LOGIN()` is `AIAgentReadOnly` and that
+`DB_NAME()` exactly matches the authorized database named in the current task scope (`Other` or
+`Ledger`). This verification may be the first `SELECT` in the same batch as the investigative query.
 
 Use `-Q` with inline SQL only. Do not use `-i`, and do not use the `sqlcmd` commands that change or escape the connection: `:CONNECT`, `:r`, `:!!`, `:setvar`. `:CONNECT` in particular can reconnect as a different login or to a different server, which would defeat the login rule above. `-b` (exit on error), `-l` (login timeout) and `-t` (query timeout) are permitted and encouraged. `-X` cannot be used here: it disables the `SQLCMDPASSWORD` environment variable along with the features it blocks, and the connection then fails.
 
@@ -96,7 +107,9 @@ Within Claude Code, `.claude/settings.json` is a second enforcement layer and mu
 ```json
 "allow": [
   "Bash(sqlcmd -S 'MDD-SQL2022' -d 'Other' -U 'AIAgentReadOnly':*)",
-  "PowerShell(sqlcmd -S 'MDD-SQL2022' -d 'Other' -U 'AIAgentReadOnly':*)"
+  "PowerShell(sqlcmd -S 'MDD-SQL2022' -d 'Other' -U 'AIAgentReadOnly':*)",
+  "Bash(sqlcmd -S 'MDD-SQL2022' -d 'Ledger' -U 'AIAgentReadOnly':*)",
+  "PowerShell(sqlcmd -S 'MDD-SQL2022' -d 'Ledger' -U 'AIAgentReadOnly':*)"
 ]
 ```
 
@@ -115,7 +128,10 @@ Permitted targets are limited to the database relevant to the current task:
 
 Prefer metadata and narrowly targeted queries before retrieving application data. Select only the columns and rows needed for the investigation. Use restrictive predicates and a reasonable `TOP` limit when inspecting row-level data.
 
-Access extends to the database named in Connection and Credential Configuration and to nothing else. The login you are given defines your scope. If a task targets a different database, ask the user for access to that database rather than attempting to reach it.
+Access extends only to the authorized database explicitly named in the current task scope and to
+nothing else. Do not use three-part names, `USE`, or any other mechanism to cross from the scoped
+database into the other authorized database. If a task targets a database not listed in Connection
+and Credential Configuration, ask the user for access rather than attempting to reach it.
 
 `SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED` and `SET LOCK_TIMEOUT` may be issued before a query to limit the impact of investigation on a live server. They are permitted despite the ban on transaction-control statements below, which concerns `BEGIN TRANSACTION`, `COMMIT`, `ROLLBACK` and `SAVE TRANSACTION`.
 

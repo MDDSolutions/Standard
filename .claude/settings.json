@@ -78,7 +78,9 @@
     ],
     "allow": [
       "Bash(sqlcmd -S 'MDD-SQL2022' -d 'Other' -U 'AIAgentReadOnly':*)",
-      "PowerShell(sqlcmd -S 'MDD-SQL2022' -d 'Other' -U 'AIAgentReadOnly':*)"
+      "PowerShell(sqlcmd -S 'MDD-SQL2022' -d 'Other' -U 'AIAgentReadOnly':*)",
+      "Bash(sqlcmd -S 'MDD-SQL2022' -d 'Ledger' -U 'AIAgentReadOnly':*)",
+      "PowerShell(sqlcmd -S 'MDD-SQL2022' -d 'Ledger' -U 'AIAgentReadOnly':*)"
     ]
   }
 }
