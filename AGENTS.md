@@ -6,8 +6,8 @@ This file provides guidance to AI agents when working with code in this reposito
 
 The rules that govern every session in every repository under `C:\Dev` live in
 [StandardAgentRules.md](StandardAgentRules.md), a byte-identical copy of which sits beside this file.
-**Read it before making any change.** It covers the absolute Git and SQL Server prohibitions, how
-database work is done, Git checkpoint guidance, build and verification, cross-project changes, date
+**Read it before making any change.** It covers the Git workflow and working-tree discipline, read-only SQL Server access and how
+database work is done, build and verification, cross-project changes, date
 and time conventions, and the `C:\Dev` sandbox.
 
 If you cannot read that file, stop and tell the user before changing anything. Those rules are
