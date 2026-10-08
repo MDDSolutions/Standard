@@ -6,21 +6,13 @@ put it in AGENTS.md so one document stays authoritative.
 
 @AGENTS.md
 
-@StandardAgentRules.md
-
-[StandardAgentRules.md](StandardAgentRules.md) carries the rules that govern every session in every
-repository under `C:\Dev`: the Git workflow and working-tree discipline, read-only SQL Server access
-and how database work is done, build and verification, cross-project changes, date and time conventions,
-and the `C:\Dev` sandbox. It is byte-identical in every repository.
-
-**If neither import above resolved, stop and tell the user before changing anything.** Do not proceed
-on the assumption that the rules are unimportant — they are non-negotiable, and in particular you
-must never rewrite or force-push published Git history, and must not execute any SQL that writes or connects as anything other than the read-only `AIAgentReadOnly` login.
+Read AGENTS.md successfully before proceeding; it selects the installation rules
+and explains how to recover access if they cannot be read.
 
 ## Settings File Integrity
 
 `.claude/settings.json` and `.claude/settings.local.json` carry the permission rules that enforce the
-Git and SQL rules in `StandardAgentRules.md`. Claude Code silently ignores a settings file it cannot
+Git and SQL rules in the applicable agent rules. Claude Code silently ignores a settings file it cannot
 parse: a single missing comma disables every rule in that file, with no warning and no visible sign
 that anything is wrong. The session then looks normal while running with no Git or SQL guardrails at
 all.

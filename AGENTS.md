@@ -4,14 +4,19 @@ This file provides guidance to AI agents when working with code in this reposito
 
 ## Standard Agent Rules
 
-The rules that govern every session in every repository under `C:\Dev` live in
-[StandardAgentRules.md](StandardAgentRules.md), a byte-identical copy of which sits beside this file.
-**Read it before making any change.** It covers the Git workflow and working-tree discipline, read-only SQL Server access and how
-database work is done, build and verification, cross-project changes, date
-and time conventions, and the `C:\Dev` sandbox.
+Read [PortableAgentRules.md](PortableAgentRules.md) on every machine.
 
-If you cannot read that file, stop and tell the user before changing anything. Those rules are
-non-negotiable.
+On MDD-OWUI01, for repositories under `C:\Dev`, read
+[C:\Dev\StandardAgentRules.md](C:/Dev/StandardAgentRules.md) before doing the task.
+This is the only installation authorized to use that file's Git mutation workflow;
+a matching path on another machine does not grant that authorization.
+
+If the local file cannot be read, pause the original task and diagnose and repair access
+within existing permissions. Take only the actions necessary to restore access; do not
+invent replacement rules or bypass permissions. A process initialization failure is not
+proof that the file is unreadable: retry through a working shell. If repair needs the
+user's help or approval, explain the specific problem and request it. After successfully
+reading the valid rules, resume the original task.
 
 ## DBEngine: Updates Return The Row
 

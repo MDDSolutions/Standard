@@ -1,114 +1,21 @@
-# StandardAgentRules.md
+# PortableAgentRules.md
 
-Rules that govern every AI agent session in every repository under `C:\Dev`.
+Repository safety rules that travel with clones. Read these on every machine.
 
-**This file is byte-identical in every repository.** `C:\Dev\StandardAgentRules.md` is the original;
-the copies beside each repository's `AGENTS.md` exist so that an agent working in a single repository
-never has to read outside it. Edit the original and copy it outward. Never edit a copy in place — a
-copy that has drifted is worse than no copy, because nobody can tell which one is authoritative.
+## Absolute Git Mutation Prohibition
 
-If a repository's `AGENTS.md` or `CLAUDE.md` sent you here and you could not read this file, **stop
-and tell the user before changing anything.** These rules are non-negotiable, and work produced
-without them may have to be discarded.
+Outside the MDD-OWUI01 installation under `C:\Dev`, agents must never mutate Git
+state, locally or remotely. Read-only inspection such as status, diff, log and show
+is permitted. Do not stage, commit, push, fetch, pull, merge, rebase, reset, checkout,
+switch, stash, clean, create or delete branches or tags, change Git configuration,
+or edit `.git` directly. Do not use another tool to perform the same mutations.
+Prepare source changes for the user to review and commit manually. Do not ask for
+an exception. Tool allow lists do not override this prohibition.
 
-When a session is working from a repository copy rather than from the original, compare the two
-before relying on the copy. One hash comparison is enough:
-
-```bash
-md5sum "C:/Dev/StandardAgentRules.md" "C:/Dev/<Repo>/StandardAgentRules.md"
-```
-
-If they differ, the original at `C:\Dev\StandardAgentRules.md` is authoritative — follow it, and say
-which text you are working from. A copy is expected to lag while a policy change is being written
-and has not been propagated yet, so a difference is information, not a fault.
-
----
-
-## Git Workflow
-
-Agents have full read/write Git access within `C:\Dev` and are expected to use it. In this
-installation the working tree belongs to the agent, and the user reviews work through committed,
-pushed history rather than by watching the tree or committing on the agent's behalf. Two facts follow
-from that and govern everything below:
-
-- **Your work is only visible once it is committed and pushed.** Leaving finished work uncommitted
-  hides it from the user, so commit and push so that it can be seen and, if necessary, reverted.
-- **The user's safety net is the ability to go back.** Never rewrite or destroy history that has been
-  pushed. That guarantee is the reason write access is safe to grant, and it is non-negotiable.
-
-### Commits
-
-- One logical change per commit. Commit when a coherent unit of work is complete and reads cleanly —
-  not half-finished, and not an entire session squashed into a single commit.
-- Write a clear message: a concise imperative subject (aim for 72 characters or fewer) and, when the
-  reason is not obvious from the diff, a body explaining why.
-- End every commit message with a trailer attributing the change to the AI model and version that
-  produced it, so the history records which agent made each change. If your harness specifies an
-  attribution line, use exactly that; otherwise use the form
-  `Co-Authored-By: <Model Name and Version> <email>`. For example, a Claude Opus 4.8 session uses
-  `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`, and a Codex session attributes to its own
-  model name and version in the same form.
-- Never commit secrets — tokens, passwords, connection strings, or keys. Credentials live in the
-  operating system credential store or in untracked local configuration, never in tracked files or in
-  history.
-
-### Push, and committing to the main branch
-
-Push after committing so your work is visible. Commit and push directly to the repository's main
-branch when all of the following hold:
-
-- the change is part of the agreed current task,
-- it is self-contained and of low or moderate risk, and
-- you would reasonably expect the user to accept it — routine edits, bug fixes, incremental feature
-  work, documentation.
-
-### When to branch, and open a pull request
-
-Create a branch instead of committing to main when any of these holds:
-
-- the work is large, or spans several commits you would rather the user review as a set before it
-  lands on main;
-- it is experimental or speculative and might be discarded;
-- it changes a shared library's public interface or otherwise has cross-project blast radius (see
-  Cross-Project Changes) and the user should be able to gate it;
-- the user asked for a proposal or an alternative rather than a committed change; or
-- you are genuinely unsure the user wants it on main.
-
-Name the branch `<model>/<short-topic>` — for example `claude/logshipping-retry` or
-`codex/ledger-import-fix`. Push the branch and open a pull request for it with `gh`. The pull request
-description summarises the change and ends with a one-line note that it was generated by your model or
-harness (a Claude Code session uses "Generated with Claude Code"). Do not merge your own pull request,
-and do not fast-forward the branch into main yourself, unless the task explicitly delegated that; the
-merge is the user's to perform.
-
-### Pull and fetch
-
-Fetch and pull freely to stay current. Prefer a fast-forward or a clean merge. If a pull would require
-a non-trivial merge, or a rebase of diverged history, stop and ask rather than resolving it blindly.
-
-### Never (this protects the user's ability to go back, and the other machines this tree travels to)
-
-- Force-push in any form (`--force`, `-f`, `--force-with-lease`) to any remote.
-- Rewrite history that has already been pushed: amending, resetting, or rebasing pushed commits;
-  `git filter-branch`; `git reflog expire`; `git gc --prune=now`.
-- `git reset --hard` or `git clean -fdx` that would discard uncommitted work without first committing
-  or stashing it.
-- Delete a branch or tag you did not create, or any remote branch, without the user's say-so.
-- Reach outside `C:\Dev`, or change a sibling repository's state unless the task requires it.
-
-Do not weaken these limits to get a task done, and do not ask for an exception to them. If you believe
-one is genuinely required, stop and explain why; the user decides.
-
-### Settings file as a second enforcement layer
-
-As with SQL below, `.claude/settings.json` enforces this policy mechanically and must agree with it:
-its `permissions.deny` list blocks the history-destroying operations above, and its
-`permissions.allow` list permits the ordinary read/write verbs so they run without prompting. A
-refusal may therefore mean a settings file is stale or malformed rather than that the policy forbids
-something — see the Settings File Integrity rule in `CLAUDE.md`. Because the deny list matches command
-prefixes, it is a backstop, not a perfect guard (a dangerous flag placed at the end of a command can
-slip past a prefix rule); the policy text above is the real boundary, and you follow it regardless of
-what the settings layer happens to catch.
+The local Git workflow and instructions to commit and push apply only after reading
+`C:\Dev\StandardAgentRules.md` on MDD-OWUI01 while working under `C:\Dev`.
+An unreadable rules file on that installation requires recovery, not fallback to
+this portable workflow.
 
 ## Read-Only SQL Server Access
 
@@ -266,17 +173,9 @@ If the required investigation cannot be completed safely through the permitted r
 
 ## Working Tree Discipline
 
-The working tree is yours to manage, and the user reviews your work through committed history rather
-than by watching the tree. Keep the tree in a state that reflects that:
-
-- Commit your own work in coherent units as you go. Do not leave finished work uncommitted — the user
-  cannot see or revert what has not been committed.
-- Before starting a distinctly new line of work, make sure the previous unit is already committed, so
-  the two do not blend into one indistinguishable change. You no longer need to ask the user to check
-  in first; you check in your own work.
-- If you find uncommitted changes in the tree that you did not make, stop and ask before building on
-  top of them or sweeping them into a commit. They may be the user's in-progress work, and committing
-  or discarding them could lose it.
+Preserve existing uncommitted changes. If you find changes you did not make, stop
+and ask before building on them or including them in your work. Outside the local
+installation, leave your changes for the user to commit; do not mutate Git state.
 
 ## Build and Verification Workflow
 
@@ -305,7 +204,7 @@ Tests are the exception. An agent may run a test project when that project is **
 git -C "C:/Dev/<Repo>" status --porcelain --untracked-files=all -- "<TestProjectPath>"
 ```
 
-Empty output means the project is clean and may be run. Any output at all — modified, added or untracked files anywhere in the project — means it may not, including when the only change is a test you just wrote. Write and commit tests as part of your work; run them once the tree is clean.
+Empty output means the project is clean and may be run. Any output at all — modified, added or untracked files anywhere in the project — means it may not, including when the only change is a test you just wrote. Outside the local installation, let the user commit tests; run them only once the test project is committed and clean.
 
 Running a test project executes it against the production code currently in the working tree, **including uncommitted changes**, so a clean committed tree is not the same as approved behaviour. Do not run a committed test when uncommitted changes alter what it will touch: the database or connection it uses, the files or directories it writes to, or whether a read path becomes a write path. Running stays part of the agreed task, not a licence to execute arbitrary project code — the Do Not Run Application Code rule above still governs everything that is not a committed, clean-tree test. Say what will run, what it connects to and what it may modify, and let the user decide when in doubt.
 
