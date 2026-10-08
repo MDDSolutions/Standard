@@ -5,12 +5,28 @@ Repository safety rules that travel with clones. Read these on every machine.
 ## Absolute Git Mutation Prohibition
 
 Outside the MDD-OWUI01 installation under `C:\Dev`, agents must never mutate Git
-state, locally or remotely. Read-only inspection such as status, diff, log and show
-is permitted. Do not stage, commit, push, fetch, pull, merge, rebase, reset, checkout,
-switch, stash, clean, create or delete branches or tags, change Git configuration,
-or edit `.git` directly. Do not use another tool to perform the same mutations.
-Prepare source changes for the user to review and commit manually. Do not ask for
-an exception. Tool allow lists do not override this prohibition.
+state, locally or remotely, except for the fetch described below. Read-only inspection
+such as status, diff, log and show is permitted. Do not stage, commit, push, pull,
+merge, rebase, reset, checkout, switch, stash, clean, create or delete branches or
+tags, change Git configuration, or edit `.git` directly. Do not use another tool to
+perform the same mutations. Prepare source changes for the user to review and commit
+manually. Do not ask for an exception. Tool allow lists do not override this
+prohibition.
+
+### Fetch Is Permitted And Expected
+
+A plain `git fetch` (optionally naming a remote, or `--all`) is the one permitted
+exception. It only downloads objects and updates remote-tracking refs such as
+`origin/main`; it never changes the index, the working tree, local branches or tags.
+Do not ask before fetching. Do not use `--prune`, `--prune-tags`, `--force`,
+`--update-head-ok` or `--set-upstream`, and never follow a fetch with a pull, merge or
+any other change to local branches — integrating fetched work is the user's.
+
+Fetch before starting work. Before editing files in a repository, fetch it and compare
+`HEAD..@{u}` (for example `git log --oneline HEAD..@{u}`). If the upstream has commits
+that are not yet local, tell the user what is incoming and whether it touches files
+about to change, and let the user decide how to proceed. Fetch only the repositories
+in the current task's scope.
 
 The local Git workflow and instructions to commit and push apply only after reading
 `C:\Dev\StandardAgentRules.md` on MDD-OWUI01 while working under `C:\Dev`.
