@@ -81,7 +81,12 @@ namespace MDDFoundation
             List<T> list = Items as List<T>;
             if (list == null) return;
 
-            list.Sort(Compare);
+            // A stable sort keeps the previous ordering for equal values, so the
+            // last column sorted becomes a secondary sort when another is chosen.
+            // Materialize before replacing entries because OrderBy enumerates lazily.
+            var sorted = list.OrderBy(item => item, Comparer<T>.Create(Compare)).ToList();
+            for (int i = 0; i < sorted.Count; i++)
+                list[i] = sorted[i];
 
             _isSorted = true;
             //fire an event that the list has been changed.
