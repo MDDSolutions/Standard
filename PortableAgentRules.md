@@ -66,7 +66,7 @@ Connection-string options such as `ApplicationIntent=ReadOnly` do not by themsel
 The authorized SQL Server and databases are:
 
 - Server: `MDD-SQL2022`
-- Databases: `Other`, `Ledger`, and `MDDSolutions`
+- Databases: `Other`, `Ledger`, `MDDSolutions`, and `OWUIDev`
 - SQL-authenticated login: `AIAgentReadOnly`
 
 The database relevant to the current task must be explicit in the task scope. A task may connect only
@@ -78,7 +78,7 @@ The connection settings are stored as persistent Windows user environment variab
 - `SQLCMDSERVER` contains the server name.
 - `SQLCMDDBNAME` may contain the user's default database name. It is a convenience only and does not
   authorize a database; every agent-issued `sqlcmd` command must pass an explicit `-d 'Other'`,
-  `-d 'Ledger'`, or `-d 'MDDSolutions'` matching the current task scope.
+  `-d 'Ledger'`, `-d 'MDDSolutions'`, or `-d 'OWUIDev'` matching the current task scope.
 - `SQLCMDUSER` contains the login name.
 - `SQLCMDPASSWORD` contains the password.
 
@@ -94,11 +94,12 @@ authorized database, allowing `sqlcmd` to obtain the password from `SQLCMDPASSWO
 sqlcmd -S 'MDD-SQL2022' -d 'Other' -U 'AIAgentReadOnly' -Q "SELECT ORIGINAL_LOGIN() AS LoginName, SUSER_SNAME() AS SessionLogin, DB_NAME() AS DatabaseName;"
 sqlcmd -S 'MDD-SQL2022' -d 'Ledger' -U 'AIAgentReadOnly' -Q "SELECT ORIGINAL_LOGIN() AS LoginName, SUSER_SNAME() AS SessionLogin, DB_NAME() AS DatabaseName;"
 sqlcmd -S 'MDD-SQL2022' -d 'MDDSolutions' -U 'AIAgentReadOnly' -Q "SELECT ORIGINAL_LOGIN() AS LoginName, SUSER_SNAME() AS SessionLogin, DB_NAME() AS DatabaseName;"
+sqlcmd -S 'MDD-SQL2022' -d 'OWUIDev' -U 'AIAgentReadOnly' -Q "SELECT ORIGINAL_LOGIN() AS LoginName, SUSER_SNAME() AS SessionLogin, DB_NAME() AS DatabaseName;"
 ```
 
 Every new connection must first verify that `ORIGINAL_LOGIN()` is `AIAgentReadOnly` and that
 `DB_NAME()` exactly matches the authorized database named in the current task scope (`Other`,
-`Ledger`, or `MDDSolutions`). This verification may be the first `SELECT` in the same batch as the
+`Ledger`, `MDDSolutions`, or `OWUIDev`). This verification may be the first `SELECT` in the same batch as the
 investigative query.
 
 Use `-Q` with inline SQL only. Do not use `-i`, and do not use the `sqlcmd` commands that change or escape the connection: `:CONNECT`, `:r`, `:!!`, `:setvar`. `:CONNECT` in particular can reconnect as a different login or to a different server, which would defeat the login rule above. `-b` (exit on error), `-l` (login timeout) and `-t` (query timeout) are permitted and encouraged. `-X` cannot be used here: it disables the `SQLCMDPASSWORD` environment variable along with the features it blocks, and the connection then fails.
@@ -114,7 +115,9 @@ Within Claude Code, `.claude/settings.json` is a second enforcement layer and mu
   "Bash(sqlcmd -S 'MDD-SQL2022' -d 'Ledger' -U 'AIAgentReadOnly':*)",
   "PowerShell(sqlcmd -S 'MDD-SQL2022' -d 'Ledger' -U 'AIAgentReadOnly':*)",
   "Bash(sqlcmd -S 'MDD-SQL2022' -d 'MDDSolutions' -U 'AIAgentReadOnly':*)",
-  "PowerShell(sqlcmd -S 'MDD-SQL2022' -d 'MDDSolutions' -U 'AIAgentReadOnly':*)"
+  "Bash(sqlcmd -S 'MDD-SQL2022' -d 'OWUIDev' -U 'AIAgentReadOnly':*)",
+  "PowerShell(sqlcmd -S 'MDD-SQL2022' -d 'MDDSolutions' -U 'AIAgentReadOnly':*)",
+  "PowerShell(sqlcmd -S 'MDD-SQL2022' -d 'OWUIDev' -U 'AIAgentReadOnly':*)"
 ]
 ```
 
