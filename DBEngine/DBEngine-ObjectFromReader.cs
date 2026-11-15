@@ -270,7 +270,8 @@ namespace MDDDataAccess
 
                             var element = Activator.CreateInstance(elementType);
                             ExecutePropertyMap(reader, childMap, element, elementType);
-                            currentList.Add(TrackNavigationFromReader(element, elementType, childMap));
+                            currentList.Add(element);
+                            TrackNavigationFromReader(element, elementType, childMap);
                         };
                     }
                     else
@@ -289,7 +290,7 @@ namespace MDDDataAccess
                             }
 
                             ExecutePropertyMap(reader, childMap, current, type);
-                            item.SetValue(target, TrackNavigationFromReader(current, type, childMap));
+                            TrackNavigationFromReader(current, type, childMap);
                         };
                     }
 
@@ -310,17 +311,15 @@ namespace MDDDataAccess
         }
         private readonly ConcurrentDictionary<string,bool> unhandledtypesreported = new ConcurrentDictionary<string,bool>();
 
-        private object TrackNavigationFromReader(object entity, Type entityType, List<PropertyMapEntry> map)
+        private void TrackNavigationFromReader(object entity, Type entityType, List<PropertyMapEntry> map)
         {
-            return typeof(DBEngine).GetMethod(nameof(TrackNavigationFromReaderCore), BindingFlags.Instance | BindingFlags.NonPublic)
+            typeof(DBEngine).GetMethod(nameof(TrackNavigationFromReaderCore), BindingFlags.Instance | BindingFlags.NonPublic)
                 .MakeGenericMethod(entityType).Invoke(this, new object[] { entity, map });
         }
 
-        private object TrackNavigationFromReaderCore<T>(T entity, List<PropertyMapEntry> map) where T : class, new()
+        private void TrackNavigationFromReaderCore<T>(T entity, List<PropertyMapEntry> map) where T : class, new()
         {
-            if (Tracking != ObjectTracking.None)
-                GetTracker<T>()?.GetOrAddFromReader(ref entity, map);
-            return entity;
+            GetTracker<T>()?.GetOrAddFromReader(ref entity, map);
         }
 
         private void ExecutePropertyMap<T>(SqlDataReader rdr, List<PropertyMapEntry> map, T target) where T : class
