@@ -118,6 +118,15 @@ namespace MDDDataAccess
         /// <exception cref="InvalidOperationException"></exception>
         /// <exception cref="NotImplementedException"></exception>
         public TrackedEntity<T> GetOrAdd(ref T entity, bool initializing = false)
+            => GetOrAddCore(ref entity, initializing, null);
+
+        internal TrackedEntity<T> GetOrAddFromReader(ref T entity, IList<PropertyMapEntry> map)
+        {
+            DatabaseRefresh<T>.ClearUnmapped(entity, map);
+            return GetOrAddCore(ref entity, true, map);
+        }
+
+        private TrackedEntity<T> GetOrAddCore(ref T entity, bool initializing, IList<PropertyMapEntry> refreshMap)
         {
             var key = TrackedEntity<T>.GetKeyValue(entity);
             if (key == null)
@@ -156,6 +165,8 @@ namespace MDDDataAccess
                         }
                         else
                         {
+                            if (refreshMap != null)
+                                DatabaseRefresh<T>.MergeNavigation(existingentity, loading, refreshMap);
                             var loadingconcurrency = TrackedEntity<T>.GetConcurrencyValue?.Invoke(loading);
                             switch (existingtracked.State)
                             {

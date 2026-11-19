@@ -29,7 +29,7 @@ namespace MDDDataAccess
             }
             if (r == null) r = new T();
             ExecutePropertyMap(rdr, map, r);
-            if (tracker != null) tracker.GetOrAdd(ref r, true);
+            if (tracker != null) tracker.GetOrAddFromReader(ref r, map);
         }
         public void ObjectFromReaderWithMetrics_TheWayItSortOfShouldBe<T>(SqlDataReader rdr, ref List<PropertyMapEntry> map, ref PropertyInfo key, ref T r, ref Tracker<T> tracker, bool strict = true, QueryExecutionMetrics metrics = null) where T : class, new()
         {
@@ -49,7 +49,7 @@ namespace MDDDataAccess
             }
             using (metrics?.MeasureTrackerProcessingTime())
             {
-                if (tracker != null) tracker.GetOrAdd(ref r, true);
+                if (tracker != null) tracker.GetOrAddFromReader(ref r, map);
             }
         }
 
@@ -71,7 +71,7 @@ namespace MDDDataAccess
             {
                 using (metrics.MeasureTrackerProcessingTime())
                 {
-                    tracker.GetOrAdd(ref r, true);
+                    tracker.GetOrAddFromReader(ref r, map);
                 }
             }
         }
@@ -271,7 +271,7 @@ namespace MDDDataAccess
                             var element = Activator.CreateInstance(elementType);
                             ExecutePropertyMap(reader, childMap, element, elementType);
                             currentList.Add(element);
-                            TrackerAddObject(element, true);
+                            TrackNavigationFromReader(element, elementType, childMap);
                         };
                     }
                     else
@@ -290,7 +290,7 @@ namespace MDDDataAccess
                             }
 
                             ExecutePropertyMap(reader, childMap, current, type);
-                            TrackerAddObject(current, true);
+                            TrackNavigationFromReader(current, type, childMap);
                         };
                     }
 
@@ -310,8 +310,21 @@ namespace MDDDataAccess
             return result;
         }
         private readonly ConcurrentDictionary<string,bool> unhandledtypesreported = new ConcurrentDictionary<string,bool>();
+
+        private void TrackNavigationFromReader(object entity, Type entityType, List<PropertyMapEntry> map)
+        {
+            typeof(DBEngine).GetMethod(nameof(TrackNavigationFromReaderCore), BindingFlags.Instance | BindingFlags.NonPublic)
+                .MakeGenericMethod(entityType).Invoke(this, new object[] { entity, map });
+        }
+
+        private void TrackNavigationFromReaderCore<T>(T entity, List<PropertyMapEntry> map) where T : class, new()
+        {
+            GetTracker<T>()?.GetOrAddFromReader(ref entity, map);
+        }
+
         private void ExecutePropertyMap<T>(SqlDataReader rdr, List<PropertyMapEntry> map, T target) where T : class
         {
+            DatabaseRefresh<T>.PrepareTarget(target);
             foreach (var entry in map)
             {
                 try
@@ -361,6 +374,10 @@ namespace MDDDataAccess
 
         private void ExecutePropertyMap(SqlDataReader rdr, List<PropertyMapEntry> map, object target, Type targetType)
         {
+            // Nested mapping uses the same refresh policy as root materialization.
+            typeof(DatabaseRefresh<>).MakeGenericType(targetType)
+                .GetMethod("PrepareTarget", BindingFlags.Static | BindingFlags.NonPublic)
+                .Invoke(null, new[] { target });
             foreach (var entry in map)
             {
                 try

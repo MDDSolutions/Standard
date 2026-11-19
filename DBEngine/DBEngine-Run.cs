@@ -406,7 +406,7 @@ namespace MDDDataAccess
                                 foreach (var item in tdict.Values)
                                 {
                                     T r = item;
-                                    t?.GetOrAdd(ref r, true);
+                                    t?.GetOrAddFromReader(ref r, map);
                                     l.Add(r);
                                 }
                             }

@@ -11,6 +11,14 @@ namespace MDDDataAccess
     [AttributeUsage(AttributeTargets.Property)]
     public class DBOptionalAttribute : Attribute { }
 
+    /// <summary>
+    /// Marks navigation data as invalid when a database refresh omits it. A refresh that
+    /// maps the property replaces it, including with null. Ordinary tracker attachment
+    /// retains the usual merge behavior. This attribute does not load data on demand.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Property, AllowMultiple = false, Inherited = true)]
+    public sealed class DBInvalidateOnRefreshAttribute : Attribute { }
+
 
     [AttributeUsage(AttributeTargets.Property)]
     public class DBNameAttribute : Attribute
