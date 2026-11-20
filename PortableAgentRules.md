@@ -69,16 +69,21 @@ The authorized SQL Server and databases are:
 - Databases: `Other`, `Ledger`, `MDDSolutions`, and `OWUIDev`
 - SQL-authenticated login: `AIAgentReadOnly`
 
+The Databases list above is the single authoritative list of authorized databases. Everything
+below uses `<database>` as a placeholder for one database from that list; add or remove databases
+only in the list.
+
 The database relevant to the current task must be explicit in the task scope. A task may connect only
 to the authorized database it is investigating; authorization for one database does not authorize
-cross-database queries or browsing the other database.
+cross-database queries or browsing other databases.
 
 The connection settings are stored as persistent Windows user environment variables:
 
 - `SQLCMDSERVER` contains the server name.
 - `SQLCMDDBNAME` may contain the user's default database name. It is a convenience only and does not
-  authorize a database; every agent-issued `sqlcmd` command must pass an explicit `-d 'Other'`,
-  `-d 'Ledger'`, `-d 'MDDSolutions'`, or `-d 'OWUIDev'` matching the current task scope.
+  authorize a database; every agent-issued `sqlcmd` command must pass an explicit `-d '<database>'`
+  naming a database from the list above that matches the current task scope, placed after the
+  `-U` login as in the connection template below.
 - `SQLCMDUSER` contains the login name.
 - `SQLCMDPASSWORD` contains the password.
 
@@ -88,38 +93,37 @@ If `SQLCMDPASSWORD` is absent or empty, stop and inform the user. Do not search 
 
 For `sqlcmd`, use SQL authentication with the fixed server and login and the explicitly scoped
 authorized database, allowing `sqlcmd` to obtain the password from `SQLCMDPASSWORD`. Do not specify
-`-E` or another authentication method. Permitted connections have these forms:
+`-E` or another authentication method. Connections take this form; keep the argument order shown
+(server, login, then database) because the Claude Code allow rule matches the `-S … -U …` prefix:
 
 ```powershell
-sqlcmd -S 'MDD-SQL2022' -d 'Other' -U 'AIAgentReadOnly' -Q "SELECT ORIGINAL_LOGIN() AS LoginName, SUSER_SNAME() AS SessionLogin, DB_NAME() AS DatabaseName;"
-sqlcmd -S 'MDD-SQL2022' -d 'Ledger' -U 'AIAgentReadOnly' -Q "SELECT ORIGINAL_LOGIN() AS LoginName, SUSER_SNAME() AS SessionLogin, DB_NAME() AS DatabaseName;"
-sqlcmd -S 'MDD-SQL2022' -d 'MDDSolutions' -U 'AIAgentReadOnly' -Q "SELECT ORIGINAL_LOGIN() AS LoginName, SUSER_SNAME() AS SessionLogin, DB_NAME() AS DatabaseName;"
-sqlcmd -S 'MDD-SQL2022' -d 'OWUIDev' -U 'AIAgentReadOnly' -Q "SELECT ORIGINAL_LOGIN() AS LoginName, SUSER_SNAME() AS SessionLogin, DB_NAME() AS DatabaseName;"
+sqlcmd -S 'MDD-SQL2022' -U 'AIAgentReadOnly' -d '<database>' -Q "SELECT ORIGINAL_LOGIN() AS LoginName, SUSER_SNAME() AS SessionLogin, DB_NAME() AS DatabaseName;"
 ```
 
 Every new connection must first verify that `ORIGINAL_LOGIN()` is `AIAgentReadOnly` and that
-`DB_NAME()` exactly matches the authorized database named in the current task scope (`Other`,
-`Ledger`, `MDDSolutions`, or `OWUIDev`). This verification may be the first `SELECT` in the same batch as the
-investigative query.
+`DB_NAME()` exactly matches the database from the list above named in the current task scope.
+This verification may be the first `SELECT` in the same batch as the investigative query.
 
 Use `-Q` with inline SQL only. Do not use `-i`, and do not use the `sqlcmd` commands that change or escape the connection: `:CONNECT`, `:r`, `:!!`, `:setvar`. `:CONNECT` in particular can reconnect as a different login or to a different server, which would defeat the login rule above. `-b` (exit on error), `-l` (login timeout) and `-t` (query timeout) are permitted and encouraged. `-X` cannot be used here: it disables the `SQLCMDPASSWORD` environment variable along with the features it blocks, and the connection then fails.
 
 Within Codex on this machine, the normal restricted execution sandbox cannot complete the SQL client's TLS connection. Run the same `AIAgentReadOnly` SQL-authenticated command through Codex's approved outside-sandbox execution path. This is only an execution-environment requirement; it does not authorize a different login, authentication method, server, database, or broader filesystem or machine access. Claude Code may use its normal execution path if the authorized connection succeeds there.
 
-Within Claude Code, `.claude/settings.json` is a second enforcement layer and must agree with this document. Its `permissions.deny` list blocks `sqlcmd` outright unless a matching `allow` entry exists, and auto mode's safety classifier refuses SQL-authentication commands unless one exists. The allow entry is pinned to the authorized connection, so nothing else is permitted by it:
+Within Claude Code, `.claude/settings.json` is a second enforcement layer and must agree with this document. Its `permissions.deny` list blocks `sqlcmd` outright unless a matching `allow` entry exists, and auto mode's safety classifier refuses SQL-authentication commands unless one exists. The allow entries are pinned to the authorized server and login and are shared by
+every database in the list:
 
 ```json
 "allow": [
-  "Bash(sqlcmd -S 'MDD-SQL2022' -d 'Other' -U 'AIAgentReadOnly':*)",
-  "PowerShell(sqlcmd -S 'MDD-SQL2022' -d 'Other' -U 'AIAgentReadOnly':*)",
-  "Bash(sqlcmd -S 'MDD-SQL2022' -d 'Ledger' -U 'AIAgentReadOnly':*)",
-  "PowerShell(sqlcmd -S 'MDD-SQL2022' -d 'Ledger' -U 'AIAgentReadOnly':*)",
-  "Bash(sqlcmd -S 'MDD-SQL2022' -d 'MDDSolutions' -U 'AIAgentReadOnly':*)",
-  "Bash(sqlcmd -S 'MDD-SQL2022' -d 'OWUIDev' -U 'AIAgentReadOnly':*)",
-  "PowerShell(sqlcmd -S 'MDD-SQL2022' -d 'MDDSolutions' -U 'AIAgentReadOnly':*)",
-  "PowerShell(sqlcmd -S 'MDD-SQL2022' -d 'OWUIDev' -U 'AIAgentReadOnly':*)"
+  "Bash(sqlcmd -S 'MDD-SQL2022' -U 'AIAgentReadOnly':*)",
+  "PowerShell(sqlcmd -S 'MDD-SQL2022' -U 'AIAgentReadOnly':*)"
 ]
 ```
+
+The required `-d '<database>'` follows that prefix; a command with `-d` before `-U` does not match
+and is refused. The entries do not restrict the database: database scope comes from this document
+(an explicit `-d` naming a listed database that matches the task scope, plus the `DB_NAME()`
+check) and from the login's own server-side grants. Adding a database means adding it to the list
+above; the settings file does not change. Do not write per-database allow entries, and do not
+broaden the entries to accept other servers or logins.
 
 A refusal therefore does not always mean the policy forbids something — it may mean a settings file is stale or malformed. A settings file that does not parse is silently ignored in full, which disables every rule in it; see the Settings File Integrity rule in `CLAUDE.md`.
 
